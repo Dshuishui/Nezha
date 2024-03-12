@@ -1,0 +1,12 @@
+[package]
+name = "http_client"
+version = "0.1.0"
+authors = ["csh", "LI Rui <me@lirui.tech>"]
+edition = "2021"
+exclude = ["server.py"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+http_req_wasi  = "0.10"
+wasmedge_wasi_socket = {path = "../.."}

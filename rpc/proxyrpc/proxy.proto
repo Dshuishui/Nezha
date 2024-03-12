@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+option go_package="./;proxyrpc";
+
+service Proxy{
+    // between proxy and client
+    /* 
+    kvc --(GetInWritelessCausalByProxy)--> proxy --(GetInWritelessCausal)--> kvs
+    kvc --(PutInWritelessCausalByProxy)--> proxy --(PutInWritelessCausal)--> kvs
+    */
+    rpc GetInWritelessCausalByProxy(GetInWritelessCausalByProxyRequest) returns (GetInWritelessCausalByProxyResponse);
+    rpc PutInWritelessCausalByProxy (PutInWritelessCausalByProxyRequest) returns (PutInWritelessCausalByProxyResponse);
+
+}
+
+message GetInWritelessCausalByProxyRequest{
+    string key = 1;
+    map<string,int32> vectorclock = 2;
+    int64 timestamp = 3;
+}
+
+message GetInWritelessCausalByProxyResponse{
+    string value = 1;
+    map<string,int32> vectorclock = 2;
+    bool success = 3;
+}
+
+message PutInWritelessCausalByProxyRequest{
+    string key = 1;
+    string value = 2;
+    map<string,int32> vectorclock = 3;
+    int64 timestamp = 4;
+}
+
+message PutInWritelessCausalByProxyResponse{
+    map<string,int32> vectorclock = 1;
+    bool success = 2;
+}
