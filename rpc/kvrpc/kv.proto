@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+option go_package="./;kvrpc";
+
+/* 
+  this rpc is used between kvserver and kvclient
+*/
+
+service KV{
+  rpc GetInCausal (GetInCausalRequest) returns (GetInCausalResponse) {}
+  rpc PutInCausal (PutInCausalRequest) returns (PutInCausalResponse) {}
+  rpc GetInWritelessCausal (GetInWritelessCausalRequest) returns (GetInWritelessCausalResponse) {}
+  rpc PutInWritelessCausal (PutInWritelessCausalRequest) returns (PutInWritelessCausalResponse) {}
+}
+
+message GetInCausalRequest {
+  string key = 1;
+  map<string,int32> vectorclock = 2;
+  int64 timestamp = 3;
+}
+
+message GetInCausalResponse {
+  string value = 1;
+  map<string,int32> vectorclock = 2;
+  bool success = 3;
+}
+
+message PutInCausalRequest {
+  string key = 1;
+  string value = 2;
+  map<string,int32> vectorclock = 3;
+  int64 timestamp = 4;
+}
+
+message PutInCausalResponse {
+  bool success = 1;
+  map<string,int32> vectorclock = 2;
+}
+
+
+
+message GetInWritelessCausalRequest {
+  string key = 1;
+  map<string,int32> vectorclock = 2;
+  int64 timestamp = 3;
+}
+
+message GetInWritelessCausalResponse {
+  string value = 1;
+  map<string,int32> vectorclock = 2;
+  bool success = 3;
+}
+
+message PutInWritelessCausalRequest {
+  string key = 1;
+  string value = 2;
+  map<string,int32> vectorclock = 3;
+  int64 timestamp = 4;
+}
+
+message PutInWritelessCausalResponse {
+  bool success = 1;
+  map<string,int32> vectorclock = 2;
+}

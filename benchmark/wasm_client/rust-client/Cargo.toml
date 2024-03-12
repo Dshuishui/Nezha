@@ -1,0 +1,13 @@
+[package]
+name = "rust-client"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+# wasmedge_wasi_socket = { git = "https://github.com/second-state/wasmedge_wasi_socket.git" }
+wasmedge_wasi_socket = { path = "/home/jason/Hybrid_KV_Store/benchmark/wasm_client/rust-client/wasmedge_wasi_socket" }
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }

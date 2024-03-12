@@ -1,0 +1,20 @@
+syntax = "proto3";
+ 
+option go_package="./;causalrpc";
+
+/* 
+    this rpc is only for causal consistency between nodes
+*/
+
+service CAUSAL {
+  rpc AppendEntriesInCausal (AppendEntriesInCausalRequest) returns (AppendEntriesInCausalResponse) {}
+}
+ 
+message AppendEntriesInCausalRequest{
+  bytes      map_lattice = 1;
+  int32      version = 2;   // version of the log.value
+}
+
+message AppendEntriesInCausalResponse{
+  bool       success = 1;
+}
