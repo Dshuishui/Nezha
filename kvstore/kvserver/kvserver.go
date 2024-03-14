@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"os"
 	"encoding/binary"
+	"os"
 
 	"github.com/JasonLou99/Hybrid_KV_Store/config"
 	"github.com/JasonLou99/Hybrid_KV_Store/lattices"
@@ -36,12 +36,12 @@ type KVServer struct {
 	internalAddress string // internal address for communication between nodes
 	latency         int    // Simulation of geographical delay
 	logs            []config.Log
-	vectorclock     sync.Map	// 可在多个goroutine并发访问时保证数据的安全性，提供了一些原子操作。
+	vectorclock     sync.Map             // 可在多个goroutine并发访问时保证数据的安全性，提供了一些原子操作。
 	persister       *persister.Persister // 对数据库进行读写操作的接口
 	memdb           *redis.Client
 	ctx             context.Context
 
-	valuelog        *ValueLog
+	valuelog *ValueLog
 	// db              sync.Map // memory database
 	// causalEntity *causal.CausalEntity
 
@@ -90,8 +90,8 @@ type TCPResp struct {
 }
 
 // this method is used to execute the command from client with causal consistency
-func (kvs *KVServer)   startInCausal(command interface{}, vcFromClientArg map[string]int32, timestampFromClient int64) bool {
-	vcFromClient := util.BecomeSyncMap(vcFromClientArg)	// 将map类型转换成同步安全的Map类型
+func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[string]int32, timestampFromClient int64) bool {
+	vcFromClient := util.BecomeSyncMap(vcFromClientArg) // 将map类型转换成同步安全的Map类型
 	// 将 command 这个接口类型的值转换为 config.Log 类型的值
 	newLog := command.(config.Log)
 	util.DPrintf("Log in Start(): %v ", newLog)
@@ -132,12 +132,12 @@ func (kvs *KVServer)   startInCausal(command interface{}, vcFromClientArg map[st
 		// val, _ := kvs.vectorclock.Load(kvs.internalAddress)
 		// kvs.vectorclock.Store(kvs.internalAddress, val.(int32)+1)
 		isUpper := util.IsUpper(kvs.vectorclock, vcFromClient)
-		if isUpper {	// 把服务器的向量时钟加一
+		if isUpper { // 把服务器的向量时钟加一
 			val, _ := kvs.vectorclock.Load(kvs.internalAddress)
 			kvs.vectorclock.Store(kvs.internalAddress, val.(int32)+1)
 		} else {
 			// vcFromClient is bigger than kvs.vectorclock
-			kvs.MergeVC(vcFromClient)		// 服务器的向量时钟落后了，用客户端的将其更新，并且再加一
+			kvs.MergeVC(vcFromClient) // 服务器的向量时钟落后了，用客户端的将其更新，并且再加一
 			val, _ := kvs.vectorclock.Load(kvs.internalAddress)
 			kvs.vectorclock.Store(kvs.internalAddress, val.(int32)+1)
 		}
@@ -150,8 +150,8 @@ func (kvs *KVServer)   startInCausal(command interface{}, vcFromClientArg map[st
 			},
 		}
 		// 开始同步日志
-		data, _ := json.Marshal(ml)		// 将结构体m1序列化为JSON格式的字节流，并将结果
-		args := &causalrpc.AppendEntriesInCausalRequest{	// 创建了一个指向该类型实例的指针，并把指针赋值给了变量args
+		data, _ := json.Marshal(ml)                      // 将结构体m1序列化为JSON格式的字节流，并将结果
+		args := &causalrpc.AppendEntriesInCausalRequest{ // 创建了一个指向该类型实例的指针，并把指针赋值给了变量args
 			MapLattice: data,
 			// Version:    oldVersion + 1,
 			Version: 1,
@@ -171,7 +171,7 @@ func (kvs *KVServer)   startInCausal(command interface{}, vcFromClientArg map[st
 
 		// kvs.persister.Put(newLog.Key, newLog.Value)
 		// 上面的是原始存储<key,value>的情况
-		kvs.valuelog.Put([]byte(newLog.Key),[]byte(newLog.Value))
+		kvs.valuelog.Put([]byte(newLog.Key), []byte(newLog.Value))
 		// err := kvs.memdb.Set(kvs.ctx, newLog.Key, newLog.Value, 0).Err()
 		// if err != nil {
 		// 	panic(err)
@@ -180,7 +180,7 @@ func (kvs *KVServer)   startInCausal(command interface{}, vcFromClientArg map[st
 	} else if newLog.Option == "Get" {
 		vcKVS, _ := kvs.vectorclock.Load(kvs.internalAddress)
 		vcKVC, _ := vcFromClient.Load(kvs.internalAddress)
-		return vcKVS.(int32) >= vcKVC.(int32)		// 比较vectorclock数组中internalAddress对应的那一个键值即可，并且不会进行修改，而Put操作是更新整个vectorclock的数组。
+		return vcKVS.(int32) >= vcKVC.(int32) // 比较vectorclock数组中internalAddress对应的那一个键值即可，并且不会进行修改，而Put操作是更新整个vectorclock的数组。
 		// return util.IsUpper(kvs.vectorclock, vcFromClient)
 	}
 	util.DPrintf("here is Start() in Causal: log command option is false")
@@ -245,7 +245,7 @@ func (kvs *KVServer) PutInCausal(ctx context.Context, in *kvrpc.PutInCausalReque
 		Option: "Put",
 		Key:    in.Key,
 		Value:  in.Value,
-	} 
+	}
 	ok := kvs.startInCausal(op, in.Vectorclock, in.Timestamp)
 	if ok {
 		putInCausalResponse.Success = true
@@ -277,7 +277,7 @@ func (kvs *KVServer) startInWritelessCausal(command interface{}, vcFromClientArg
 		}
 		putCounts_int := util.LoadInt(kvs.putCountsInProxy, newLog.Key)
 		predictCounts_int := util.LoadInt(kvs.predictPutCounts, newLog.Key)
-		if putCounts_int >= predictCounts_int {		// 需要同步
+		if putCounts_int >= predictCounts_int { // 需要同步
 			util.DPrintf("Sync History Puts by Prediction, predictPutCounts: %v, putCountsInProxy: %v", predictCounts_int, putCounts_int)
 			// init MapLattice for sending to other nodes
 			ml := lattices.HybridLattice{
@@ -325,7 +325,7 @@ func (kvs *KVServer) startInWritelessCausal(command interface{}, vcFromClientArg
 			// ？？？？？？取平均以更新预测的put操作的阈值？？？？？？
 			kvs.predictPutCounts.Store(newLog.Key, (totalCounts+proxyCounts)/(getCounts+1))
 			// 不管get操作前有没有同步，都把putCountsInProxy加进队列，重新预测下一个阈值
-			if proxyCounts != 0 {	// 说明在此get操作前一次没有被重置为0，也就是没有同步，同时也表明预测失败了
+			if proxyCounts != 0 { // 说明在此get操作前一次没有被重置为0，也就是没有同步，同时也表明预测失败了
 				util.DPrintf("Sync History Puts by Get")
 				// 同步该key之前的put
 				syncLog := config.Log{
@@ -429,8 +429,8 @@ func (kvs *KVServer) AppendEntriesInCausal(ctx context.Context, in *causalrpc.Ap
 		// kvs.db.Store(mlFromOther.Key, &ValueTimestamp{value: mlFromOther.Vl.Log.Value, timestamp: time.Now().UnixMilli(), version: in.Version})
 		// kvs.persister.Put(mlFromOther.Key, mlFromOther.Vl.Log.Value)
 		// 上面的是原始存储<key,value>的情况
-		kvs.valuelog.Put([]byte(mlFromOther.Key),[]byte(mlFromOther.Vl.Log.Value))
-		
+		kvs.valuelog.Put([]byte(mlFromOther.Key), []byte(mlFromOther.Vl.Log.Value))
+
 		kvs.MergeVC(vcFromOther)
 		appendEntriesInCausalResponse.Success = true
 	} else {
@@ -440,8 +440,8 @@ func (kvs *KVServer) AppendEntriesInCausal(ctx context.Context, in *causalrpc.Ap
 	return appendEntriesInCausalResponse, nil
 }
 
-func (kvs *KVServer) RegisterKVServer(address string) {		// 传入的是客户端与服务器之间的代理服务器的地址
-	util.DPrintf("RegisterKVServer: %s", address)	// 打印格式化后Debug信息
+func (kvs *KVServer) RegisterKVServer(address string) { // 传入的是客户端与服务器之间的代理服务器的地址
+	util.DPrintf("RegisterKVServer: %s", address) // 打印格式化后Debug信息
 	for {
 		// 利用标准库net创建的一个TCP服务器监听器，lis是一个net.Listener类型的对象，为创建的TCP监听器。
 		// 监听address地址上的连接请求
@@ -463,18 +463,19 @@ func (kvs *KVServer) RegisterKVServer(address string) {		// 传入的是客户�
 		}
 	}
 }
+
 // 整个过程将以一个无限循环的方式持续进行，即使出现错误，也会继续尝试监听并提供服务。这种设计常见于网络服务器，目的是保持服务器的稳定性和可靠性
 func (kvs *KVServer) RegisterCausalServer(address string) { // 传入的地址是internalAddress，节点间交流用的地址（用于类似日志同步等）
 	util.DPrintf("RegisterCausalServer: %s", address)
-	for {  // 创建一个TCP监听器，并在指定的地址（）上监听传入的连接。如果监听失败，则会打印错误信息。
+	for { // 创建一个TCP监听器，并在指定的地址（）上监听传入的连接。如果监听失败，则会打印错误信息。
 		lis, err := net.Listen("tcp", address)
 		if err != nil {
 			util.FPrintf("failed to listen: %v", err)
 		}
-		grpcServer := grpc.NewServer()	// 创建一个gRPC服务器
+		grpcServer := grpc.NewServer() // 创建一个gRPC服务器
 		causalrpc.RegisterCAUSALServer(grpcServer, kvs)
-		reflection.Register(grpcServer)	// 并在反射服务中进行了注册
-		if err := grpcServer.Serve(lis); err != nil {	// 调用Serve方法来启动gRPC服务器，监听传入的连接，并处理相应的请求
+		reflection.Register(grpcServer)               // 并在反射服务中进行了注册
+		if err := grpcServer.Serve(lis); err != nil { // 调用Serve方法来启动gRPC服务器，监听传入的连接，并处理相应的请求
 			util.FPrintf("failed to serve: %v", err)
 		}
 	}
@@ -493,7 +494,7 @@ func (kvs *KVServer) sendAppendEntriesInCausal(address string, args *causalrpc.A
 	defer conn.Close()
 	client := causalrpc.NewCAUSALClient(conn)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)		// 定时5秒
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5) // 定时5秒
 	defer cancel()
 
 	reply, err := client.AppendEntriesInCausal(ctx, args)
@@ -507,7 +508,7 @@ func (kvs *KVServer) sendAppendEntriesInCausal(address string, args *causalrpc.A
 func (kvs *KVServer) MergeVC(vc sync.Map) {
 	vc.Range(func(k, v interface{}) bool {
 		val, ok := kvs.vectorclock.Load(k)
-		if !ok {	// 这是什么情况，客户端有的vectorclock对应到服务器中没有，应该是同步客户端的信息
+		if !ok { // 这是什么情况，客户端有的vectorclock对应到服务器中没有，应该是同步客户端的信息
 			kvs.vectorclock.Store(k, v)
 		} else {
 			if v.(int32) > val.(int32) {
@@ -522,6 +523,7 @@ func (kvs *KVServer) MergeVC(vc sync.Map) {
 func NewValueLog(valueLogPath string, leveldbPath string) (*ValueLog, error) {
 	vLog := &ValueLog{valueLogPath: valueLogPath}
 	var err error
+	// fmt.Println("Danm！！！有没有生成这个文件啊？ ")
 	vLog.file, err = os.OpenFile(valueLogPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		return nil, err
@@ -607,35 +609,36 @@ func (vl *ValueLog) Get(key []byte) ([]byte, error) {
 	return value, nil
 }
 
-	// 返回了一个指向KVServer类型对象的指针
+// 返回了一个指向KVServer类型对象的指针
 func MakeKVServer(address string, internalAddress string, peers []string) *KVServer {
-	util.IPrintf("Make KVServer %s... ", config.Address)	// 打印格式化后的信息，其中的地址是客户端和服务器之间的代理（目前不知道为什么需要代理）
-	kvs := new(KVServer)	// 返回一个指向新分配的、零值初始化的KVServer类型的指针
-	kvs.persister = new(persister.Persister)	// 实例化对数据库进行读写操作的接口对象
-	kvs.persister.Init("db")	// 初始化，即获取对应路径的一个数据库实例，对其进行操作。
+	util.IPrintf("Make KVServer %s... ", config.Address) // 打印格式化后的信息，其中的地址是客户端和服务器之间的代理（目前不知道为什么需要代理）
+	kvs := new(KVServer)                                 // 返回一个指向新分配的、零值初始化的KVServer类型的指针
+	kvs.persister = new(persister.Persister)             // 实例化对数据库进行读写操作的接口对象
+	kvs.persister.Init("db")                             // 初始化，即获取对应路径的一个数据库实例，对其进行操作。
 	kvs.address = address
 	kvs.internalAddress = internalAddress
 	kvs.peers = peers
 	// Initialize ValueLog and LevelDB (Paths would be specified here).
 	// 在这个.代表的是打开的工作区或文件夹的根目录，即FlexSync。指向的是VSCode左侧侧边栏（Explorer栏）中展示的最顶层文件夹。
 	valuelog, err := NewValueLog("valueLog_value.log", "./kvstore/kvserver/db_key_addr")
+	fmt.Println("Danm！！！有没有生成这个文件啊？ ")
 	if err != nil {
 		panic(err)
 	}
 	// 这里不直接用kvs.valuelog接受上述NewValueLog函数的返回值，是因为需要先接受该函数的返回值，检查是否有错误发生，如果没有错误，才能将其值赋值给其他值。
 	kvs.valuelog = valuelog
 	// init vectorclock: { "192.168.10.120:30881":0, "192.168.10.121:30881":0, ... }
-	for i := 0; i < len(peers); i++ {	// 遍历输入结点的各个地址
-		kvs.vectorclock.Store(peers[i], int32(0))	// 将每个地址以键值对的形式存入map映射中，初始值为0
+	for i := 0; i < len(peers); i++ { // 遍历输入结点的各个地址
+		kvs.vectorclock.Store(peers[i], int32(0)) // 将每个地址以键值对的形式存入map映射中，初始值为0
 	}
 	// init memdb(redis)
 	// redis client is a connection pool, support goroutine
-	kvs.memdb = redis.NewClient(&redis.Options{		// 使用 Redis 客户端库创建一个与 Redis 数据库的连接。
+	kvs.memdb = redis.NewClient(&redis.Options{ // 使用 Redis 客户端库创建一个与 Redis 数据库的连接。
 		Addr:     "localhost:6379",
 		Password: "", // no password set
 		DB:       0,  // use default DB  指定要使用的 Redis 数据库索引
 	})
-	kvs.ctx = context.Background()		// 创建一个起始的context上下文，不断透传下去，根context。
+	kvs.ctx = context.Background() // 创建一个起始的context上下文，不断透传下去，根context。
 	kvs.ctx.Err()
 	// 初始化map
 	// kvs.putCountsByNodes = make(map[string][]string)
@@ -643,7 +646,7 @@ func MakeKVServer(address string, internalAddress string, peers []string) *KVSer
 	// kvs.putCountsInTotal = make(map[string]int)
 	// kvs.getCountsInTotal = make(map[string]int)
 	// kvs.predictPutCounts = make(map[string]int)
-	return kvs 
+	return kvs
 }
 
 // 初始化TCP Server
@@ -747,22 +750,22 @@ func (kvs *KVServer) disributeRPC(conn net.Conn) {
 	}
 }
 
-func  main() {
+func main() {
 	// peers inputed by command line
 	// 使用flag包来定义一个命令行参数internalAddress_arg，并通过string函数指定了参数的类型为字符串，用于接受用户在命令行输入的地址信息。
 	// 第一个参数是参数的名称。
 	// 中间的参数是默认值，用户在命令行中没有指定参数时，将会使用空字符串来代替。
 	// 第三个参数则是当用户使用命令行参数“--help”查看帮助时，会显示该描述信息，用于说明该参数的用途和作用。
-	var internalAddress_arg = flag.String("internalAddress", "", "Input Your address")	// 返回的是一个指向string类型的指针
+	var internalAddress_arg = flag.String("internalAddress", "", "Input Your address") // 返回的是一个指向string类型的指针
 	var address_arg = flag.String("address", "", "Input Your address")
 	var peers_arg = flag.String("peers", "", "Input Your Peers")
 	var tcpAddress_arg = flag.String("tcpAddress", "", "Input Your TCP address")
 	// 解析命令行参数并将其存储到上面对应的变量中
 	flag.Parse()
-	internalAddress := *internalAddress_arg		// 取出指针所指向的值，存入internalAddress变量
+	internalAddress := *internalAddress_arg // 取出指针所指向的值，存入internalAddress变量
 	tcpAddress := *tcpAddress_arg
 	address := *address_arg
-	peers := strings.Split(*peers_arg, ",")		// 将逗号作为分隔符传递给strings.Split函数，以便将peers_arg字符串分割成多个子字符串，并存储在peers的切片中
+	peers := strings.Split(*peers_arg, ",") // 将逗号作为分隔符传递给strings.Split函数，以便将peers_arg字符串分割成多个子字符串，并存储在peers的切片中
 	kvs := MakeKVServer(address, internalAddress, peers)
 	go kvs.RegisterKVServer(kvs.address)
 	go kvs.RegisterCausalServer(kvs.internalAddress)

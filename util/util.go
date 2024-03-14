@@ -1,8 +1,10 @@
 package util
 
 import (
+	"bytes"
 	"encoding/csv"
 	"log"
+	"math/rand"
 	"os"
 	"strconv"
 	"sync"
@@ -19,6 +21,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	}
 	return
 }
+
 // 打印格式化后的错误信息
 func EPrintf(format string, a ...interface{}) (n int, err error) {
 	log.SetPrefix("[Error] ")
@@ -26,13 +29,15 @@ func EPrintf(format string, a ...interface{}) (n int, err error) {
 	log.Printf(format, a...)
 	return
 }
+
 // 打印格式化后的正常信息
-func IPrintf(format string, a ...interface{}) (n int, err error) {	// 空接口切片类型（...interface{}）可以接收任意类型的参数
-	log.SetPrefix("[Info] ")	// 添加日志输出的前缀[Info]
-	log.SetFlags(log.Ldate | log.Ltime)		// 设置日志输出的格式化选项，log.Ldate表示在输出中包含日期，log.Ltime表示在输出中包含时间，用|结合两个选项，同时应用于日志输出。
-	log.Printf(format, a...)	// 消息的格式由 format 提供，而后续的参数列表 a... 则是提供给格式化字符串的实际参数。
+func IPrintf(format string, a ...interface{}) (n int, err error) { // 空接口切片类型（...interface{}）可以接收任意类型的参数
+	log.SetPrefix("[Info] ")            // 添加日志输出的前缀[Info]
+	log.SetFlags(log.Ldate | log.Ltime) // 设置日志输出的格式化选项，log.Ldate表示在输出中包含日期，log.Ltime表示在输出中包含时间，用|结合两个选项，同时应用于日志输出。
+	log.Printf(format, a...)            // 消息的格式由 format 提供，而后续的参数列表 a... 则是提供给格式化字符串的实际参数。
 	return
 }
+
 // 打印格式化后监听失败的信息
 func FPrintf(format string, a ...interface{}) (n int, err error) {
 	log.SetPrefix("[Fatalf] ")
@@ -78,14 +83,14 @@ func ReadCsv(filepath string) (writeCounts []float64) {
 
 /* 数组写入csv */
 func WriteCsv(filepath string, spentTimeArr []int) {
-	file, err := os.Create(filepath)		// 创建文件
+	file, err := os.Create(filepath) // 创建文件
 	if err != nil {
 		FPrintf(err.Error())
 	}
 	defer file.Close()
 
-	writer := csv.NewWriter(file)		// 创建一个新的 CSV writer，用于向文件中写入 CSV 格式的数据
-	defer writer.Flush()		// 确保在函数返回之前将缓冲区中的数据刷新到文件中
+	writer := csv.NewWriter(file) // 创建一个新的 CSV writer，用于向文件中写入 CSV 格式的数据
+	defer writer.Flush()          // 确保在函数返回之前将缓冲区中的数据刷新到文件中
 
 	for _, value := range spentTimeArr {
 		err := writer.Write([]string{strconv.Itoa(value)})
@@ -170,4 +175,16 @@ func MakeMap(addresses []string) map[string]int32 {
 		res[address+"1"] = 0
 	}
 	return res
+}
+
+// 生成较大的value
+func GenerateLargeValue(size int) string {
+	const letters = "abcdefghijklmnopqrstuvwxyz"
+	var buffer bytes.Buffer
+	lettersLength := len(letters)
+	for i := 0; i < size; i++ {
+		randomLetter := letters[rand.Intn(lettersLength)]
+		buffer.WriteByte(randomLetter)
+	}
+	return buffer.String()
 }
