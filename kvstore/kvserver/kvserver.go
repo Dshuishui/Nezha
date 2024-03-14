@@ -169,9 +169,9 @@ func (kvs *KVServer)   startInCausal(command interface{}, vcFromClientArg map[st
 		kvs.logs = append(kvs.logs, newLog)
 		// kvs.db.Store(newLog.Key, &ValueTimestamp{value: newLog.Value, timestamp: time.Now().UnixMilli(), version: oldVersion + 1})
 
-		kvs.persister.Put(newLog.Key, newLog.Value)
+		// kvs.persister.Put(newLog.Key, newLog.Value)
 		// 上面的是原始存储<key,value>的情况
-		// kvs.valuelog.Put([]byte(newLog.Key),[]byte(newLog.Value))
+		kvs.valuelog.Put([]byte(newLog.Key),[]byte(newLog.Value))
 		// err := kvs.memdb.Set(kvs.ctx, newLog.Key, newLog.Value, 0).Err()
 		// if err != nil {
 		// 	panic(err)
@@ -213,14 +213,14 @@ func (kvs *KVServer) GetInCausal(ctx context.Context, in *kvrpc.GetInCausalReque
 		getInCausalResponse.Vectorclock = util.BecomeMap(kvs.vectorclock)
 		// getInCausalResponse.Value = valueTimestamp.value
 
-		getInCausalResponse.Value = string(kvs.persister.Get(in.Key))
+		// getInCausalResponse.Value = string(kvs.persister.Get(in.Key))
 		// 上面是原始存储<key,value>的情况
 
-		// value, err := kvs.valuelog.Get([]byte(in.Key))
-		// if err != nil {
-		// 	panic(err)
-		// }
-		// getInCausalResponse.Value = string(value)
+		value, err := kvs.valuelog.Get([]byte(in.Key))
+		if err != nil {
+			panic(err)
+		}
+		getInCausalResponse.Value = string(value)
 
 		// val, err := kvs.memdb.Get(kvs.ctx, in.Key).Result()
 		// if err != nil {
@@ -427,7 +427,10 @@ func (kvs *KVServer) AppendEntriesInCausal(ctx context.Context, in *causalrpc.Ap
 		// Append the log to the local log
 		kvs.logs = append(kvs.logs, mlFromOther.Vl.Log)
 		// kvs.db.Store(mlFromOther.Key, &ValueTimestamp{value: mlFromOther.Vl.Log.Value, timestamp: time.Now().UnixMilli(), version: in.Version})
-		kvs.persister.Put(mlFromOther.Key, mlFromOther.Vl.Log.Value)
+		// kvs.persister.Put(mlFromOther.Key, mlFromOther.Vl.Log.Value)
+		// 上面的是原始存储<key,value>的情况
+		kvs.valuelog.Put([]byte(mlFromOther.Key),[]byte(mlFromOther.Vl.Log.Value))
+		
 		kvs.MergeVC(vcFromOther)
 		appendEntriesInCausalResponse.Success = true
 	} else {
