@@ -614,7 +614,7 @@ func MakeKVServer(address string, internalAddress string, peers []string) *KVSer
 	util.IPrintf("Make KVServer %s... ", config.Address) // 打印格式化后的信息，其中的地址是客户端和服务器之间的代理（目前不知道为什么需要代理）
 	kvs := new(KVServer)                                 // 返回一个指向新分配的、零值初始化的KVServer类型的指针
 	kvs.persister = new(persister.Persister)             // 实例化对数据库进行读写操作的接口对象
-	kvs.persister.Init("db")                             // 初始化，即获取对应路径的一个数据库实例，对其进行操作。
+	// kvs.persister.Init("db")                             // 初始化，即获取对应路径的一个数据库实例，对其进行操作。
 	kvs.address = address
 	kvs.internalAddress = internalAddress
 	kvs.peers = peers
