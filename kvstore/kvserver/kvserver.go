@@ -621,7 +621,7 @@ func MakeKVServer(address string, internalAddress string, peers []string) *KVSer
 	// Initialize ValueLog and LevelDB (Paths would be specified here).
 	// 在这个.代表的是打开的工作区或文件夹的根目录，即FlexSync。指向的是VSCode左侧侧边栏（Explorer栏）中展示的最顶层文件夹。
 	valuelog, err := NewValueLog("valueLog_value.log", "./kvstore/kvserver/db_key_addr")
-	fmt.Println("Danm！！！有没有生成这个文件啊？ ")
+	fmt.Println("Danm！！！有没有生成这个文件啊？？ ")
 	if err != nil {
 		panic(err)
 	}
