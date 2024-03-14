@@ -172,10 +172,10 @@ func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[stri
 		// kvs.persister.Put(newLog.Key, newLog.Value)
 		// 上面的是原始存储<key,value>的情况
 		kvs.valuelog.Put([]byte(newLog.Key), []byte(newLog.Value))
-		err := kvs.memdb.Set(kvs.ctx, newLog.Key, newLog.Value, 0).Err()
-		if err != nil {
-			panic(err)
-		}
+		// err := kvs.memdb.Set(kvs.ctx, newLog.Key, newLog.Value, 0).Err()
+		// if err != nil {
+		// 	panic(err)
+		// }
 		return true
 	} else if newLog.Option == "Get" {
 		vcKVS, _ := kvs.vectorclock.Load(kvs.internalAddress)
