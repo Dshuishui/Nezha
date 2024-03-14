@@ -4,3 +4,8 @@
 21:50:02.809228 version@stat F·[] S·0B[] Sc·[]
 21:50:02.809710 db@janitor F·2 G·0
 21:50:02.809766 db@open done T·921.904µs
+21:51:26.745005 memdb@flush N·63 S·3MiB
+21:51:26.756332 memdb@flush created L0@3 N·63 S·3MiB "key14459,v61":"key99342,v49"
+21:51:26.756397 version@stat F·[1] S·3MiB[3MiB] Sc·[0.25]
+21:51:26.756789 memdb@flush committed F·1 T·11.747594ms
+21:51:26.757415 journal@remove removed @1
