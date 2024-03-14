@@ -19,7 +19,7 @@ git config --global --unset http.proxy
 ```
 
 start kvserver cluster: 
-`go run kvstore/kvserver/kvserver.go -address 192.168.10.129:3088 -internalAddress 192.168.10.129:30881 -peers 192.168.10.129:30881,192.168.10.102:30881,192.168.10.103:30881`
+`go run kvstore/kvserver/kvserver.go -address 192.168.31.249:3088 -internalAddress 192.168.31.249:30881 -peers 192.168.31.249:30881,192.168.10.102:30881,192.168.10.103:30881`
 <!-- 在一个集群中启动一个键值存储服务器。通过设置监听地址、内部地址和对等节点，实现了服务器之间的通信和数据共享。 -->
 kvserver with tcp and rpc:
 `go run kvstore/kvserver/kvserver.go -address 192.168.10.129:3088 -tcpAddress 192.168.10.129:50000 -internalAddress 192.168.10.129:30881 -peers 192.168.10.129:30881`
@@ -27,7 +27,7 @@ kvserver with tcp and rpc:
 
 start kvclient:
 * RequestRatio benchmark: 
-    `go run ./benchmark/hydis/benchmark.go -cnums 1 -mode RequestRatio -onums 100 -getratio 4 -servers 192.168.10.129:3088,192.168.10.102:3088,192.168.10.103:3088`
+    `go run ./benchmark/hydis/benchmark.go -cnums 1 -mode RequestRatio -onums 100 -getratio 4 -servers 192.168.31.249:3088,192.168.10.102:3088,192.168.10.103:3088`
     <!-- 模拟的客户端个数为1，客户端程序将会在一个goroutine中运行 -->
     * cnums: number of clients, goroutines simulate 
     <!-- 操作次数，便于测试 -->
