@@ -169,13 +169,13 @@ func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[stri
 		kvs.logs = append(kvs.logs, newLog)
 		// kvs.db.Store(newLog.Key, &ValueTimestamp{value: newLog.Value, timestamp: time.Now().UnixMilli(), version: oldVersion + 1})
 
-		kvs.persister.Put(newLog.Key, newLog.Value)
+		// kvs.persister.Put(newLog.Key, newLog.Value)
 		// 上面的是原始存储<key,value>的情况
-		// kvs.valuelog.Put([]byte(newLog.Key), []byte(newLog.Value))
-		// err := kvs.memdb.Set(kvs.ctx, newLog.Key, newLog.Value, 0).Err()
-		// if err != nil {
-		// 	panic(err)
-		// }
+		kvs.valuelog.Put([]byte(newLog.Key), []byte(newLog.Value))
+		err := kvs.memdb.Set(kvs.ctx, newLog.Key, newLog.Value, 0).Err()
+		if err != nil {
+			panic(err)
+		}
 		return true
 	} else if newLog.Option == "Get" {
 		vcKVS, _ := kvs.vectorclock.Load(kvs.internalAddress)
@@ -213,14 +213,14 @@ func (kvs *KVServer) GetInCausal(ctx context.Context, in *kvrpc.GetInCausalReque
 		getInCausalResponse.Vectorclock = util.BecomeMap(kvs.vectorclock)
 		// getInCausalResponse.Value = valueTimestamp.value
 
-		getInCausalResponse.Value = string(kvs.persister.Get(in.Key))
+		// getInCausalResponse.Value = string(kvs.persister.Get(in.Key))
 		// 上面是原始存储<key,value>的情况
 
-		// value, err := kvs.valuelog.Get([]byte(in.Key))
-		// if err != nil {
-		// 	panic(err)
-		// }
-		// getInCausalResponse.Value = string(value)
+		value, err := kvs.valuelog.Get([]byte(in.Key))
+		if err != nil {
+			panic(err)
+		}
+		getInCausalResponse.Value = string(value)
 
 		// val, err := kvs.memdb.Get(kvs.ctx, in.Key).Result()
 		// if err != nil {
@@ -427,9 +427,9 @@ func (kvs *KVServer) AppendEntriesInCausal(ctx context.Context, in *causalrpc.Ap
 		// Append the log to the local log
 		kvs.logs = append(kvs.logs, mlFromOther.Vl.Log)
 		// kvs.db.Store(mlFromOther.Key, &ValueTimestamp{value: mlFromOther.Vl.Log.Value, timestamp: time.Now().UnixMilli(), version: in.Version})
-		kvs.persister.Put(mlFromOther.Key, mlFromOther.Vl.Log.Value)
+		// kvs.persister.Put(mlFromOther.Key, mlFromOther.Vl.Log.Value)
 		// 上面的是原始存储<key,value>的情况
-		// kvs.valuelog.Put([]byte(mlFromOther.Key), []byte(mlFromOther.Vl.Log.Value))
+		kvs.valuelog.Put([]byte(mlFromOther.Key), []byte(mlFromOther.Vl.Log.Value))
 
 		kvs.MergeVC(vcFromOther)
 		appendEntriesInCausalResponse.Success = true
@@ -620,13 +620,13 @@ func MakeKVServer(address string, internalAddress string, peers []string) *KVSer
 	kvs.peers = peers
 	// Initialize ValueLog and LevelDB (Paths would be specified here).
 	// 在这个.代表的是打开的工作区或文件夹的根目录，即FlexSync。指向的是VSCode左侧侧边栏（Explorer栏）中展示的最顶层文件夹。
-	// valuelog, err := NewValueLog("valueLog_value.log", "./kvstore/kvserver/db_key_addr")
+	valuelog, err := NewValueLog("valueLog_value.log", "./kvstore/kvserver/db_key_addr")
 	fmt.Println("Danm！！！有没有生成这个文件啊？？ ")
-	// if err != nil {
-	// 	panic(err)
-	// }
+	if err != nil {
+		panic(err)
+	}
 	// 这里不直接用kvs.valuelog接受上述NewValueLog函数的返回值，是因为需要先接受该函数的返回值，检查是否有错误发生，如果没有错误，才能将其值赋值给其他值。
-	// kvs.valuelog = valuelog
+	kvs.valuelog = valuelog
 	// init vectorclock: { "192.168.10.120:30881":0, "192.168.10.121:30881":0, ... }
 	for i := 0; i < len(peers); i++ { // 遍历输入结点的各个地址
 		kvs.vectorclock.Store(peers[i], int32(0)) // 将每个地址以键值对的形式存入map映射中，初始值为0
