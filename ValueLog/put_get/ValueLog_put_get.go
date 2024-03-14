@@ -22,7 +22,7 @@ type ValueLog struct {
 func NewValueLog(valueLogPath string, leveldbPath string) (*ValueLog, error) {
 	vLog := &ValueLog{valueLogPath: valueLogPath}
 	var err error
-	vLog.file, err = os.OpenFile(valueLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY|os.O_RDONLY, 0644)
+	vLog.file, err = os.OpenFile(valueLogPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		return nil, err
 	}
@@ -35,8 +35,9 @@ func NewValueLog(valueLogPath string, leveldbPath string) (*ValueLog, error) {
 
 // Put stores the key-value pair in the Value Log and updates LevelDB.
 func (vl *ValueLog) Put(key []byte, value []byte) error {
-	vl.lock.Lock()
-	defer vl.lock.Unlock()
+	// leveldb中会含有LOCK文件，用于防止数据库被多个进程同时访问。
+	// vl.lock.Lock()
+	// defer vl.lock.Unlock()
 
 	// Calculate the position where the value will be written.
 	position, err := vl.file.Seek(0, os.SEEK_END)
@@ -66,8 +67,8 @@ func (vl *ValueLog) Put(key []byte, value []byte) error {
 
 // Get retrieves the value for a given key from the Value Log.
 func (vl *ValueLog) Get(key []byte) ([]byte, error) {
-	vl.lock.Lock()
-	defer vl.lock.Unlock()
+	// vl.lock.Lock()
+	// defer vl.lock.Unlock()
 
 	// Retrieve the position from LevelDB.
 	positionBytes, err := vl.leveldb.Get(key, nil)
@@ -108,16 +109,17 @@ func (vl *ValueLog) Get(key []byte) ([]byte, error) {
 
 func main() {
 	// Initialize ValueLog and LevelDB (Paths would be specified here).
-	valueLog, err := NewValueLog("valueLog.log", "leveldbPath")
+	// 在这个.代表的是打开的工作区或文件夹的根目录，即FlexSync。指向的是VSCode左侧侧边栏（Explorer栏）中展示的最顶层文件夹。
+	valueLog, err := NewValueLog("./ValueLog/valueLog.log", "./ValueLog/leveldb_key_addr")
 	if err != nil {
 		panic(err)
 	}
 	// Example Put operation.
-	if err := valueLog.Put([]byte("key1"), []byte("value1")); err != nil {
+	if err := valueLog.Put([]byte("key3"), []byte("value3")); err != nil {
 		panic(err)
 	}
 	// Example Get operation.
-	value, err := valueLog.Get([]byte("key1"))
+	value, err := valueLog.Get([]byte("key2"))
 	if err != nil {
 		panic(err)
 	}
