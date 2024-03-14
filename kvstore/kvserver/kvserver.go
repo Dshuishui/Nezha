@@ -12,6 +12,9 @@ import (
 	"sync"
 	"time"
 
+	"os"
+	"encoding/binary"
+
 	"github.com/JasonLou99/Hybrid_KV_Store/config"
 	"github.com/JasonLou99/Hybrid_KV_Store/lattices"
 	"github.com/JasonLou99/Hybrid_KV_Store/persister"
@@ -23,6 +26,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection"
+
+	"github.com/syndtr/goleveldb/leveldb"
 )
 
 type KVServer struct {
@@ -35,6 +40,8 @@ type KVServer struct {
 	persister       *persister.Persister // 对数据库进行读写操作的接口
 	memdb           *redis.Client
 	ctx             context.Context
+
+	valuelog        *ValueLog
 	// db              sync.Map // memory database
 	// causalEntity *causal.CausalEntity
 
@@ -55,6 +62,14 @@ type ValueTimestamp struct {
 	value     string
 	timestamp int64
 	version   int32
+}
+
+// ValueLog represents the Value Log file for storing values.
+type ValueLog struct {
+	file         *os.File
+	lock         sync.Mutex
+	leveldb      *leveldb.DB
+	valueLogPath string
 }
 
 // TCP Message struct
@@ -153,7 +168,10 @@ func (kvs *KVServer)   startInCausal(command interface{}, vcFromClientArg map[st
 		// update value in the db and persist
 		kvs.logs = append(kvs.logs, newLog)
 		// kvs.db.Store(newLog.Key, &ValueTimestamp{value: newLog.Value, timestamp: time.Now().UnixMilli(), version: oldVersion + 1})
+
 		kvs.persister.Put(newLog.Key, newLog.Value)
+		// 上面的是原始存储<key,value>的情况
+		// kvs.valuelog.Put([]byte(newLog.Key),[]byte(newLog.Value))
 		// err := kvs.memdb.Set(kvs.ctx, newLog.Key, newLog.Value, 0).Err()
 		// if err != nil {
 		// 	panic(err)
@@ -194,7 +212,16 @@ func (kvs *KVServer) GetInCausal(ctx context.Context, in *kvrpc.GetInCausalReque
 		// only update the client's vectorclock if the value is newer
 		getInCausalResponse.Vectorclock = util.BecomeMap(kvs.vectorclock)
 		// getInCausalResponse.Value = valueTimestamp.value
+
 		getInCausalResponse.Value = string(kvs.persister.Get(in.Key))
+		// 上面是原始存储<key,value>的情况
+
+		// value, err := kvs.valuelog.Get([]byte(in.Key))
+		// if err != nil {
+		// 	panic(err)
+		// }
+		// getInCausalResponse.Value = string(value)
+
 		// val, err := kvs.memdb.Get(kvs.ctx, in.Key).Result()
 		// if err != nil {
 		// 	util.EPrintf(err.Error())
@@ -487,6 +514,96 @@ func (kvs *KVServer) MergeVC(vc sync.Map) {
 		return true
 	})
 }
+
+// NewValueLog creates a new Value Log.
+func NewValueLog(valueLogPath string, leveldbPath string) (*ValueLog, error) {
+	vLog := &ValueLog{valueLogPath: valueLogPath}
+	var err error
+	vLog.file, err = os.OpenFile(valueLogPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		return nil, err
+	}
+	vLog.leveldb, err = leveldb.OpenFile(leveldbPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	return vLog, nil
+}
+
+// Put stores the key-value pair in the Value Log and updates LevelDB.
+func (vl *ValueLog) Put(key []byte, value []byte) error {
+	// leveldb中会含有LOCK文件，用于防止数据库被多个进程同时访问。
+	// vl.lock.Lock()
+	// defer vl.lock.Unlock()
+
+	// Calculate the position where the value will be written.
+	position, err := vl.file.Seek(0, os.SEEK_END)
+	if err != nil {
+		return err
+	}
+
+	// Write <keysize, valuesize, key, value> to the Value Log.
+	// 固定整数的长度，即四个字节
+	keySize := uint32(len(key))
+	valueSize := uint32(len(value))
+	buf := make([]byte, 8+keySize+valueSize)
+	binary.BigEndian.PutUint32(buf[0:4], keySize)
+	binary.BigEndian.PutUint32(buf[4:8], valueSize)
+	copy(buf[8:8+keySize], key)
+	copy(buf[8+keySize:], value)
+	if _, err := vl.file.Write(buf); err != nil {
+		return err
+	}
+
+	// Update LevelDB with <key, position>.
+	// 相当于把地址（指向keysize开始处）压缩一下
+	positionBytes := make([]byte, binary.MaxVarintLen64)
+	binary.PutVarint(positionBytes, position)
+	return vl.leveldb.Put(key, positionBytes, nil)
+}
+
+// Get retrieves the value for a given key from the Value Log.
+func (vl *ValueLog) Get(key []byte) ([]byte, error) {
+	// vl.lock.Lock()
+	// defer vl.lock.Unlock()
+
+	// Retrieve the position from LevelDB.
+	positionBytes, err := vl.leveldb.Get(key, nil)
+	if err != nil {
+		return nil, err
+	}
+	position, _ := binary.Varint(positionBytes)
+
+	// Seek to the position in the Value Log.
+	_, err = vl.file.Seek(position, os.SEEK_SET)
+	if err != nil {
+		return nil, err
+	}
+
+	// Read the key size and value size.
+	var keySize, valueSize uint32
+	sizeBuf := make([]byte, 8)
+	if _, err := vl.file.Read(sizeBuf); err != nil {
+		return nil, err
+	}
+	keySize = binary.BigEndian.Uint32(sizeBuf[0:4])
+	valueSize = binary.BigEndian.Uint32(sizeBuf[4:8])
+
+	// Skip over the key bytes.
+	// 因为上面已经读取了keysize和valuesize，所以文件的偏移量自动往后移动了8个字节
+	if _, err := vl.file.Seek(int64(keySize), os.SEEK_CUR); err != nil {
+		return nil, err
+	}
+
+	// Read the value bytes.
+	value := make([]byte, valueSize)
+	if _, err := vl.file.Read(value); err != nil {
+		return nil, err
+	}
+
+	return value, nil
+}
+
 	// 返回了一个指向KVServer类型对象的指针
 func MakeKVServer(address string, internalAddress string, peers []string) *KVServer {
 	util.IPrintf("Make KVServer %s... ", config.Address)	// 打印格式化后的信息，其中的地址是客户端和服务器之间的代理（目前不知道为什么需要代理）
@@ -496,6 +613,14 @@ func MakeKVServer(address string, internalAddress string, peers []string) *KVSer
 	kvs.address = address
 	kvs.internalAddress = internalAddress
 	kvs.peers = peers
+	// Initialize ValueLog and LevelDB (Paths would be specified here).
+	// 在这个.代表的是打开的工作区或文件夹的根目录，即FlexSync。指向的是VSCode左侧侧边栏（Explorer栏）中展示的最顶层文件夹。
+	valuelog, err := NewValueLog("valueLog_value.log", "./kvstore/kvserver/db_key_addr")
+	if err != nil {
+		panic(err)
+	}
+	// 这里不直接用kvs.valuelog接受上述NewValueLog函数的返回值，是因为需要先接受该函数的返回值，检查是否有错误发生，如果没有错误，才能将其值赋值给其他值。
+	kvs.valuelog = valuelog
 	// init vectorclock: { "192.168.10.120:30881":0, "192.168.10.121:30881":0, ... }
 	for i := 0; i < len(peers); i++ {	// 遍历输入结点的各个地址
 		kvs.vectorclock.Store(peers[i], int32(0))	// 将每个地址以键值对的形式存入map映射中，初始值为0
