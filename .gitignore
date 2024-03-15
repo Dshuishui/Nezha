@@ -2,4 +2,6 @@ dump.rdb
 .vscode/
 benchmark/result/*
 benchmark/wasm_client/rust-client/target
-
+db
+valueLog_value.log
+kvstore/kvserver/db_key_addr
