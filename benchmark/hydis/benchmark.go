@@ -75,7 +75,7 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 			if v != "" {
 				// 查询出了值就输出，屏蔽请求非Leader的情况
 				// util.DPrintf("TestCount: ", count, ",Get ", k, ": ", ck.Get(k))
-				util.DPrintf("TestCount: %v ,Get %v: %v, VectorClock: %v, getCount: %v, putCount: %v", count, k, v, kvc.Vectorclock, getCount, putCount)
+				util.DPrintf("TestCount: %v ,Get_key %v, VectorClock: %v, getCount: %v, putCount: %v", count, k, kvc.Vectorclock, getCount, putCount)
 				// util.DPrintf("spent: %v", time.Since(start_time))
 			}
 		}
