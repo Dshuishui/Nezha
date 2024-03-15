@@ -94,7 +94,7 @@ func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[stri
 	vcFromClient := util.BecomeSyncMap(vcFromClientArg) // 将map类型转换成同步安全的Map类型
 	// 将 command 这个接口类型的值转换为 config.Log 类型的值
 	newLog := command.(config.Log)
-	util.DPrintf("Log in Start(): %v ", newLog)
+	// util.DPrintf("Log in Start(): %v ", newLog) //不要打印日志中的大value
 	// util.DPrintf("vcFromClient in Start(): %v", vcFromClient)
 	if newLog.Option == "Put" {
 		/*

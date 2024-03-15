@@ -312,7 +312,7 @@ func  RequestRatio(cnum int, num int, servers []string, getRatio int, consistenc
 			if v != "" {
 				// 查询出了值就输出，屏蔽请求非Leader的情况
 				// util.DPrintf("TestCount: ", count, ",Get ", k, ": ", ck.Get(k))
-				util.DPrintf("TestCount: %v ,Get %v: %v, VectorClock: %v, getCount: %v, putCount: %v", count, k, v, kvc.Vectorclock, getCount, putCount)
+				util.DPrintf("TestCount: %v ,Get_key %v, VectorClock: %v, getCount: %v, putCount: %v", count, k, kvc.Vectorclock, getCount, putCount)
 				// util.DPrintf("spent: %v", time.Since(start_time))
 			}
 		}
@@ -324,7 +324,7 @@ func  RequestRatio(cnum int, num int, servers []string, getRatio int, consistenc
 		fmt.Printf("Task is completed, spent: %v\n", time.Since(start_time))
 		fmt.Printf("falseTimes: %v\n", falseTime)
 	}
-	util.WriteCsv("./benchmark/result/causal_put-latency.csv", kvc.PutSpentTimeArr)
+	// util.WriteCsv("./benchmark/result/causal_put-latency.csv", kvc.PutSpentTimeArr)
 }
 
 /*
@@ -368,7 +368,7 @@ func benchmarkFromCSV(filepath string, servers []string, clientNumber int) {
 		kvc.KvsId = rand.Intn(len(kvc.Kvservers)+10) % len(kvc.Kvservers)
 	}
 	// 时延数据写入csv
-	util.WriteCsv("./benchmark/result/writless-causal_put-latency"+strconv.Itoa(clientNumber)+".csv", kvc.PutSpentTimeArr)
+	// util.WriteCsv("./benchmark/result/writless-causal_put-latency"+strconv.Itoa(clientNumber)+".csv", kvc.PutSpentTimeArr)
 }
 
 func main() {
