@@ -39,3 +39,13 @@
 22:55:54.744486 table@remove removed @7
 22:55:54.744931 table@remove removed @5
 22:55:54.745298 table@remove removed @3
+=============== Mar 15, 2024 (CST) ===============
+09:52:39.434059 log@legend F·NumFile S·FileSize N·Entry C·BadEntry B·BadBlock Ke·KeyError D·DroppedEntry L·Level Q·SeqNum T·TimeElapsed
+09:52:39.434259 version@stat F·[0 8] S·15MiB[0B 15MiB] Sc·[0.00 0.16]
+09:52:39.434316 db@open opening
+09:52:39.434364 journal@recovery F·1
+09:52:39.434713 journal@recovery recovering @8
+09:52:39.445137 memdb@flush created L0@18 N·48 S·3MiB "key11257,v294":"key91712,v275"
+09:52:39.446448 version@stat F·[1 8] S·18MiB[3MiB 15MiB] Sc·[0.25 0.16]
+09:52:39.448577 db@janitor F·11 G·0
+09:52:39.448659 db@open done T·14.298756ms
