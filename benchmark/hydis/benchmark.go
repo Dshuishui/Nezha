@@ -88,7 +88,7 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 		fmt.Printf("falseTimes: %v\n", falseTime)
 	}
 	// 这个点表示的当前目录是整个项目的当前目录，而不是go文件所在的当前目录
-	util.WriteCsv("./benchmark/result/causal_put-latency.csv", kvc.PutSpentTimeArr)
+	// util.WriteCsv("./benchmark/result/causal_put-latency.csv", kvc.PutSpentTimeArr)
 	// util.WriteCsv("../result/causal_put-latency.csv", kvc.PutSpentTimeArr)
 }
 
