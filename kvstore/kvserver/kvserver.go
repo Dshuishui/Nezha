@@ -189,7 +189,7 @@ func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[stri
 }
 
 func (kvs *KVServer) GetInCausal(ctx context.Context, in *kvrpc.GetInCausalRequest) (*kvrpc.GetInCausalResponse, error) {
-	util.DPrintf("GetInCausal %s", in.Key)
+	util.DPrintf("GetInCausal %s", in.Key) // 不显示大的value
 	getInCausalResponse := new(kvrpc.GetInCausalResponse)
 	op := config.Log{
 		Option: "Get",
@@ -219,6 +219,7 @@ func (kvs *KVServer) GetInCausal(ctx context.Context, in *kvrpc.GetInCausalReque
 
 		value, err := kvs.valuelog.Get([]byte(in.Key))
 		if err != nil {
+			fmt.Println("get不到数据")
 			panic(err)
 		}
 		getInCausalResponse.Value = string(value)
@@ -240,7 +241,7 @@ func (kvs *KVServer) GetInCausal(ctx context.Context, in *kvrpc.GetInCausalReque
 }
 
 func (kvs *KVServer) PutInCausal(ctx context.Context, in *kvrpc.PutInCausalRequest) (*kvrpc.PutInCausalResponse, error) {
-	util.DPrintf("PutInCausal %s %s", in.Key, in.Value)
+	util.DPrintf("PutInCausal %s", in.Key)
 	putInCausalResponse := new(kvrpc.PutInCausalResponse)
 	op := config.Log{
 		Option: "Put",
@@ -418,10 +419,11 @@ func (kvs *KVServer) PutInWritelessCausal(ctx context.Context, in *kvrpc.PutInWr
 }
 
 func (kvs *KVServer) AppendEntriesInCausal(ctx context.Context, in *causalrpc.AppendEntriesInCausalRequest) (*causalrpc.AppendEntriesInCausalResponse, error) {
-	util.DPrintf("AppendEntriesInCausal %v", in)
+	
 	appendEntriesInCausalResponse := &causalrpc.AppendEntriesInCausalResponse{}
 	var mlFromOther lattices.HybridLattice
 	json.Unmarshal(in.MapLattice, &mlFromOther)
+	util.DPrintf("AppendEntriesInCausal %s", mlFromOther.Key)
 	vcFromOther := util.BecomeSyncMap(mlFromOther.Vl.VectorClock)
 	ok := util.IsUpper(kvs.vectorclock, vcFromOther)
 	if !ok {
