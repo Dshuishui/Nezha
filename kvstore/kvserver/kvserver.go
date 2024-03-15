@@ -219,7 +219,6 @@ func (kvs *KVServer) GetInCausal(ctx context.Context, in *kvrpc.GetInCausalReque
 
 		value, err := kvs.valuelog.Get([]byte(in.Key))
 		if err != nil {
-			fmt.Println("get不到数据")
 			panic(err)
 		}
 		getInCausalResponse.Value = string(value)
@@ -578,6 +577,7 @@ func (vl *ValueLog) Get(key []byte) ([]byte, error) {
 	// Retrieve the position from LevelDB.
 	positionBytes, err := vl.leveldb.Get(key, nil)
 	if err != nil {
+		fmt.Println("get不到数据")
 		return nil, err
 	}
 	position, _ := binary.Varint(positionBytes)
@@ -585,6 +585,7 @@ func (vl *ValueLog) Get(key []byte) ([]byte, error) {
 	// Seek to the position in the Value Log.
 	_, err = vl.file.Seek(position, os.SEEK_SET)
 	if err != nil {
+		fmt.Println("get时，seek文件的位置有问题")
 		return nil, err
 	}
 
@@ -592,6 +593,7 @@ func (vl *ValueLog) Get(key []byte) ([]byte, error) {
 	var keySize, valueSize uint32
 	sizeBuf := make([]byte, 8)
 	if _, err := vl.file.Read(sizeBuf); err != nil {
+		fmt.Println("get时，读取key 和 value size时有问题")
 		return nil, err
 	}
 	keySize = binary.BigEndian.Uint32(sizeBuf[0:4])
@@ -600,12 +602,14 @@ func (vl *ValueLog) Get(key []byte) ([]byte, error) {
 	// Skip over the key bytes.
 	// 因为上面已经读取了keysize和valuesize，所以文件的偏移量自动往后移动了8个字节
 	if _, err := vl.file.Seek(int64(keySize), os.SEEK_CUR); err != nil {
+		fmt.Println("get时，跳过key时有问题")
 		return nil, err
 	}
 
 	// Read the value bytes.
 	value := make([]byte, valueSize)
 	if _, err := vl.file.Read(value); err != nil {
+		fmt.Println("get是，根据value的偏移位置，拿取value值时有问题")
 		return nil, err
 	}
 
