@@ -787,7 +787,7 @@ func Idle_Automatic_Stop(){
 	// 监听HTTP请求。这个方法会一直运行，直到服务器被关闭或遇到错误。
     go func() {
         if err := server.ListenAndServe(); err != http.ErrServerClosed {
-            fmt.Printf("服务启动失败: %v\n", err)
+            fmt.Printf("服务器因遇到不正常错误而关闭: %v\n", err)
         }
         close(idleConnsClosed)
     }()
@@ -820,5 +820,5 @@ func main() {
 	// log.Println(http.ListenAndServe(":6060", nil))
 	// server run for 120min
 	time.Sleep(time.Second * 7200)
-	// Idle_Automatic_Stop() 
+	Idle_Automatic_Stop() 
 }
