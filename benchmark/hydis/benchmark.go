@@ -43,8 +43,8 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 
 		// 设置生成key和value的大小
 		key := util.GenerateFixedSizeKey(16)
-		value := util.GenerateLargeValue(64)
-		
+		value := util.GenerateLargeValue(256)
+
 		startTime := time.Now().UnixMicro()// 记录每次写操作开始的时间，用于返回从 Unix 时间开始至今的纳秒数，用于计算每次写操作花的时间，并记录到csv文件中
 
 		// 写操作
