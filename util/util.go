@@ -118,14 +118,14 @@ func Put_Request_Time(filePath string, executionTime time.Duration,key string ,v
 
 	var v string
 	if len(value)<1024{
-		v =strconv.Itoa(len(value))+"-B"
+		v =strconv.Itoa(len(value))+"B"
 	}else{
-		v =strconv.Itoa(len(value)/1024) + "-KB"
+		v =strconv.Itoa(len(value)/1024) + "KB"
 	}
 
 	// Prepare the data to be appended
 	data := []string{
-		fmt.Sprintf("%s-%vB;%s;%d", key,len(key),v, num_k), // Concatenate key, value, and num
+		fmt.Sprintf("key-%vB;value-%s;%d",len(key),v, num_k), // Concatenate key, value, and num
 		fmt.Sprintf("%v", executionTime), // Calculate the time since the start time
 	}
 
