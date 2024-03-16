@@ -89,6 +89,9 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 	if int(count) == num*cnum*(1) {
 		fmt.Printf("Task is completed, spent: %v\n", time.Since(start_time))
 		fmt.Printf("falseTimes: %v\n", falseTime)
+
+		// 记录每次put请求执行的时间到csv文件中
+		util.Put_Request_Time("./result/causal_put-latency.csv", time.Since(start_time))
 	}
 	// 这个点表示的当前目录是整个项目的当前目录，而不是go文件所在的当前目录
 	// util.WriteCsv("./benchmark/result/causal_put-latency.csv", kvc.PutSpentTimeArr)

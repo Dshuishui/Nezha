@@ -6,3 +6,4 @@ db
 valueLog_value.log
 kvstore/kvserver/db_key_addr
 run_server.sh
+run_client.sh
