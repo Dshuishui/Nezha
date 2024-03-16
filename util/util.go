@@ -3,11 +3,14 @@ package util
 import (
 	"bytes"
 	"encoding/csv"
+	"fmt"
 	"log"
 	"math/rand"
 	"os"
 	"strconv"
 	"sync"
+
+	"time"
 )
 
 // Debugging
@@ -98,6 +101,46 @@ func WriteCsv(filepath string, spentTimeArr []int) {
 			FPrintf(err.Error())
 		}
 	}
+}
+
+// 记录每次执行put请求的时间
+func Put_Request_Time(filePath string, executionTime time.Duration) error {
+	// 指定 CSV 文件路径
+    // filePath := "execution_times.csv"
+
+    // 检查文件是否存在，如果不存在，则创建
+    var file *os.File
+    var err error
+    if _, err = os.Stat(filePath); os.IsNotExist(err) {
+        file, err = os.Create(filePath)
+        if err != nil {
+			fmt.Println("创建文件失败")
+            return err
+        }
+        // 写入 CSV 头部
+        writer := csv.NewWriter(file)
+        writer.Write([]string{"Execution Time"})
+    } else {
+        file, err = os.OpenFile(filePath, os.O_WRONLY|os.O_APPEND, 0644)
+        if err != nil {
+			fmt.Println("打开文件失败")
+            return err
+        }
+    }
+    defer file.Close()
+
+    // 创建 CSV 写入器
+    writer := csv.NewWriter(file)
+    defer writer.Flush()
+
+    // 将执行时间记录到 CSV 文件
+    err = writer.Write([]string{executionTime.String()})
+    if err != nil {
+		fmt.Println("写入put执行时间到文件失败")
+        return err
+    }
+
+    return nil
 }
 
 /*
