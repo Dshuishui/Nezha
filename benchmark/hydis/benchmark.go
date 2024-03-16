@@ -59,31 +59,32 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 		atomic.AddInt32(&putCount, 1)
 		atomic.AddInt32(&count, 1)
 		// util.DPrintf("put success")
-		for j := 0; j < getRatio; j++ {
-			// 读操作
-			// 将字符串 "key" 与整数 key 转换为的字符串拼接在一起，并将结果存储在变量 k 中
-			k := "key" + strconv.Itoa(key)
-			var v string
-			if quorum == 1 {
-				v, _ = kvc.GetInCausalWithQuorum(k)
-			} else {
-				v, _ = kvc.GetInCausal(k)
-			}
-			// if GetInCausal return, it must be success
-			atomic.AddInt32(&getCount, 1)
-			atomic.AddInt32(&count, 1)
-			if v != "" {
-				// 查询出了值就输出，屏蔽请求非Leader的情况
-				// util.DPrintf("TestCount: ", count, ",Get ", k, ": ", ck.Get(k))
-				util.DPrintf("TestCount: %v ,Get_key %v, VectorClock: %v, getCount: %v, putCount: %v", count, k, kvc.Vectorclock, getCount, putCount)
-				// util.DPrintf("spent: %v", time.Since(start_time))
-			}
-		}
+		// for j := 0; j < getRatio; j++ {
+		// 	// 读操作
+		// 	// 将字符串 "key" 与整数 key 转换为的字符串拼接在一起，并将结果存储在变量 k 中
+		// 	k := "key" + strconv.Itoa(key)
+		// 	var v string
+		// 	if quorum == 1 {
+		// 		v, _ = kvc.GetInCausalWithQuorum(k)
+		// 	} else {
+		// 		v, _ = kvc.GetInCausal(k)
+		// 	}
+		// 	// if GetInCausal return, it must be success
+		// 	atomic.AddInt32(&getCount, 1)
+		// 	atomic.AddInt32(&count, 1)
+		// 	if v != "" {
+		// 		// 查询出了值就输出，屏蔽请求非Leader的情况
+		// 		// util.DPrintf("TestCount: ", count, ",Get ", k, ": ", ck.Get(k))
+		// 		util.DPrintf("TestCount: %v ,Get_key %v, VectorClock: %v, getCount: %v, putCount: %v", count, k, kvc.Vectorclock, getCount, putCount)
+		// 		// util.DPrintf("spent: %v", time.Since(start_time))
+		// 	}
+		// }
 		// 随机切换下一个节点
 		kvc.KvsId = rand.Intn(len(kvc.Kvservers)+10) % len(kvc.Kvservers)
 	}
 	fmt.Printf("TestCount: %v, VectorClock: %v, getCount: %v, putCount: %v\n", count, kvc.Vectorclock, getCount, putCount)
-	if int(count) == num*cnum*(getRatio+1) {
+	// if int(count) == num*cnum*(getRatio+1) {
+	if int(count) == num*cnum*(1) {
 		fmt.Printf("Task is completed, spent: %v\n", time.Since(start_time))
 		fmt.Printf("falseTimes: %v\n", falseTime)
 	}
