@@ -43,6 +43,11 @@ type KVServer struct {
 	memdb           *redis.Client
 	ctx             context.Context
 
+	// lastPutTime记录最后一次PUT请求的时间
+    lastPutTime time.Time
+    // putTimeLock用于同步对lastPutTime的访问
+    putTimeLock sync.Mutex
+
 	valuelog *ValueLog
 	// db              sync.Map // memory database
 	// causalEntity *causal.CausalEntity
@@ -180,6 +185,12 @@ func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[stri
 		// if err != nil {
 		// 	panic(err)
 		// }
+
+		// 检测put请求是否仍在发送
+		kvs.putTimeLock.Lock()
+    	kvs.lastPutTime = time.Now()
+  		kvs.putTimeLock.Unlock()
+
 		return true
 	} else if newLog.Option == "Get" {
 		vcKVS, _ := kvs.vectorclock.Load(kvs.internalAddress)
@@ -466,6 +477,25 @@ func (kvs *KVServer) RegisterKVServer(address string) { // 传入的是客户端
 			// 开始监听时发生了错误
 			util.FPrintf("failed to serve: %v", err)
 		}
+
+		 // 在一个新的协程中启动超时检测，如果一段时间内没有put请求发过来，则终止程序，关闭服务器，以节省资源。
+		 go func() {
+			// 设置超时时间，例如60秒
+			timeout := 60 * time.Second
+	
+			for {
+				time.Sleep(timeout)
+				kvs.putTimeLock.Lock()
+				if time.Since(kvs.lastPutTime) > timeout {
+					kvs.putTimeLock.Unlock()
+					// 超时，优雅地停止GRPC服务器
+					grpcServer.GracefulStop()
+					util.DPrintf("No PUT requests for %v, server stopped.", timeout)
+					return
+				}
+				kvs.putTimeLock.Unlock()
+			}
+		}()
 	}
 }
 
@@ -769,7 +799,7 @@ func Idle_Automatic_Stop(){
     server := &http.Server{Addr: "192.168.1.72:3088"}
 
     // 设置一个定时器，无请求活动时自动停止服务
-    idleTimeout := time.AfterFunc(10*time.Second, func() {
+    idleTimeout := time.AfterFunc(60*time.Second, func() {
         fmt.Println("服务因空闲超过设定时间而停止")
         if err := server.Close(); err != nil {
             fmt.Printf("关闭服务时发生错误: %v\n", err)
