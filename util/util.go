@@ -104,43 +104,37 @@ func WriteCsv(filepath string, spentTimeArr []int) {
 }
 
 // 记录每次执行put请求的时间
-func Put_Request_Time(filePath string, executionTime time.Duration) error {
-	// 指定 CSV 文件路径
-    // filePath := "execution_times.csv"
+func Put_Request_Time(filePath string, executionTime time.Duration,key string ,value string,num_k int) error {
+// Open the file in append mode, create it if not exists
+	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		return fmt.Errorf("error opening file: %v", err)
+	}
+	defer file.Close()
 
-    // 检查文件是否存在，如果不存在，则创建
-    var file *os.File
-    var err error
-    if _, err = os.Stat(filePath); os.IsNotExist(err) {
-        file, err = os.Create(filePath)
-        if err != nil {
-			fmt.Println("创建文件失败")
-            return err
-        }
-        // 写入 CSV 头部
-        writer := csv.NewWriter(file)
-        writer.Write([]string{"Execution Time"})
-    } else {
-        file, err = os.OpenFile(filePath, os.O_WRONLY|os.O_APPEND, 0644)
-        if err != nil {
-			fmt.Println("打开文件失败")
-            return err
-        }
-    }
-    defer file.Close()
+	// Create a new CSV writer
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
 
-    // 创建 CSV 写入器
-    writer := csv.NewWriter(file)
-    defer writer.Flush()
+	var v string
+	if len(value)<1024{
+		v =strconv.Itoa(len(value))+"-B"
+	}else{
+		v =strconv.Itoa(len(value)/1024) + "-KB"
+	}
 
-    // 将执行时间记录到 CSV 文件
-    err = writer.Write([]string{executionTime.String()})
-    if err != nil {
-		fmt.Println("写入put执行时间到文件失败")
-        return err
-    }
+	// Prepare the data to be appended
+	data := []string{
+		fmt.Sprintf("%s-%vB;%s;%d", key,len(key),v, num_k), // Concatenate key, value, and num
+		fmt.Sprintf("%v", executionTime), // Calculate the time since the start time
+	}
 
-    return nil
+	// Write the data to the CSV file
+	if err := writer.Write(data); err != nil {
+		return fmt.Errorf("error writing to CSV: %v", err)
+	}
+
+	return nil
 }
 
 /*
