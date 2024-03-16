@@ -779,6 +779,6 @@ func main() {
 	go kvs.RegisterCausalServer(kvs.internalAddress)
 	go kvs.RegisterTCPServer(tcpAddress)
 	// log.Println(http.ListenAndServe(":6060", nil))
-	// server run for 20min
-	time.Sleep(time.Second * 1200)
+	// server run for 120min
+	time.Sleep(time.Second * 7200)
 }
