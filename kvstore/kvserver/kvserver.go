@@ -781,7 +781,7 @@ func Idle_Automatic_Stop(){
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         // fmt.Fprintln(w, "服务运行中")
         // 重置定时器
-		fmt.Println("收到了来自客户端的请求")
+		// fmt.Println("收到了来自客户端的请求")
         idleTimeout.Reset(5 * time.Minute)
     })
 
@@ -820,6 +820,6 @@ func main() {
 	go kvs.RegisterTCPServer(tcpAddress)
 	// log.Println(http.ListenAndServe(":6060", nil))
 	// server run for 120min
+	// Idle_Automatic_Stop() 
 	time.Sleep(time.Second * 7200)
-	Idle_Automatic_Stop() 
 }
