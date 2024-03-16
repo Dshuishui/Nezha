@@ -15,6 +15,8 @@ import (
 	"encoding/binary"
 	"os"
 
+	"net/http"
+
 	"github.com/JasonLou99/Hybrid_KV_Store/config"
 	"github.com/JasonLou99/Hybrid_KV_Store/lattices"
 	"github.com/JasonLou99/Hybrid_KV_Store/persister"
@@ -758,6 +760,43 @@ func (kvs *KVServer) disributeRPC(conn net.Conn) {
 	}
 }
 
+// 若10秒没有收到客户端发来192.168.1.72:3088的请求，就关闭服务器
+func Idle_Automatic_Stop(){
+	// 无缓冲的通道（channel），该通道用于发送信号，而不是用于传输数据。通常用于同步操作或事件通知，而不是数据交换。
+	idleConnsClosed := make(chan struct{})
+
+	// 创建了一个新的HTTP服务器实例，并将其地址设置为监听本机的8080端口。
+    server := &http.Server{Addr: "192.168.1.72:3088"}
+
+    // 设置一个定时器，无请求活动时自动停止服务
+    idleTimeout := time.AfterFunc(10*time.Second, func() {
+        fmt.Println("服务因空闲超过设定时间而停止")
+        if err := server.Close(); err != nil {
+            fmt.Printf("关闭服务时发生错误: %v\n", err)
+        }
+        close(idleConnsClosed)
+    })
+
+	// 注册一个处理HTTP请求的函数。这个函数会对特定的URL路径（在这个例子中是根路径"/"）上的请求作出响应。
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        // fmt.Fprintln(w, "服务运行中")
+        // 重置定时器
+        idleTimeout.Reset(5 * time.Minute)
+    })
+
+	// 监听HTTP请求。这个方法会一直运行，直到服务器被关闭或遇到错误。
+    go func() {
+        if err := server.ListenAndServe(); err != http.ErrServerClosed {
+            fmt.Printf("服务启动失败: %v\n", err)
+        }
+        close(idleConnsClosed)
+    }()
+
+	// 使用了通道（channel）idleConnsClosed来阻塞当前goroutine的执行，直到从该通道接收到一个0值和一个表示通道已关闭的布尔值，也就是当通道关闭时，会返回一个值，这时，主线程会被唤醒。
+    <-idleConnsClosed
+    fmt.Println("服务已停止")
+}
+
 func main() {
 	// peers inputed by command line
 	// 使用flag包来定义一个命令行参数internalAddress_arg，并通过string函数指定了参数的类型为字符串，用于接受用户在命令行输入的地址信息。
@@ -781,4 +820,5 @@ func main() {
 	// log.Println(http.ListenAndServe(":6060", nil))
 	// server run for 120min
 	time.Sleep(time.Second * 7200)
+	// Idle_Automatic_Stop() 
 }
