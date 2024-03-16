@@ -781,6 +781,7 @@ func Idle_Automatic_Stop(){
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         // fmt.Fprintln(w, "服务运行中")
         // 重置定时器
+		fmt.Println("收到了来自客户端的请求")
         idleTimeout.Reset(5 * time.Minute)
     })
 
