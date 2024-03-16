@@ -251,6 +251,7 @@ func (kvc *KVClient) PutInCausal(key string, value string) bool {
 	for {
 		reply, err := kvc.SendPutInCausal(kvc.Kvservers[kvc.KvsId], request)
 		if err != nil {
+			atomic.AddInt32(&falseTime, 1)
 			util.EPrintf("err in PutInCausal: %v", err)
 			return false
 		}
@@ -320,7 +321,8 @@ func  RequestRatio(cnum int, num int, servers []string, getRatio int, consistenc
 		kvc.KvsId = rand.Intn(len(kvc.Kvservers)+10) % len(kvc.Kvservers)
 	}
 	fmt.Printf("TestCount: %v, VectorClock: %v, getCount: %v, putCount: %v\n", count, kvc.Vectorclock, getCount, putCount)
-	if int(count) == num*cnum*(getRatio+1) {
+	// if int(count) == num*cnum*(getRatio+1) {
+	if int(count) == num*cnum*(1) {
 		fmt.Printf("Task is completed, spent: %v\n", time.Since(start_time))
 		fmt.Printf("falseTimes: %v\n", falseTime)
 	}
