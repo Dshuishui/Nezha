@@ -39,7 +39,7 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 	start_time := time.Now() // 记录所有请求操作开始前的时间，用于计算最后整个任务完成花了多久
 	for i := 0; i < num; i++ {		// 这里的num对应的是操作次数，也就是put的操作次数
 		rand.Seed(time.Now().UnixNano())
-		key := rand.Intn(100000)
+		// key := rand.Intn(100000)
 
 		// 设置生成value的大小为64KB
 		value := util.GenerateLargeValue(1024*64)
@@ -47,7 +47,8 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 		startTime := time.Now().UnixMicro()// 记录每次写操作开始的时间，用于返回从 Unix 时间开始至今的纳秒数，用于计算每次写操作花的时间，并记录到csv文件中
 
 		// 写操作
-		kvc.PutInCausal("key"+strconv.Itoa(key), string(value))
+		// kvc.PutInCausal("key"+strconv.Itoa(key), string(value))
+		kvc.PutInCausal("key"+strconv.Itoa(i), string(value))
 
 		// value := rand.Intn(100000)
 		// kvc.PutInCausal("key"+strconv.Itoa(key), "value"+strconv.Itoa(value))
