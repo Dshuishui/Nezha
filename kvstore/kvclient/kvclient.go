@@ -76,6 +76,7 @@ func (kvc *KVClient) SendPutInCausal(address string, request *kvrpc.PutInCausalR
 	defer cancel()
 	reply, err := client.PutInCausal(ctx, request)
 	if err != nil {
+		fmt.Println("客户端调用PutInCausal有问题")
 		util.EPrintf("err in SendPutInCausal: %v", err)
 		return nil, err
 	}
@@ -251,6 +252,7 @@ func (kvc *KVClient) PutInCausal(key string, value string) bool {
 	for {
 		reply, err := kvc.SendPutInCausal(kvc.Kvservers[kvc.KvsId], request)
 		if err != nil {
+			fmt.Println("SendPutInCausal有问题")
 			atomic.AddInt32(&falseTime, 1)
 			util.EPrintf("err in PutInCausal: %v", err)
 			return false
