@@ -166,6 +166,7 @@ func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[stri
 			}
 		}
 		// update value in the db and persist
+		// 这个log是存在哪，内存中嘛
 		kvs.logs = append(kvs.logs, newLog)
 		// kvs.db.Store(newLog.Key, &ValueTimestamp{value: newLog.Value, timestamp: time.Now().UnixMilli(), version: oldVersion + 1})
 
