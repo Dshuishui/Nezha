@@ -472,18 +472,23 @@ func (kvs *KVServer) RegisterKVServer(address string) { // 传入的是客户端
 		kvrpc.RegisterKVServer(grpcServer, kvs)
 		// 将gRPC服务器注册为支持反射的服务器，可以使得客户端通过查询服务器的服务定义来了解其能力，由于安全性和性能等原因，正式部署时可能不建议启用反射功能
 		reflection.Register(grpcServer)
+
+		fmt.Println("监听3088端口的地址前")
+
 		// 启动gRPC服务器并监听指定的代理服务器的网络地址
 		if err := grpcServer.Serve(lis); err != nil {
 			// 开始监听时发生了错误
 			util.FPrintf("failed to serve: %v", err)
 		}
 
+		fmt.Println("监听3088端口地址后")
+
 		 // 在一个新的协程中启动超时检测，如果一段时间内没有put请求发过来，则终止程序，关闭服务器，以节省资源。
 		 go func() {
 			// 设置超时时间，例如60秒
 			timeout := 60 * time.Second
 
-			fmt.Println("过了60秒，开始检测距离上一次执行put请求过了多久。")
+			fmt.Println("开始检测距离上一次执行put请求过了多久。")
 			for {
 				time.Sleep(timeout)
 				kvs.putTimeLock.Lock()
