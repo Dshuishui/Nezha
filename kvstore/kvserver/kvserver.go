@@ -902,7 +902,7 @@ func main() {
 	// Idle_Automatic_Stop() 
 
 	go func ()  {
-		timeout := 6 * time.Second
+		timeout := 18 * time.Second
 		for{
 			time.Sleep(timeout)
 			kvs.putTimeLock.Lock()
