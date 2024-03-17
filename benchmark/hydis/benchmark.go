@@ -197,7 +197,7 @@ func main() {
 	 // 检查Server是否就绪
 	 for !checkServerReady() {
         fmt.Println("等待Server就绪...")
-        time.Sleep(2 * time.Second)
+        time.Sleep(1 * time.Second)
     }
 
 	// 设置WaitGroup计数器
