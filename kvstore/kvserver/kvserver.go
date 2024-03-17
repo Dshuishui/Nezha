@@ -475,14 +475,6 @@ func (kvs *KVServer) RegisterKVServer(address string) { // 传入的是客户端
 
 		fmt.Println("监听3088端口的地址前")
 
-		// 启动gRPC服务器并监听指定的代理服务器的网络地址
-		if err := grpcServer.Serve(lis); err != nil {
-			// 开始监听时发生了错误
-			util.FPrintf("failed to serve: %v", err)
-		}
-
-		fmt.Println("监听3088端口地址后")
-
 		 // 在一个新的协程中启动超时检测，如果一段时间内没有put请求发过来，则终止程序，关闭服务器，以节省资源。
 		 go func() {
 			// 设置超时时间，例如60秒
@@ -502,6 +494,15 @@ func (kvs *KVServer) RegisterKVServer(address string) { // 传入的是客户端
 				kvs.putTimeLock.Unlock()
 			}
 		}()
+
+		// 启动gRPC服务器并监听指定的代理服务器的网络地址，
+		// 在grpcServer.Serve(lis)之后的代码默认情况下是不会执行的，因为Serve方法会阻塞当前goroutine直到服务器停止。然而，如果Serve因为某些错误而返回，后面的代码就会执行。
+		if err := grpcServer.Serve(lis); err != nil {
+			// 开始监听时发生了错误
+			util.FPrintf("failed to serve: %v", err)
+		}
+
+		fmt.Println("监听3088端口地址后")
 	}
 }
 
@@ -857,5 +858,5 @@ func main() {
 	// log.Println(http.ListenAndServe(":6060", nil))
 	// server run for 120min
 	// Idle_Automatic_Stop() 
-	time.Sleep(time.Second * 7200)
+	time.Sleep(time.Second * 36000)
 }
