@@ -482,7 +482,8 @@ func (kvs *KVServer) RegisterKVServer(address string) { // 传入的是客户端
 		 go func() {
 			// 设置超时时间，例如60秒
 			timeout := 60 * time.Second
-	
+
+			fmt.Println("过了60秒，开始检测距离上一次执行put请求过了多久。")
 			for {
 				time.Sleep(timeout)
 				kvs.putTimeLock.Lock()
