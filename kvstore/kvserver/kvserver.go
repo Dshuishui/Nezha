@@ -692,6 +692,7 @@ func MakeKVServer(address string, internalAddress string, peers []string) *KVSer
 	valuelog, err := NewValueLog("valueLog_value.log", "./kvstore/kvserver/db_key_addr")
 	fmt.Println("Danm！！！有没有生成这个文件啊？？ ")
 	if err != nil {
+		fmt.Println("生成valuelog和leveldb文件有问题")
 		panic(err)
 	}
 	// 这里不直接用kvs.valuelog接受上述NewValueLog函数的返回值，是因为需要先接受该函数的返回值，检查是否有错误发生，如果没有错误，才能将其值赋值给其他值。
