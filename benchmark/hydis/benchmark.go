@@ -194,11 +194,11 @@ func main() {
 		return
 	}
 
-	 // 检查Server是否就绪
-	 for !checkServerReady() {
-        fmt.Println("等待Server就绪...")
-        time.Sleep(1 * time.Second)
-    }
+	 // 检查Server是否就绪，好像不用检测server是否启动，直接把client脚本的每次执行停顿两个server等待自动停止的时间
+	//  for !checkServerReady() {
+    //     fmt.Println("等待Server就绪...")
+    //     time.Sleep(1 * time.Second)
+    // }
 
 	// 设置WaitGroup计数器
 	goroutinesCount := 1	// 数量等于客户端的数量
