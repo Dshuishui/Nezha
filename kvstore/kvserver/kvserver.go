@@ -740,6 +740,7 @@ func (kvs *KVServer) RegisterTCPServer(ctx context.Context,address string,wg *sy
 
 		if err != nil {
 			fmt.Println("Error accepting", err.Error())
+			fmt.Println("跳出tcpserver的for循环")
 			return // 终止程序
 		}
 		// 处理连接
