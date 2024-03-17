@@ -199,5 +199,5 @@ func main() {
 	//	return
 
 	// keep main thread alive
-	time.Sleep(time.Second * 7200)
+	time.Sleep(time.Second * 36000)
 }
