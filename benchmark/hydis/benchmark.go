@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,7 +25,8 @@ var getCount int32 = 0
 var falseTime int32 = 0
 
 // Test the consistency performance at different read/write ratios
-func RequestRatio(cnum int, num int, servers []string, getRatio int, consistencyLevel int, quorum int) {
+func RequestRatio(cnum int, num int, servers []string, getRatio int, consistencyLevel int, quorum int,wg *sync.WaitGroup) {
+	defer wg.Done()
 	fmt.Printf("servers: %v\n", servers)
 	// 为切片和映射分配空间
 	kvc := kvc.KVClient{
@@ -153,6 +155,7 @@ func zipfDistributionBenchmark(x int, n int) int {
 	return 0
 }
 func main() {
+	var wg sync.WaitGroup
 	var ser = flag.String("servers", "", "the Server, Client Connects to")
 	// var mode = flag.String("mode", "RequestRatio", "Read or Put and so on")
 	var mode = flag.String("mode", "BenchmarkFromCSV", "Read or Put and so on")
@@ -180,10 +183,14 @@ func main() {
 		return
 	}
 
+	// 设置WaitGroup计数器
+	goroutinesCount := 1	// 数量等于客户端的数量
+	wg.Add(goroutinesCount)
+
 	// Request Times = clientNumm * optionNumm
 	if *mode == "RequestRatio" {
 		for i := 0; i < clientNumm; i++ {
-			go RequestRatio(clientNumm, optionNumm, servers, getRatio, consistencyLevel, quorum)
+			go RequestRatio(clientNumm, optionNumm, servers, getRatio, consistencyLevel, quorum,&wg)
 		}
 	} else if *mode == "BenchmarkFromCSV" {
 		for i := 0; i < clientNumm; i++ {
@@ -199,5 +206,6 @@ func main() {
 	//	return
 
 	// keep main thread alive
-	time.Sleep(time.Second * 36000)
+	// time.Sleep(time.Second * 36000)
+	wg.Wait()
 }
