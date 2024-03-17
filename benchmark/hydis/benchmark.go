@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"net/http"
 
 	kvc "github.com/JasonLou99/Hybrid_KV_Store/kvstore/kvclient"
 	"github.com/JasonLou99/Hybrid_KV_Store/util"
@@ -154,6 +155,16 @@ func benchmarkFromCSV(filepath string, servers []string, clientNumber int) {
 func zipfDistributionBenchmark(x int, n int) int {
 	return 0
 }
+
+func checkServerReady() bool {
+    resp, err := http.Get("http://192.168.1.72:30882/health")
+    if err != nil {
+        return false
+    }
+    defer resp.Body.Close()
+    return resp.StatusCode == 200
+}
+
 func main() {
 	var wg sync.WaitGroup
 	var ser = flag.String("servers", "", "the Server, Client Connects to")
@@ -182,6 +193,12 @@ func main() {
 		fmt.Println("### Don't forget input -onumm's value ! ###")
 		return
 	}
+
+	 // 检查Server是否就绪
+	 for !checkServerReady() {
+        fmt.Println("等待Server就绪...")
+        time.Sleep(2 * time.Second)
+    }
 
 	// 设置WaitGroup计数器
 	goroutinesCount := 1	// 数量等于客户端的数量

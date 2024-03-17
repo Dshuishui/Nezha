@@ -894,6 +894,17 @@ func main() {
 	goroutinesCount := 4
 	wg.Add(goroutinesCount)
 
+	 // 启动HTTP服务器用于启动检查
+	 go func() {
+        http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+            fmt.Fprintf(w, "OK")
+        })
+        http.ListenAndServe(":30882", nil)
+    }()
+
+    // 模拟主逻辑延时启动
+    time.Sleep(5 * time.Second)
+
 	ctx,cancel  := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx,kvs.address,&wg)
 	go kvs.RegisterCausalServer(ctx,kvs.internalAddress,&wg)
