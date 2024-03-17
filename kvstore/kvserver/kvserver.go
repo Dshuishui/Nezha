@@ -456,7 +456,7 @@ func (kvs *KVServer) AppendEntriesInCausal(ctx context.Context, in *causalrpc.Ap
 	return appendEntriesInCausalResponse, nil
 }
 
-func (kvs *KVServer) RegisterKVServer(address string) { // 传入的是客户端与服务器之间的代理服务器的地址
+func (kvs *KVServer) RegisterKVServer(ctx context.Context,address string) { // 传入的是客户端与服务器之间的代理服务器的地址
 	util.DPrintf("RegisterKVServer: %s", address) // 打印格式化后Debug信息
 	for {
 		// 利用标准库net创建的一个TCP服务器监听器，lis是一个net.Listener类型的对象，为创建的TCP监听器。
@@ -477,22 +477,27 @@ func (kvs *KVServer) RegisterKVServer(address string) { // 传入的是客户端
 
 		 // 在一个新的协程中启动超时检测，如果一段时间内没有put请求发过来，则终止程序，关闭服务器，以节省资源。
 		 go func() {
-			// 设置超时时间，例如60秒
-			timeout := 60 * time.Second
 
-			fmt.Println("开始检测距离上一次执行put请求过了多久。")
-			for {
-				time.Sleep(timeout)
-				kvs.putTimeLock.Lock()
-				if time.Since(kvs.lastPutTime) > timeout {
-					kvs.putTimeLock.Unlock()
-					// 超时，优雅地停止GRPC服务器
-					grpcServer.GracefulStop()
-					util.DPrintf("No PUT requests for %v, server stopped.", timeout)
-					return
-				}
-				kvs.putTimeLock.Unlock()
-			}
+			<- ctx.Done()
+			grpcServer.GracefulStop()
+			fmt.Println("Server stopped due to context cancellation.")
+
+			// 设置超时时间，例如60秒
+			// timeout := 60 * time.Second
+
+			// fmt.Println("开始检测距离上一次执行put请求过了多久。")
+			// for {
+			// 	time.Sleep(timeout)
+			// 	kvs.putTimeLock.Lock()
+			// 	if time.Since(kvs.lastPutTime) > timeout {
+			// 		kvs.putTimeLock.Unlock()
+			// 		// 超时，优雅地停止GRPC服务器
+			// 		grpcServer.GracefulStop()
+			// 		util.DPrintf("No PUT requests for %v, server stopped.", timeout)
+			// 		return
+			// 	}
+			// 	kvs.putTimeLock.Unlock()
+			// }
 		}()
 
 		// 启动gRPC服务器并监听指定的代理服务器的网络地址，
@@ -507,7 +512,7 @@ func (kvs *KVServer) RegisterKVServer(address string) { // 传入的是客户端
 }
 
 // 整个过程将以一个无限循环的方式持续进行，即使出现错误，也会继续尝试监听并提供服务。这种设计常见于网络服务器，目的是保持服务器的稳定性和可靠性
-func (kvs *KVServer) RegisterCausalServer(address string) { // 传入的地址是internalAddress，节点间交流用的地址（用于类似日志同步等）
+func (kvs *KVServer) RegisterCausalServer(ctx context.Context,address string) { // 传入的地址是internalAddress，节点间交流用的地址（用于类似日志同步等）
 	util.DPrintf("RegisterCausalServer: %s", address)
 	for { // 创建一个TCP监听器，并在指定的地址（）上监听传入的连接。如果监听失败，则会打印错误信息。
 		lis, err := net.Listen("tcp", address)
@@ -517,6 +522,13 @@ func (kvs *KVServer) RegisterCausalServer(address string) { // 传入的地址�
 		grpcServer := grpc.NewServer() // 创建一个gRPC服务器
 		causalrpc.RegisterCAUSALServer(grpcServer, kvs)
 		reflection.Register(grpcServer)               // 并在反射服务中进行了注册
+
+		go func ()  {
+			<- ctx.Done()
+			grpcServer.GracefulStop()
+			fmt.Println("Server stopped due to context cancellation.")
+		}()
+
 		if err := grpcServer.Serve(lis); err != nil { // 调用Serve方法来启动gRPC服务器，监听传入的连接，并处理相应的请求
 			util.FPrintf("failed to serve: %v", err)
 		}
@@ -697,7 +709,7 @@ func MakeKVServer(address string, internalAddress string, peers []string) *KVSer
 }
 
 // 初始化TCP Server
-func (kvs *KVServer) RegisterTCPServer(address string) {
+func (kvs *KVServer) RegisterTCPServer(ctx context.Context,address string) {
 	util.DPrintf("RegisterTCPServer: %s", address)
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
@@ -707,6 +719,13 @@ func (kvs *KVServer) RegisterTCPServer(address string) {
 	// 监听并接受来自客户端的连接
 	for {
 		conn, err := listener.Accept()
+
+		go func ()  {
+			<- ctx.Done()
+			conn.Close()
+			fmt.Println("Server stopped due to context cancellation.")	
+		}()
+
 		if err != nil {
 			fmt.Println("Error accepting", err.Error())
 			return // 终止程序
@@ -852,11 +871,28 @@ func main() {
 	address := *address_arg
 	peers := strings.Split(*peers_arg, ",") // 将逗号作为分隔符传递给strings.Split函数，以便将peers_arg字符串分割成多个子字符串，并存储在peers的切片中
 	kvs := MakeKVServer(address, internalAddress, peers)
-	go kvs.RegisterKVServer(kvs.address)
-	go kvs.RegisterCausalServer(kvs.internalAddress)
-	go kvs.RegisterTCPServer(tcpAddress)
+
+	ctx,cancel  := context.WithCancel(context.Background())
+	go kvs.RegisterKVServer(ctx,kvs.address)
+	go kvs.RegisterCausalServer(ctx,kvs.internalAddress)
+	go kvs.RegisterTCPServer(ctx,tcpAddress)
 	// log.Println(http.ListenAndServe(":6060", nil))
 	// server run for 120min
 	// Idle_Automatic_Stop() 
+
+	go func ()  {
+		timeout := 60 * time.Second
+		for{
+			time.Sleep(timeout)
+			kvs.putTimeLock.Lock()
+			if time.Since(kvs.lastPutTime) > timeout{
+				cancel() // 超时后取消上下文
+				fmt.Println("60秒没有请求，停止服务器")
+				return // 退出main函数
+			}
+			kvs.putTimeLock.Unlock()
+		}
+	}() 
+		
 	time.Sleep(time.Second * 36000)
 }
