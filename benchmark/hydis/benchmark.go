@@ -201,7 +201,7 @@ func main() {
     // }
 
 	// 设置WaitGroup计数器
-	goroutinesCount := 1	// 数量等于客户端的数量
+	goroutinesCount := clientNumm	// 数量等于客户端的数量
 	wg.Add(goroutinesCount)
 
 	// Request Times = clientNumm * optionNumm
