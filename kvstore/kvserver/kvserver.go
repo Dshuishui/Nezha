@@ -186,11 +186,6 @@ func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[stri
 		// 	panic(err)
 		// }
 
-		// 检测put请求是否仍在发送
-		kvs.putTimeLock.Lock()
-		kvs.lastPutTime = time.Now()
-		kvs.putTimeLock.Unlock()
-
 		return true
 	} else if newLog.Option == "Get" {
 		vcKVS, _ := kvs.vectorclock.Load(kvs.internalAddress)
@@ -255,6 +250,12 @@ func (kvs *KVServer) GetInCausal(ctx context.Context, in *kvrpc.GetInCausalReque
 
 func (kvs *KVServer) PutInCausal(ctx context.Context, in *kvrpc.PutInCausalRequest) (*kvrpc.PutInCausalResponse, error) {
 	util.DPrintf("PutInCausal %s", in.Key)
+	
+	// 检测put请求是否仍在发送
+	kvs.putTimeLock.Lock()
+	kvs.lastPutTime = time.Now()
+	kvs.putTimeLock.Unlock()
+
 	putInCausalResponse := new(kvrpc.PutInCausalResponse)
 	op := config.Log{
 		Option: "Put",
