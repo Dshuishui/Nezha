@@ -55,7 +55,7 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 		// 写操作
 		// kvc.PutInCausal("key"+strconv.Itoa(key), string(value))
 		kvc.PutInCausal(string(key), string(value))
-
+		fmt.Println("发送 %s ", key)
 		// value := rand.Intn(100000)
 		// kvc.PutInCausal("key"+strconv.Itoa(key), "value"+strconv.Itoa(value))
 
