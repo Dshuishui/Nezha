@@ -926,6 +926,7 @@ func main() {
 				cancel() // 超时后取消上下文
 				fmt.Println("18秒没有请求，停止服务器")
 				wg.Done()
+				kvs.putTimeLock.Unlock()
 				return // 退出main函数
 			}
 			kvs.putTimeLock.Unlock()
