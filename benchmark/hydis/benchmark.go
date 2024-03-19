@@ -55,7 +55,7 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 		// 写操作
 		// kvc.PutInCausal("key"+strconv.Itoa(key), string(value))
 		kvc.PutInCausal(string(key), string(value))
-		fmt.Println("发送 %s ", key)
+		fmt.Printf("发送 %s ", key)
 		// value := rand.Intn(100000)
 		// kvc.PutInCausal("key"+strconv.Itoa(key), "value"+strconv.Itoa(value))
 
@@ -87,7 +87,8 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 		// 	}
 		// }
 		// 随机切换下一个节点
-		kvc.KvsId = rand.Intn(len(kvc.Kvservers)+10) % len(kvc.Kvservers)
+		// kvc.KvsId = rand.Intn(len(kvc.Kvservers)+10) % len(kvc.Kvservers)
+		kvc.KvsId = rand.Intn(len(kvc.Kvservers))
 	}
 	fmt.Printf("TestCount: %v, VectorClock: %v, getCount: %v, putCount: %v\n", count, kvc.Vectorclock, getCount, putCount)
 	// if int(count) == num*cnum*(getRatio+1) {

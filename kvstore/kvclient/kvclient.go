@@ -67,7 +67,7 @@ func (kvc *KVClient) SendGetInCausal(address string, request *kvrpc.GetInCausalR
 func (kvc *KVClient) SendPutInCausal(address string, request *kvrpc.PutInCausalRequest) (*kvrpc.PutInCausalResponse, error) {
 	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		util.EPrintf("err in SendPutInCausal: %v", err)
+		util.EPrintf("err in SendPutInCausal-连接到服务器address有问题: %v", err)
 		return nil, err
 	}
 	defer conn.Close()
@@ -77,7 +77,7 @@ func (kvc *KVClient) SendPutInCausal(address string, request *kvrpc.PutInCausalR
 	reply, err := client.PutInCausal(ctx, request)
 	if err != nil {
 		fmt.Println("客户端调用PutInCausal有问题")
-		util.EPrintf("err in SendPutInCausal: %v", err)
+		util.EPrintf("err in SendPutInCausal-调用了服务器的put方法: %v", err)
 		return nil, err
 	}
 	return reply, nil
