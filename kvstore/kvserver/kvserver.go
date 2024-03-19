@@ -689,6 +689,7 @@ func MakeKVServer(address string, internalAddress string, peers []string) *KVSer
 	kvs.address = address
 	kvs.internalAddress = internalAddress
 	kvs.peers = peers
+	kvs.lastPutTime = time.Now()
 	// Initialize ValueLog and LevelDB (Paths would be specified here).
 	// 在这个.代表的是打开的工作区或文件夹的根目录，即FlexSync。指向的是VSCode左侧侧边栏（Explorer栏）中展示的最顶层文件夹。
 	valuelog, err := NewValueLog("valueLog_value.log", "./kvstore/kvserver/db_key_addr")
@@ -923,7 +924,7 @@ func main() {
 			kvs.putTimeLock.Lock()
 			if time.Since(kvs.lastPutTime) > timeout {
 				cancel() // 超时后取消上下文
-				fmt.Println("6秒没有请求，停止服务器")
+				fmt.Println("18秒没有请求，停止服务器")
 				wg.Done()
 				return // 退出main函数
 			}
