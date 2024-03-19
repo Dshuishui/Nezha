@@ -54,7 +54,9 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 
 		// 写操作
 		// kvc.PutInCausal("key"+strconv.Itoa(key), string(value))
-		kvc.PutInCausal(string(key), string(value))
+		if !kvc.PutInCausal(string(key), string(value)) {
+			falseTime ++
+		}
 		// fmt.Printf("发送 %s \n ", key)
 		// value := rand.Intn(100000)
 		// kvc.PutInCausal("key"+strconv.Itoa(key), "value"+strconv.Itoa(value))
@@ -208,7 +210,7 @@ func main() {
 	// Request Times = clientNumm * optionNumm
 	if *mode == "RequestRatio" {
 		for i := 0; i < clientNumm; i++ {
-			go RequestRatio(clientNumm, optionNumm, servers, getRatio, consistencyLevel, quorum,&wg)
+			go RequestRatio(clientNumm, optionNumm, servers, getRatio, consistencyLevel, quorum, &wg)
 		}
 	} else if *mode == "BenchmarkFromCSV" {
 		for i := 0; i < clientNumm; i++ {

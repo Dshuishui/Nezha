@@ -250,7 +250,7 @@ func (kvs *KVServer) GetInCausal(ctx context.Context, in *kvrpc.GetInCausalReque
 
 func (kvs *KVServer) PutInCausal(ctx context.Context, in *kvrpc.PutInCausalRequest) (*kvrpc.PutInCausalResponse, error) {
 	util.DPrintf("PutInCausal %s", in.Key)
-	
+
 	// 检测put请求是否仍在发送
 	kvs.putTimeLock.Lock()
 	kvs.lastPutTime = time.Now()
@@ -548,7 +548,7 @@ func (kvs *KVServer) RegisterCausalServer(ctx context.Context, address string, w
 
 // s0 --> other servers
 func (kvs *KVServer) sendAppendEntriesInCausal(address string, args *causalrpc.AppendEntriesInCausalRequest) (*causalrpc.AppendEntriesInCausalResponse, bool) {
-	util.DPrintf("here is sendAppendEntriesInCausal() ---------> ", address)
+	util.DPrintf("here is sendAppendEntriesInCausal() ---------> %v", address)
 	// 随机等待，模拟延迟
 	time.Sleep(time.Millisecond * time.Duration(kvs.latency+rand.Intn(25)))
 	// conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
@@ -564,7 +564,7 @@ func (kvs *KVServer) sendAppendEntriesInCausal(address string, args *causalrpc.A
 
 	reply, err := client.AppendEntriesInCausal(ctx, args)
 	if err != nil {
-		util.EPrintf("sendAppendEntriesInCausal could not greet: ", err, address)
+		util.EPrintf("sendAppendEntriesInCausal could not greet: %v", err)
 		return reply, false
 	}
 	return reply, true
@@ -919,7 +919,7 @@ func main() {
 	// Idle_Automatic_Stop()
 
 	go func() {
-		timeout := 18 * time.Second
+		timeout := 36000 * time.Second
 		for {
 			time.Sleep(timeout)
 			kvs.putTimeLock.Lock()
