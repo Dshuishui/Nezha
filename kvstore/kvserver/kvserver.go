@@ -174,7 +174,7 @@ func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[stri
 		}
 		// update value in the db and persist
 		// 这个log是存在哪，内存中嘛
-		kvs.logs = append(kvs.logs, newLog)
+		// kvs.logs = append(kvs.logs, newLog)	// 把这个注释掉，反正存在内存中也用不上，后面也已经做持久化存储的工作了
 		// kvs.db.Store(newLog.Key, &ValueTimestamp{value: newLog.Value, timestamp: time.Now().UnixMilli(), version: oldVersion + 1})
 
 		// kvs.persister.Put(newLog.Key, newLog.Value)
@@ -249,12 +249,12 @@ func (kvs *KVServer) GetInCausal(ctx context.Context, in *kvrpc.GetInCausalReque
 }
 
 func (kvs *KVServer) PutInCausal(ctx context.Context, in *kvrpc.PutInCausalRequest) (*kvrpc.PutInCausalResponse, error) {
-	util.DPrintf("PutInCausal %s", in.Key)
+	// util.DPrintf("PutInCausal %s", in.Key)
 
-	// 检测put请求是否仍在发送
+/* 	// 检测put请求是否仍在发送
 	kvs.putTimeLock.Lock()
 	kvs.lastPutTime = time.Now()
-	kvs.putTimeLock.Unlock()
+	kvs.putTimeLock.Unlock() */
 
 	putInCausalResponse := new(kvrpc.PutInCausalResponse)
 	op := config.Log{
@@ -442,7 +442,7 @@ func (kvs *KVServer) AppendEntriesInCausal(ctx context.Context, in *causalrpc.Ap
 	ok := util.IsUpper(kvs.vectorclock, vcFromOther)
 	if !ok {
 		// Append the log to the local log
-		kvs.logs = append(kvs.logs, mlFromOther.Vl.Log)
+		// kvs.logs = append(kvs.logs, mlFromOther.Vl.Log)	// 这个存储到内存中的也没用，反正后期已经持久化存储到磁盘了
 		// kvs.db.Store(mlFromOther.Key, &ValueTimestamp{value: mlFromOther.Vl.Log.Value, timestamp: time.Now().UnixMilli(), version: in.Version})
 		// kvs.persister.Put(mlFromOther.Key, mlFromOther.Vl.Log.Value)
 		// 上面的是原始存储<key,value>的情况
@@ -919,7 +919,7 @@ func main() {
 	// Idle_Automatic_Stop()
 
 	go func() {
-		timeout := 36000 * time.Second
+		timeout := 3600000 * time.Second
 		for {
 			time.Sleep(timeout)
 			kvs.putTimeLock.Lock()
