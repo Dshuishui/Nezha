@@ -4,12 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"net/http"
 
 	kvc "github.com/JasonLou99/Hybrid_KV_Store/kvstore/kvclient"
 	"github.com/JasonLou99/Hybrid_KV_Store/util"
@@ -26,7 +26,7 @@ var getCount int32 = 0
 var falseTime int32 = 0
 
 // Test the consistency performance at different read/write ratios
-func RequestRatio(cnum int, num int, servers []string, getRatio int, consistencyLevel int, quorum int,wg *sync.WaitGroup) {
+func RequestRatio(cnum int, num int, servers []string, getRatio int, consistencyLevel int, quorum int, wg *sync.WaitGroup) {
 	defer wg.Done()
 	fmt.Printf("servers: %v\n", servers)
 	// 为切片和映射分配空间
@@ -42,20 +42,20 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 	start_time := time.Now() // 记录所有请求操作开始前的时间，用于计算最后整个任务完成花了多久
 	var key string
 	var value string
-	for i := 0; i < num; i++ {		// 这里的num对应的是操作次数，也就是put的操作次数
+	for i := 0; i < num; i++ { // 这里的num对应的是操作次数，也就是put的操作次数
 		rand.Seed(time.Now().UnixNano())
 		// key := rand.Intn(100000)
 
 		// 设置生成key和value的大小
 		key = util.GenerateFixedSizeKey(16)
-		value = util.GenerateLargeValue(1024*4)
+		value = util.GenerateLargeValue(256)
 
-		startTime := time.Now().UnixMicro()// 记录每次写操作开始的时间，用于返回从 Unix 时间开始至今的纳秒数，用于计算每次写操作花的时间，并记录到csv文件中
+		startTime := time.Now().UnixMicro() // 记录每次写操作开始的时间，用于返回从 Unix 时间开始至今的纳秒数，用于计算每次写操作花的时间，并记录到csv文件中
 
 		// 写操作
 		// kvc.PutInCausal("key"+strconv.Itoa(key), string(value))
 		if !kvc.PutInCausal(string(key), string(value)) {
-			falseTime ++
+			falseTime++
 		}
 		// fmt.Printf("发送 %s \n ", key)
 		// value := rand.Intn(100000)
@@ -99,7 +99,7 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 		fmt.Printf("falseTimes: %v\n", falseTime)
 
 		// 记录每次put请求执行的时间到csv文件中
-		util.Put_Request_Time("./result/causal_put-latency.csv", time.Since(start_time),key,value,num)
+		util.Put_Request_Time("./result/causal_put-latency.csv", time.Since(start_time), key, value, num)
 	}
 	// 这个点表示的当前目录是整个项目的当前目录，而不是go文件所在的当前目录
 	// util.WriteCsv("./benchmark/result/causal_put-latency.csv", kvc.PutSpentTimeArr)
@@ -107,7 +107,7 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 }
 
 /*
-	根据csv文件中的读写频次发送请求
+根据csv文件中的读写频次发送请求
 */
 func benchmarkFromCSV(filepath string, servers []string, clientNumber int) {
 
@@ -160,12 +160,12 @@ func zipfDistributionBenchmark(x int, n int) int {
 }
 
 func checkServerReady() bool {
-    resp, err := http.Get("http://192.168.1.72:30882/health")
-    if err != nil {
-        return false
-    }
-    defer resp.Body.Close()
-    return resp.StatusCode == 200
+	resp, err := http.Get("http://192.168.1.72:30882/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == 200
 }
 
 func main() {
@@ -197,14 +197,14 @@ func main() {
 		return
 	}
 
-	 // 检查Server是否就绪，好像不用检测server是否启动，直接把client脚本的每次执行停顿两个server等待自动停止的时间
+	// 检查Server是否就绪，好像不用检测server是否启动，直接把client脚本的每次执行停顿两个server等待自动停止的时间
 	//  for !checkServerReady() {
-    //     fmt.Println("等待Server就绪...")
-    //     time.Sleep(1 * time.Second)
-    // }
+	//     fmt.Println("等待Server就绪...")
+	//     time.Sleep(1 * time.Second)
+	// }
 
 	// 设置WaitGroup计数器
-	goroutinesCount := clientNumm	// 数量等于客户端的数量
+	goroutinesCount := clientNumm // 数量等于客户端的数量
 	wg.Add(goroutinesCount)
 
 	// Request Times = clientNumm * optionNumm
