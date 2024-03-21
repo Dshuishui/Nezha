@@ -26,7 +26,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	// "google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection"
 
 	"github.com/syndtr/goleveldb/leveldb"
@@ -545,7 +545,21 @@ func (kvs *KVServer) RegisterCausalServer(ctx context.Context, address string, w
 		if err != nil {
 			util.FPrintf("failed to listen: %v", err)
 		}
-		grpcServer := grpc.NewServer() // 创建一个gRPC服务器
+		// grpcServer := grpc.NewServer() // 创建一个gRPC服务器
+		grpcServer := grpc.NewServer(		// 创建一个带有pool池的gRPC服务器对象
+			grpc.InitialWindowSize(pool.InitialWindowSize),
+			grpc.InitialConnWindowSize(pool.InitialConnWindowSize),
+			grpc.MaxSendMsgSize(pool.MaxSendMsgSize),
+			grpc.MaxRecvMsgSize(pool.MaxRecvMsgSize),
+			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+				PermitWithoutStream: true,
+			}),
+			grpc.KeepaliveParams(keepalive.ServerParameters{
+				Time:    pool.KeepAliveTime,
+				Timeout: pool.KeepAliveTimeout,
+			}),
+		)
+		// kvrpc.RegisterKVServer(grpcServer,kvs)
 		causalrpc.RegisterCAUSALServer(grpcServer, kvs)
 		reflection.Register(grpcServer) // 并在反射服务中进行了注册
 
@@ -572,20 +586,41 @@ func (kvs *KVServer) sendAppendEntriesInCausal(address string, args *causalrpc.A
 	// 随机等待，模拟延迟
 	time.Sleep(time.Millisecond * time.Duration(kvs.latency+rand.Intn(25)))
 	// conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
-	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	// conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	// if err != nil {
+	// 	util.EPrintf("sendAppendEntriesInCausal did not connect: %v", err)
+	// }
+	// defer conn.Close()
+	// client := causalrpc.NewCAUSALClient(conn)
+
+	// ctx, cancel := context.WithTimeout(context.Background(), time.Second*5) // 定时5秒
+	// defer cancel()
+
+	// reply, err := client.AppendEntriesInCausal(ctx, args)
+	// if err != nil {
+	// 	util.EPrintf("sendAppendEntriesInCausal could not greet: %v", err)
+	// 	return reply, false
+	// }
+	// return reply, true
+	p, err := pool.New(address, pool.DefaultOptions)
 	if err != nil {
-		util.EPrintf("sendAppendEntriesInCausal did not connect: %v", err)
+		util.EPrintf("failed to new pool: %v", err)
+	}
+	defer p.Close()
+
+	conn, err := p.Get()
+	if err != nil {
+		util.EPrintf("failed to get conn: %v", err)
 	}
 	defer conn.Close()
-	client := causalrpc.NewCAUSALClient(conn)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5) // 定时5秒
+	client := causalrpc.NewCAUSALClient(conn.Value())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)		// 设置五秒定时往下传
 	defer cancel()
-
-	reply, err := client.AppendEntriesInCausal(ctx, args)
+	reply,err := client.AppendEntriesInCausal(ctx, args)
 	if err != nil {
 		util.EPrintf("sendAppendEntriesInCausal could not greet: %v", err)
-		return reply, false
+		return nil, false
 	}
 	return reply, true
 }
