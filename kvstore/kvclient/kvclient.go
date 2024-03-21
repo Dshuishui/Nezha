@@ -15,6 +15,8 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+
+	"github.com/shimingyah/pool"
 )
 
 /*
@@ -65,16 +67,38 @@ func (kvc *KVClient) SendGetInCausal(address string, request *kvrpc.GetInCausalR
 
 // Method of Send RPC of PutInCausal
 func (kvc *KVClient) SendPutInCausal(address string, request *kvrpc.PutInCausalRequest) (*kvrpc.PutInCausalResponse, error) {
-	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// if err != nil {
+	// 	util.EPrintf("err in SendPutInCausal-连接到服务器address有问题: %v", err)
+	// 	return nil, err
+	// }
+	// defer conn.Close()
+	// client := kvrpc.NewKVClient(conn)
+	// ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)		// 设置五秒定时往下传
+	// defer cancel()
+	// reply, err := client.PutInCausal(ctx, request)
+	// if err != nil {
+	// 	fmt.Println("客户端调用PutInCausal有问题")
+	// 	util.EPrintf("err in SendPutInCausal-调用了服务器的put方法: %v", err)
+	// 	return nil, err
+	// }
+	// return reply, nil
+	p, err := pool.New(address, pool.DefaultOptions)
 	if err != nil {
-		util.EPrintf("err in SendPutInCausal-连接到服务器address有问题: %v", err)
-		return nil, err
+		util.EPrintf("failed to new pool: %v", err)
+	}
+	defer p.Close()
+
+	conn, err := p.Get()
+	if err != nil {
+		util.EPrintf("failed to get conn: %v", err)
 	}
 	defer conn.Close()
-	client := kvrpc.NewKVClient(conn)
+
+	client := kvrpc.NewKVClient(conn.Value())
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)		// 设置五秒定时往下传
 	defer cancel()
-	reply, err := client.PutInCausal(ctx, request)
+	reply,err := client.PutInCausal(ctx,request)
 	if err != nil {
 		fmt.Println("客户端调用PutInCausal有问题")
 		util.EPrintf("err in SendPutInCausal-调用了服务器的put方法: %v", err)
