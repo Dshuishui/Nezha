@@ -86,9 +86,9 @@ func (kvc *KVClient) SendPutInCausal(address string, request *kvrpc.PutInCausalR
 	// 这就是自己修改option参数的做法
 	DesignOptions:=pool.Options{
 		Dial:                 pool.Dial,
-		MaxIdle:              32000,
-		MaxActive:            6400000,
-		MaxConcurrentStreams: 6400000,
+		MaxIdle:              320,
+		MaxActive:            640000,
+		MaxConcurrentStreams: 640000,
 		Reuse:                true,
 	}
 	p, err := pool.New(address, DesignOptions)
