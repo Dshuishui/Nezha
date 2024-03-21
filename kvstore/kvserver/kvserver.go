@@ -30,6 +30,9 @@ import (
 	"google.golang.org/grpc/reflection"
 
 	"github.com/syndtr/goleveldb/leveldb"
+
+	"github.com/shimingyah/pool"
+	"google.golang.org/grpc/keepalive"
 )
 
 type KVServer struct {
@@ -469,9 +472,26 @@ func (kvs *KVServer) RegisterKVServer(ctx context.Context, address string, wg *s
 		}
 		// gRPC 是一个开源的高性能远程过程调用（RPC）框架，提供了在客户端和服务器之间进行跨平台、多语言的通信能力。
 		// 创建并返回一个新的gRPC服务器对象，通过该对象可以注册服务和启动服务器，以便接受客户端的gRPC调用。
-		grpcServer := grpc.NewServer()
+		// grpcServer := grpc.NewServer()
+
+		grpcServer := grpc.NewServer(		// 创建一个带有pool池的gRPC服务器对象
+			grpc.InitialWindowSize(pool.InitialWindowSize),
+			grpc.InitialConnWindowSize(pool.InitialConnWindowSize),
+			grpc.MaxSendMsgSize(pool.MaxSendMsgSize),
+			grpc.MaxRecvMsgSize(pool.MaxRecvMsgSize),
+			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+				PermitWithoutStream: true,
+			}),
+			grpc.KeepaliveParams(keepalive.ServerParameters{
+				Time:    pool.KeepAliveTime,
+				Timeout: pool.KeepAliveTimeout,
+			}),
+		)
+		kvrpc.RegisterKVServer(grpcServer,kvs)
+
+
 		// 向gRPC服务器注册服务（包含服务定义和服务实现），gRPC服务器可以根据客户端的请求调用相应的服务方法，并返回结果。
-		kvrpc.RegisterKVServer(grpcServer, kvs)
+		// kvrpc.RegisterKVServer(grpcServer, kvs)
 		// 将gRPC服务器注册为支持反射的服务器，可以使得客户端通过查询服务器的服务定义来了解其能力，由于安全性和性能等原因，正式部署时可能不建议启用反射功能
 		reflection.Register(grpcServer)
 
