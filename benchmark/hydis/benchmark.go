@@ -13,6 +13,8 @@ import (
 
 	kvc "github.com/JasonLou99/Hybrid_KV_Store/kvstore/kvclient"
 	"github.com/JasonLou99/Hybrid_KV_Store/util"
+
+	"github.com/shimingyah/pool"
 )
 
 const (
@@ -42,6 +44,21 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 	start_time := time.Now() // 记录所有请求操作开始前的时间，用于计算最后整个任务完成花了多久
 	var key string
 	var value string
+
+	// 这就是自己修改option参数的做法
+	DesignOptions:=pool.Options{
+			Dial:                 pool.Dial,
+			MaxIdle:              320,
+			MaxActive:            640000,
+			MaxConcurrentStreams: 640000,
+			Reuse:                true,
+		}
+	p, err := pool.New(kvc.Kvservers[kvc.KvsId], DesignOptions)		// 先把这个连接池里面的地址固定，后面需要改new函数里面的生成tcp连接的方法
+	if err != nil {
+		util.EPrintf("failed to new pool: %v", err)
+	}
+	defer p.Close()
+
 	for i := 0; i < num; i++ { // 这里的num对应的是操作次数，也就是put的操作次数
 		rand.Seed(time.Now().UnixNano())
 		// key := rand.Intn(100000)
@@ -54,7 +71,7 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 
 		// 写操作
 		// kvc.PutInCausal("key"+strconv.Itoa(key), string(value))
-		if !kvc.PutInCausal(string(key), string(value)) {
+		if !kvc.PutInCausal(string(key), string(value),p) {
 			falseTime++
 		}
 		// fmt.Printf("发送 %s \n ", key)

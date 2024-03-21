@@ -66,7 +66,7 @@ func (kvc *KVClient) SendGetInCausal(address string, request *kvrpc.GetInCausalR
 }
 
 // Method of Send RPC of PutInCausal
-func (kvc *KVClient) SendPutInCausal(address string, request *kvrpc.PutInCausalRequest) (*kvrpc.PutInCausalResponse, error) {
+func (kvc *KVClient) SendPutInCausal(address string, request *kvrpc.PutInCausalRequest,p pool.Pool) (*kvrpc.PutInCausalResponse, error) {
 	// conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	// if err != nil {
 	// 	util.EPrintf("err in SendPutInCausal-连接到服务器address有问题: %v", err)
@@ -84,19 +84,19 @@ func (kvc *KVClient) SendPutInCausal(address string, request *kvrpc.PutInCausalR
 	// }
 	// return reply, nil
 	// 这就是自己修改option参数的做法
-	DesignOptions:=pool.Options{
-		Dial:                 pool.Dial,
-		MaxIdle:              320,
-		MaxActive:            640000,
-		MaxConcurrentStreams: 640000,
-		Reuse:                true,
-	}
-	p, err := pool.New(address, DesignOptions)
+	// DesignOptions:=pool.Options{
+	// 	Dial:                 pool.Dial,
+	// 	MaxIdle:              320,
+	// 	MaxActive:            640000,
+	// 	MaxConcurrentStreams: 640000,
+	// 	Reuse:                true,
+	// }
+	// p, err := pool.New(address, DesignOptions)
 	// p, err := pool.New(address, pool.DefaultOptions)
-	if err != nil {
-		util.EPrintf("failed to new pool: %v", err)
-	}
-	defer p.Close()
+	// if err != nil {
+	// 	util.EPrintf("failed to new pool: %v", err)
+	// }
+	// defer p.Close()
 
 	conn, err := p.Get()
 	if err != nil {
@@ -274,7 +274,7 @@ func (kvc *KVClient) GetInCausalWithQuorum(key string) (string, bool) {
 }
 
 // Client Put Value
-func (kvc *KVClient) PutInCausal(key string, value string) bool {
+func (kvc *KVClient) PutInCausal(key string, value string,p pool.Pool) bool {
 	request := &kvrpc.PutInCausalRequest{
 		Key:         key,
 		Value:       value,
@@ -283,7 +283,7 @@ func (kvc *KVClient) PutInCausal(key string, value string) bool {
 	}
 	// keep sending PutInCausal until success
 	for {
-		reply, err := kvc.SendPutInCausal(kvc.Kvservers[kvc.KvsId], request)
+		reply, err := kvc.SendPutInCausal(kvc.Kvservers[kvc.KvsId], request,p)
 		if err != nil {
 			fmt.Println("SendPutInCausal有问题")
 			atomic.AddInt32(&falseTime, 1)
@@ -323,10 +323,10 @@ func  RequestRatio(cnum int, num int, servers []string, getRatio int, consistenc
 	for i := 0; i < num; i++ {
 		rand.Seed(time.Now().UnixNano())
 		key := rand.Intn(100000)
-		value := rand.Intn(100000)
+		// value := rand.Intn(100000)
 		startTime := time.Now().UnixMicro()
 		// 写操作
-		kvc.PutInCausal("key"+strconv.Itoa(key), "value"+strconv.Itoa(value))
+		// kvc.PutInCausal("key"+strconv.Itoa(key), "value"+strconv.Itoa(value))
 		spentTime := int(time.Now().UnixMicro() - startTime)
 		// util.DPrintf("%v", spentTime)
 		kvc.PutSpentTimeArr = append(kvc.PutSpentTimeArr, spentTime)
