@@ -602,7 +602,17 @@ func (kvs *KVServer) sendAppendEntriesInCausal(address string, args *causalrpc.A
 	// 	return reply, false
 	// }
 	// return reply, true
-	p, err := pool.New(address, pool.DefaultOptions)
+
+	// 这就是自己修改option参数的做法
+	DesignOptions:=pool.Options{
+			Dial:                 pool.Dial,
+			MaxIdle:              32,
+			MaxActive:            640,
+			MaxConcurrentStreams: 640,
+			Reuse:                true,
+		}
+	p, err := pool.New(address, DesignOptions)
+	// p, err := pool.New(address, pool.DefaultOptions)
 	if err != nil {
 		util.EPrintf("failed to new pool: %v", err)
 	}
