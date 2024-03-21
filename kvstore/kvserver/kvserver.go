@@ -254,10 +254,10 @@ func (kvs *KVServer) GetInCausal(ctx context.Context, in *kvrpc.GetInCausalReque
 func (kvs *KVServer) PutInCausal(ctx context.Context, in *kvrpc.PutInCausalRequest) (*kvrpc.PutInCausalResponse, error) {
 	// util.DPrintf("PutInCausal %s", in.Key)
 
-/* 	// 检测put请求是否仍在发送
-	kvs.putTimeLock.Lock()
-	kvs.lastPutTime = time.Now()
-	kvs.putTimeLock.Unlock() */
+	/* 	// 检测put请求是否仍在发送
+	   	kvs.putTimeLock.Lock()
+	   	kvs.lastPutTime = time.Now()
+	   	kvs.putTimeLock.Unlock() */
 
 	putInCausalResponse := new(kvrpc.PutInCausalResponse)
 	op := config.Log{
@@ -474,21 +474,22 @@ func (kvs *KVServer) RegisterKVServer(ctx context.Context, address string, wg *s
 		// 创建并返回一个新的gRPC服务器对象，通过该对象可以注册服务和启动服务器，以便接受客户端的gRPC调用。
 		// grpcServer := grpc.NewServer()
 
-		grpcServer := grpc.NewServer(		// 创建一个带有pool池的gRPC服务器对象
+		grpcServer := grpc.NewServer( // 创建一个带有pool池的gRPC服务器对象
 			grpc.InitialWindowSize(pool.InitialWindowSize),
 			grpc.InitialConnWindowSize(pool.InitialConnWindowSize),
 			grpc.MaxSendMsgSize(pool.MaxSendMsgSize),
 			grpc.MaxRecvMsgSize(pool.MaxRecvMsgSize),
 			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 				PermitWithoutStream: true,
+				MinTime:             10 * time.Second, // 这里设置与client的keepalive探测的最小时间间隔。
 			}),
 			grpc.KeepaliveParams(keepalive.ServerParameters{
-				Time:    pool.KeepAliveTime,
-				Timeout: pool.KeepAliveTimeout,
+				Time:                  pool.KeepAliveTime,
+				Timeout:               pool.KeepAliveTimeout,
+				MaxConnectionAgeGrace: 20 * time.Second,
 			}),
 		)
-		kvrpc.RegisterKVServer(grpcServer,kvs)
-
+		kvrpc.RegisterKVServer(grpcServer, kvs)
 
 		// 向gRPC服务器注册服务（包含服务定义和服务实现），gRPC服务器可以根据客户端的请求调用相应的服务方法，并返回结果。
 		// kvrpc.RegisterKVServer(grpcServer, kvs)
@@ -545,20 +546,20 @@ func (kvs *KVServer) RegisterCausalServer(ctx context.Context, address string, w
 		if err != nil {
 			util.FPrintf("failed to listen: %v", err)
 		}
-		// grpcServer := grpc.NewServer() // 创建一个gRPC服务器
-		grpcServer := grpc.NewServer(		// 创建一个带有pool池的gRPC服务器对象
-			grpc.InitialWindowSize(pool.InitialWindowSize),
-			grpc.InitialConnWindowSize(pool.InitialConnWindowSize),
-			grpc.MaxSendMsgSize(pool.MaxSendMsgSize),
-			grpc.MaxRecvMsgSize(pool.MaxRecvMsgSize),
-			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-				PermitWithoutStream: true,
-			}),
-			grpc.KeepaliveParams(keepalive.ServerParameters{
-				Time:    pool.KeepAliveTime,
-				Timeout: pool.KeepAliveTimeout,
-			}),
-		)
+		grpcServer := grpc.NewServer() // 创建一个gRPC服务器
+		// grpcServer := grpc.NewServer( // 创建一个带有pool池的gRPC服务器对象
+		// 	grpc.InitialWindowSize(pool.InitialWindowSize),
+		// 	grpc.InitialConnWindowSize(pool.InitialConnWindowSize),
+		// 	grpc.MaxSendMsgSize(pool.MaxSendMsgSize),
+		// 	grpc.MaxRecvMsgSize(pool.MaxRecvMsgSize),
+		// 	grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+		// 		PermitWithoutStream: true,
+		// 	}),
+		// 	grpc.KeepaliveParams(keepalive.ServerParameters{
+		// 		Time:    pool.KeepAliveTime,
+		// 		Timeout: pool.KeepAliveTimeout,
+		// 	}),
+		// )
 		// kvrpc.RegisterKVServer(grpcServer,kvs)
 		causalrpc.RegisterCAUSALServer(grpcServer, kvs)
 		reflection.Register(grpcServer) // 并在反射服务中进行了注册
