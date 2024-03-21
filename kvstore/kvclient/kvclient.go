@@ -83,7 +83,16 @@ func (kvc *KVClient) SendPutInCausal(address string, request *kvrpc.PutInCausalR
 	// 	return nil, err
 	// }
 	// return reply, nil
-	p, err := pool.New(address, pool.DefaultOptions)
+		// 这就是自己修改option参数的做法
+		DesignOptions:=pool.Options{
+			Dial:                 pool.Dial,
+			MaxIdle:              8,
+			MaxActive:            64,
+			MaxConcurrentStreams: 64,
+			Reuse:                true,
+		}
+	p, err := pool.New(address, DesignOptions)
+	// p, err := pool.New(address, pool.DefaultOptions)
 	if err != nil {
 		util.EPrintf("failed to new pool: %v", err)
 	}
