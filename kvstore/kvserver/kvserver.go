@@ -606,9 +606,9 @@ func (kvs *KVServer) sendAppendEntriesInCausal(address string, args *causalrpc.A
 	// 这就是自己修改option参数的做法
 	DesignOptions:=pool.Options{
 			Dial:                 pool.Dial,
-			MaxIdle:              32,
-			MaxActive:            640,
-			MaxConcurrentStreams: 640,
+			MaxIdle:              32000,
+			MaxActive:            6400000,
+			MaxConcurrentStreams: 6400000,
 			Reuse:                true,
 		}
 	p, err := pool.New(address, DesignOptions)
