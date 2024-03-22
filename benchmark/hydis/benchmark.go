@@ -48,9 +48,9 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 	// 这就是自己修改option参数的做法
 	DesignOptions := pool.Options{
 		Dial:                 pool.Dial,
-		MaxIdle:              320,
-		MaxActive:            640000,
-		MaxConcurrentStreams: 640000,
+		MaxIdle:              32,
+		MaxActive:            64,
+		MaxConcurrentStreams: 64,
 		Reuse:                true,
 	}
 	p, err := pool.New(kvc.Kvservers[kvc.KvsId], DesignOptions) // 先把这个连接池里面的地址固定，后面需要改new函数里面的生成tcp连接的方法
@@ -65,7 +65,7 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 
 		// 设置生成key和value的大小
 		key = util.GenerateFixedSizeKey(16)
-		value = util.GenerateLargeValue(256 * 1024)
+		value = util.GenerateLargeValue(1024 * 4)
 
 		startTime := time.Now().UnixMicro() // 记录每次写操作开始的时间，用于返回从 Unix 时间开始至今的纳秒数，用于计算每次写操作花的时间，并记录到csv文件中
 
