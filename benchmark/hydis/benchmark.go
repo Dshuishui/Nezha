@@ -65,7 +65,7 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 
 		// 设置生成key和value的大小
 		key = util.GenerateFixedSizeKey(16)
-		value = util.GenerateLargeValue(1024 * 4)
+		value = util.GenerateLargeValue(1024*4)
 
 		startTime := time.Now().UnixMicro() // 记录每次写操作开始的时间，用于返回从 Unix 时间开始至今的纳秒数，用于计算每次写操作花的时间，并记录到csv文件中
 
@@ -116,7 +116,7 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 		fmt.Printf("falseTimes: %v\n", falseTime)
 
 		// 记录每次put请求执行的时间到csv文件中
-		util.Put_Request_Time("./result/causal_put-latency.csv", time.Since(start_time), key, value, num)
+		util.Put_Request_Time("./result/causal_put-latency.csv", time.Since(start_time), key, value, num, cnum)
 	}
 	// 这个点表示的当前目录是整个项目的当前目录，而不是go文件所在的当前目录
 	// util.WriteCsv("./benchmark/result/causal_put-latency.csv", kvc.PutSpentTimeArr)
@@ -224,6 +224,19 @@ func main() {
 	goroutinesCount := clientNumm // 数量等于客户端的数量
 	wg.Add(goroutinesCount)
 
+	// // 这就是自己修改option参数的做法
+	// DesignOptions := pool.Options{
+	// 	Dial:                 pool.Dial,
+	// 	MaxIdle:              128,
+	// 	MaxActive:            256,
+	// 	MaxConcurrentStreams: 64,
+	// 	Reuse:                true,
+	// }
+	// p, err := pool.New(servers[rand.Intn(len(servers))], DesignOptions) // 先把这个连接池里面的地址固定，后面需要改new函数里面的生成tcp连接的方法
+	// if err != nil {
+	// 	util.EPrintf("failed to new pool: %v", err)
+	// }
+	// defer p.Close()
 	// Request Times = clientNumm * optionNumm
 	if *mode == "RequestRatio" {
 		for i := 0; i < clientNumm; i++ {

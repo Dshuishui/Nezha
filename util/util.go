@@ -104,7 +104,7 @@ func WriteCsv(filepath string, spentTimeArr []int) {
 }
 
 // 记录每次执行put请求的时间
-func Put_Request_Time(filePath string, executionTime time.Duration,key string ,value string,num_k int) error {
+func Put_Request_Time(filePath string, executionTime time.Duration,key string ,value string,num_k int,clientNum int) error {
 // Open the file in append mode, create it if not exists
 	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
@@ -125,7 +125,7 @@ func Put_Request_Time(filePath string, executionTime time.Duration,key string ,v
 
 	// Prepare the data to be appended
 	data := []string{
-		fmt.Sprintf("key-%vB;value-%s;%d",len(key),v, num_k), // Concatenate key, value, and num
+		fmt.Sprintf("client-%v;key-%vB;value-%s;%d",len(key),clientNum,v, num_k), // Concatenate key, value, and num
 		fmt.Sprintf("%v", executionTime), // Calculate the time since the start time
 	}
 
