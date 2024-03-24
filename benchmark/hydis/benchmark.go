@@ -28,7 +28,7 @@ var getCount int32 = 0
 var falseTime int32 = 0
 
 // Test the consistency performance at different read/write ratios
-func RequestRatio(cnum int, num int, servers []string, getRatio int, consistencyLevel int, quorum int, wg *sync.WaitGroup) {
+func RequestRatio(cnum int, num int, servers []string, getRatio int, consistencyLevel int, quorum int, wg *sync.WaitGroup,p pool.Pool) {
 	defer wg.Done()
 	fmt.Printf("servers: %v\n", servers)
 	// 为切片和映射分配空间
@@ -46,18 +46,18 @@ func RequestRatio(cnum int, num int, servers []string, getRatio int, consistency
 	var value string
 
 	// 这就是自己修改option参数的做法
-	DesignOptions := pool.Options{
-		Dial:                 pool.Dial,
-		MaxIdle:              32,
-		MaxActive:            64,
-		MaxConcurrentStreams: 64,
-		Reuse:                true,
-	}
-	p, err := pool.New(kvc.Kvservers[kvc.KvsId], DesignOptions) // 先把这个连接池里面的地址固定，后面需要改new函数里面的生成tcp连接的方法
-	if err != nil {
-		util.EPrintf("failed to new pool: %v", err)
-	}
-	defer p.Close()
+	// DesignOptions := pool.Options{
+	// 	Dial:                 pool.Dial,
+	// 	MaxIdle:              32,
+	// 	MaxActive:            64,
+	// 	MaxConcurrentStreams: 64,
+	// 	Reuse:                true,
+	// }
+	// p, err := pool.New(kvc.Kvservers[kvc.KvsId], DesignOptions) // 先把这个连接池里面的地址固定，后面需要改new函数里面的生成tcp连接的方法
+	// if err != nil {
+	// 	util.EPrintf("failed to new pool: %v", err)
+	// }
+	// defer p.Close()
 
 	for i := 0; i < num; i++ { // 这里的num对应的是操作次数，也就是put的操作次数
 		rand.Seed(time.Now().UnixNano())
@@ -225,22 +225,22 @@ func main() {
 	wg.Add(goroutinesCount)
 
 	// // 这就是自己修改option参数的做法
-	// DesignOptions := pool.Options{
-	// 	Dial:                 pool.Dial,
-	// 	MaxIdle:              128,
-	// 	MaxActive:            256,
-	// 	MaxConcurrentStreams: 64,
-	// 	Reuse:                true,
-	// }
-	// p, err := pool.New(servers[rand.Intn(len(servers))], DesignOptions) // 先把这个连接池里面的地址固定，后面需要改new函数里面的生成tcp连接的方法
-	// if err != nil {
-	// 	util.EPrintf("failed to new pool: %v", err)
-	// }
-	// defer p.Close()
+	DesignOptions := pool.Options{
+		Dial:                 pool.Dial,
+		MaxIdle:              128,
+		MaxActive:            256,
+		MaxConcurrentStreams: 64,
+		Reuse:                true,
+	}
+	p, err := pool.New(servers[rand.Intn(len(servers))], DesignOptions) // 先把这个连接池里面的地址固定，后面需要改new函数里面的生成tcp连接的方法
+	if err != nil {
+		util.EPrintf("failed to new pool: %v", err)
+	}
+	defer p.Close()
 	// Request Times = clientNumm * optionNumm
 	if *mode == "RequestRatio" {
 		for i := 0; i < clientNumm; i++ {
-			go RequestRatio(clientNumm, optionNumm, servers, getRatio, consistencyLevel, quorum, &wg)
+			go RequestRatio(clientNumm, optionNumm, servers, getRatio, consistencyLevel, quorum, &wg,p)
 		}
 	} else if *mode == "BenchmarkFromCSV" {
 		for i := 0; i < clientNumm; i++ {
