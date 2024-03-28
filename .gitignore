@@ -3,8 +3,10 @@ dump.rdb
 benchmark/result/*
 benchmark/wasm_client/rust-client/target
 db
-valueLog_value.log
+valueLog_WiscKey.log
+valueLog_Leveldb.log
 kvstore/kvserver/db_key_addr
+kvstore/kvserver/db_key_value
 run_server.sh
 run_client.sh
 result/causal_put-latency.csv
