@@ -85,7 +85,7 @@ func PutInCausal(key string, value string, p pool.Pool) (*kvrpc.PutInCausalRespo
 	defer conn.Close()
 
 	client := kvrpc.NewKVClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10) // 设置五秒定时往下传
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*1000) // 设置五秒定时往下传
 	defer cancel()
 	reply, err := client.PutInCausal(ctx, request)
 	if err != nil {
