@@ -14,7 +14,7 @@ import (
 	"time"
 
 	// kvc "github.com/JasonLou99/Hybrid_KV_Store/kvstore/kvclient"
-	"github.com/shimingyah/pool"
+	"github.com/JasonLou99/Hybrid_KV_Store/pool"
 	"github.com/JasonLou99/Hybrid_KV_Store/rpc/kvrpc"
 	"github.com/JasonLou99/Hybrid_KV_Store/util"
 )

@@ -4,11 +4,7 @@ go 1.18
 
 require github.com/syndtr/goleveldb v1.0.0
 
-require (
-	github.com/fatih/pool v3.0.0+incompatible // indirect
-	github.com/shimingyah/pool v1.0.0 // indirect
-	gopkg.in/yaml.v2 v2.2.2 // indirect
-)
+require gopkg.in/yaml.v2 v2.2.2 // indirect
 
 require (
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
