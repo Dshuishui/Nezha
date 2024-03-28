@@ -21,6 +21,7 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
+	"math/rand"
 )
 
 // ErrClosed is the error resulting if the pool is closed via pool.Close().
@@ -61,7 +62,7 @@ type pool struct {
 	conns []*conn
 
 	// the server address is to create connection.
-	address string
+	address []string
 
 	// closed set true when Close is called.
 	closed int32
@@ -71,8 +72,8 @@ type pool struct {
 }
 
 // New return a connection pool.
-func New(address string, option Options) (Pool, error) {
-	if address == "" {
+func New(address []string, option Options) (Pool, error) {
+	if len(address) == 0 {
 		return nil, errors.New("invalid address settings")
 	}
 	if option.Dial == nil {
@@ -96,7 +97,7 @@ func New(address string, option Options) (Pool, error) {
 	}
 
 	for i := 0; i < p.opt.MaxIdle; i++ {
-		c, err := p.opt.Dial(address)
+		c, err := p.opt.Dial(address[i%len(address)])
 		if err != nil {
 			p.Close()
 			return nil, fmt.Errorf("dial is not able to fill the pool: %s", err)
@@ -171,7 +172,7 @@ func (p *pool) Get() (Conn, error) {
 			return p.conns[next], nil
 		}
 		// the third create one-time connection
-		c, err := p.opt.Dial(p.address)
+		c, err := p.opt.Dial(p.address[rand.Intn(len(p.address))])
 		return p.wrapConn(c, true), err
 	}
 
@@ -187,7 +188,7 @@ func (p *pool) Get() (Conn, error) {
 		var i int32
 		var err error
 		for i = 0; i < increment; i++ {
-			c, er := p.opt.Dial(p.address)
+			c, er := p.opt.Dial(p.address[rand.Intn(len(p.address))])
 			if er != nil {
 				err = er
 				break

@@ -40,7 +40,7 @@ func batchRawPut(value []byte) {
 		MaxConcurrentStreams: 64,
 		Reuse:                true,
 	}
-	p, err := pool.New(servers[rand.Intn(len(servers))], DesignOptions) // 先把这个连接池里面的地址固定，后面需要改new函数里面的生成tcp连接的方法
+	p, err := pool.New(servers, DesignOptions) // 先把这个连接池里面的地址固定，后面需要改new函数里面的生成tcp连接的方法
 	if err != nil {
 		util.EPrintf("failed to new pool: %v", err)
 	}

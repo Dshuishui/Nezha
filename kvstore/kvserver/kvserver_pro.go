@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"math/rand"
+	// "math/rand"
 	"net"
 	_ "net/http/pprof"
 	"strings"
@@ -96,11 +96,22 @@ func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[stri
 	// util.DPrintf("Log in Start(): %v ", newLog) //不要打印日志中的大value
 	// util.DPrintf("vcFromClient in Start(): %v", vcFromClient)
 	if newLog.Option == "Put" {
-		// for i := 0; i < len(kvs.peers); i++ {
-		// 	if kvs.peers[i] != kvs.internalAddress {
-		// 		go kvs.sendAppendEntriesInCausal(kvs.peers[i], args)
-		// 	}
-		// }
+		// 开始同步日志
+		data, _ := json.Marshal(newLog)                      // 将结构体m1序列化为JSON格式的字节流，并将结果
+		args := &causalrpc.AppendEntriesInCausalRequest{ // 创建了一个指向该类型实例的指针，并把指针赋值给了变量args
+			MapLattice: data,
+			// Version:    oldVersion + 1,
+			Version: 1,
+		}
+		// async sending to other nodes
+		/*
+			Gossip Buffer
+		*/
+		for i := 0; i < len(kvs.peers); i++ {
+			if kvs.peers[i] != kvs.internalAddress {
+				go kvs.sendAppendEntriesInCausal(kvs.peers[i], args)
+			}
+		}
 		kvs.valuelog.Put([]byte(newLog.Key), []byte(newLog.Value))
 		return true
 	} else if newLog.Option == "Get" {
@@ -349,28 +360,20 @@ func (kvs *KVServer) PutInWritelessCausal(ctx context.Context, in *kvrpc.PutInWr
 }
 
 func (kvs *KVServer) AppendEntriesInCausal(ctx context.Context, in *causalrpc.AppendEntriesInCausalRequest) (*causalrpc.AppendEntriesInCausalResponse, error) {
+	// appendEntriesInCausalResponse := &causalrpc.AppendEntriesInCausalResponse{}
+	var log_Sync config.Log
+	json.Unmarshal(in.MapLattice, &log_Sync)
+	// util.DPrintf("AppendEntriesInCausal %s", mlFromOther.Key)
+	// Append the log to the local log
+	// kvs.logs = append(kvs.logs, mlFromOther.Vl.Log)
+	// kvs.db.Store(mlFromOther.Key, &ValueTimestamp{value: mlFromOther.Vl.Log.Value, timestamp: time.Now().UnixMilli(), version: in.Version})
 
-	appendEntriesInCausalResponse := &causalrpc.AppendEntriesInCausalResponse{}
-	var mlFromOther lattices.HybridLattice
-	json.Unmarshal(in.MapLattice, &mlFromOther)
-	util.DPrintf("AppendEntriesInCausal %s", mlFromOther.Key)
-	vcFromOther := util.BecomeSyncMap(mlFromOther.Vl.VectorClock)
-	ok := util.IsUpper(kvs.vectorclock, vcFromOther)
-	if !ok {
-		// Append the log to the local log
-		// kvs.logs = append(kvs.logs, mlFromOther.Vl.Log)	// 这个存储到内存中的也没用，反正后期已经持久化存储到磁盘了
-		// kvs.db.Store(mlFromOther.Key, &ValueTimestamp{value: mlFromOther.Vl.Log.Value, timestamp: time.Now().UnixMilli(), version: in.Version})
-		// kvs.persister.Put(mlFromOther.Key, mlFromOther.Vl.Log.Value)
-		// 上面的是原始存储<key,value>的情况
-		kvs.valuelog.Put([]byte(mlFromOther.Key), []byte(mlFromOther.Vl.Log.Value))
+	//先存value到磁盘，持久化，再存<key,value>到leveldb
+	kvs.valuelog.Put([]byte(log_Sync.Key), []byte(log_Sync.Value))
+	kvs.persister.Put(log_Sync.Key, log_Sync.Value)
 
-		kvs.MergeVC(vcFromOther)
-		appendEntriesInCausalResponse.Success = true
-	} else {
-		// Reject the log, Because of vectorclock
-		appendEntriesInCausalResponse.Success = false
-	}
-	return appendEntriesInCausalResponse, nil
+	// appendEntriesInCausalResponse.Success = true
+	return nil, nil
 }
 
 func (kvs *KVServer) RegisterKVServer(ctx context.Context, address string, wg *sync.WaitGroup) { // 传入的是客户端与服务器之间的代理服务器的地址
@@ -496,9 +499,9 @@ func (kvs *KVServer) RegisterCausalServer(ctx context.Context, address string, w
 
 // s0 --> other servers
 func (kvs *KVServer) sendAppendEntriesInCausal(address string, args *causalrpc.AppendEntriesInCausalRequest) (*causalrpc.AppendEntriesInCausalResponse, bool) {
-	util.DPrintf("here is sendAppendEntriesInCausal() ---------> %v", address)
+	// util.DPrintf("here is sendAppendEntriesInCausal() ---------> ", address)
 	// 随机等待，模拟延迟
-	time.Sleep(time.Millisecond * time.Duration(kvs.latency+rand.Intn(25)))
+	// time.Sleep(time.Millisecond * time.Duration(kvs.latency+rand.Intn(25)))
 	// conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
 	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
 	if err != nil {
@@ -507,46 +510,15 @@ func (kvs *KVServer) sendAppendEntriesInCausal(address string, args *causalrpc.A
 	defer conn.Close()
 	client := causalrpc.NewCAUSALClient(conn)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5) // 定时5秒
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*500) // 定时5秒
 	defer cancel()
 
 	reply, err := client.AppendEntriesInCausal(ctx, args)
 	if err != nil {
-		util.EPrintf("sendAppendEntriesInCausal could not greet: %v", err)
+		util.EPrintf("sendAppendEntriesInCausal could not greet: ", err, address)
 		return reply, false
 	}
 	return reply, true
-
-	// 这就是自己修改option参数的做法
-	// DesignOptions:=pool.Options{
-	// 		Dial:                 pool.Dial,
-	// 		MaxIdle:              320,
-	// 		MaxActive:            640000,
-	// 		MaxConcurrentStreams: 640000,
-	// 		Reuse:                true,
-	// 	}
-	// p, err := pool.New(address, DesignOptions)
-	// // p, err := pool.New(address, pool.DefaultOptions)
-	// if err != nil {
-	// 	util.EPrintf("failed to new pool: %v", err)
-	// }
-	// defer p.Close()
-
-	// conn, err := p.Get()
-	// if err != nil {
-	// 	util.EPrintf("failed to get conn: %v", err)
-	// }
-	// defer conn.Close()
-
-	// client := causalrpc.NewCAUSALClient(conn.Value())
-	// ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)		// 设置五秒定时往下传
-	// defer cancel()
-	// reply,err := client.AppendEntriesInCausal(ctx, args)
-	// if err != nil {
-	// 	util.EPrintf("sendAppendEntriesInCausal could not greet: %v", err)
-	// 	return nil, false
-	// }
-	// return reply, true
 }
 
 func (kvs *KVServer) MergeVC(vc sync.Map) {
