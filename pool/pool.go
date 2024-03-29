@@ -19,9 +19,9 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"math/rand"
 	"sync"
 	"sync/atomic"
-	"math/rand"
 )
 
 // ErrClosed is the error resulting if the pool is closed via pool.Close().
@@ -42,6 +42,9 @@ type Pool interface {
 
 	// Status returns the current status of the pool.
 	Status() string
+
+	// Get return the addresses from the connection pool
+	GetAddress() string
 }
 
 type pool struct {
@@ -107,6 +110,10 @@ func New(address []string, option Options) (Pool, error) {
 	log.Printf("new pool success: %v\n", p.Status())
 
 	return p, nil
+}
+
+func (p *pool) GetAddress() string {
+	return p.address[0]
 }
 
 func (p *pool) incrRef() int32 {

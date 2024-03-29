@@ -31,12 +31,12 @@ const (
 
 	// KeepAliveTime is the duration of time after which if the client doesn't see
 	// any activity it pings the server to see if the transport is still alive.
-	KeepAliveTime = time.Duration(10) * time.Second
+	KeepAliveTime = time.Duration(30) * time.Second
 
 	// KeepAliveTimeout is the duration of time for which the client waits after having
 	// pinged for keepalive check and if no activity is seen even after that the connection
 	// is closed.
-	KeepAliveTimeout = time.Duration(3) * time.Second
+	KeepAliveTimeout = time.Duration(6) * time.Second
 
 	// InitialWindowSize we set it 1GB is to provide system's throughput.
 	InitialWindowSize = 1 << 30
