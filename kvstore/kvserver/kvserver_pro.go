@@ -94,7 +94,7 @@ type ValueLog struct {
 var wg = sync.WaitGroup{}
 
 // this method is used to execute the command from client with causal consistency
-func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[string]int32, timestampFromClient int64) bool {
+func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[string]int32) bool {
 	vcFromClient := util.BecomeSyncMap(vcFromClientArg) // 将map类型转换成同步安全的Map类型
 	// 将 command 这个接口类型的值转换为 config.Log 类型的值
 	newLog := command.(config.Log)
@@ -112,7 +112,7 @@ func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[stri
 		/*
 			Gossip Buffer
 		*/
-		wg.Add(len(kvs.peers) - 1)
+		// wg.Add(len(kvs.peers) - 1)
 		for i := 0; i < len(kvs.pools); i++ {
 			if kvs.pools[i].GetAddress() != kvs.internalAddress {
 				// wg.Add()
@@ -120,7 +120,7 @@ func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[stri
 
 				// 同步日志
 				go func(i int) (*causalrpc.AppendEntriesInCausalResponse, bool) {
-					defer wg.Done()
+					// defer wg.Done()
 					conn, err := kvs.pools[i].Get()
 					if err != nil {
 						util.EPrintf("failed to get sync conn: %v", err)
@@ -160,7 +160,7 @@ func (kvs *KVServer) GetInCausal(ctx context.Context, in *kvrpc.GetInCausalReque
 		Key:    in.Key,
 		Value:  "",
 	}
-	ok := kvs.startInCausal(op, in.Vectorclock, in.Timestamp)
+	ok := kvs.startInCausal(op, in.Vectorclock)
 	if ok {
 		/* vt, _ := kvs.db.Load(in.Key)
 		if vt == nil {
@@ -212,7 +212,7 @@ func (kvs *KVServer) PutInCausal(ctx context.Context, in *kvrpc.PutInCausalReque
 		Key:    in.Key,
 		Value:  in.Value,
 	}
-	ok := kvs.startInCausal(op, in.Vectorclock, in.Timestamp)
+	ok := kvs.startInCausal(op, in.Vectorclock)
 	if ok {
 		putInCausalResponse.Success = true
 	} else {
@@ -751,9 +751,9 @@ func main() {
 	// 这就是自己修改grpc线程池option参数的做法
 	DesignOptions := pool.Options{
 		Dial:                 pool.Dial,
-		MaxIdle:              80,
+		MaxIdle:              100,
 		MaxActive:            128,
-		MaxConcurrentStreams: 52,
+		MaxConcurrentStreams: 32,
 		Reuse:                true,
 	}
 	// 根据servers的地址，创建了一一对应server地址的grpc连接池
