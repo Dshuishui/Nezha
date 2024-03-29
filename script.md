@@ -19,16 +19,23 @@ git config --global --unset http.proxy
 ```
 
 start kvserver cluster: 
-`go run kvstore/kvserver/kvserver.go -address 192.168.1.72:3088 -internalAddress 192.168.1.72:30881 -peers 192.168.1.72:30881,192.168.1.35:30881`
-`go run kvstore/kvserver/kvserver.go -address 192.168.1.35:3088 -internalAddress 192.168.1.35:30881 -peers 192.168.1.72:30881,192.168.1.35:30881`
+`go run kvstore/kvserver/kvserver_pro.go -address 192.168.1.72:3088 -internalAddress 192.168.1.72:30881 -peers 192.168.1.72:30881,192.168.1.100:30881,192.168.1.74:30881`
+`go run kvstore/kvserver/kvserver_pro.go -address 192.168.1.74:3088 -internalAddress 192.168.1.74:30881 -peers 192.168.1.72:30881,192.168.1.100:30881,192.168.1.74:30881`
+`go run kvstore/kvserver/kvserver_pro.go -address 192.168.1.100:3088 -internalAddress 192.168.1.100:30881 -peers 192.168.1.72:30881,192.168.1.100:30881,192.168.1.74:30881`
 <!-- 在一个集群中启动一个键值存储服务器。通过设置监听地址、内部地址和对等节点，实现了服务器之间的通信和数据共享。 -->
-kvserver with tcp and rpc:
-`go run kvstore/kvserver/kvserver.go -address 192.168.10.129:3088 -tcpAddress 192.168.10.129:50000 -internalAddress 192.168.10.129:30881 -peers 192.168.10.129:30881`
+<!-- kvserver with tcp and rpc:
+`go run kvstore/kvserver/kvserver.go -address 192.168.10.129:3088 -tcpAddress 192.168.10.129:50000 -internalAddress 192.168.10.129:30881 -peers 192.168.1.74:30881` -->
 <!-- 启动一个基于 TCP 协议的分布式键值存储服务器，用于在分布式集群中存储键值对，并且能够与其他节点进行数据同步。通过设置监听地址、TCP 监听地址、内部地址和对等节点，实现了服务器之间的通信、数据共享、以及基于 TCP 的数据同步。 -->
 
 start kvclient:
 * RequestRatio benchmark: 
-    `go run ./benchmark/hydis/benchmark.go -cnums 10 -mode RequestRatio -onums 60000 -getratio 1 -servers 192.168.1.72:3088,192.168.1.35:3088`
+    `go run ./benchmark/hydis/benchmark_pro.go -cnums 1500 -dnums 15625000 -vsize 64 -servers 192.168.1.72:3088,192.168.1.74:3088,192.168.1.100:3088`
+    `go run ./benchmark/hydis/benchmark_pro.go -cnums 1500 -dnums 3906250 -vsize 256 -servers 192.168.1.72:3088,192.168.1.74:3088,192.168.1.100:3088` 
+    `go run ./benchmark/hydis/benchmark_pro.go -cnums 1500 -dnums 976563 -vsize 1000 -servers 192.168.1.72:3088,192.168.1.74:3088,192.168.1.100:3088`
+    `go run ./benchmark/hydis/benchmark_pro.go -cnums 1500 -dnums 244140 -vsize 4000 -servers 192.168.1.72:3088,192.168.1.74:3088,192.168.1.100:3088`
+    `go run ./benchmark/hydis/benchmark_pro.go -cnums 1500 -dnums 61035 -vsize 16000 -servers 192.168.1.72:3088,192.168.1.74:3088,192.168.1.100:3088`
+    `go run ./benchmark/hydis/benchmark_pro.go -cnums 1500 -dnums 15258 -vsize 64000 -servers 192.168.1.72:3088,192.168.1.74:3088,192.168.1.100:3088`
+    `go run ./benchmark/hydis/benchmark_pro.go -cnums 1500 -dnums 3815 -vsize 256000 -servers 192.168.1.72:3088,192.168.1.74:3088,192.168.1.100:3088`
     <!-- 模拟的客户端个数为1，客户端程序将会在一个goroutine中运行 -->
     * cnums: number of clients, goroutines simulate 
     <!-- 操作次数，便于测试 -->
