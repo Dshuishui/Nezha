@@ -50,10 +50,10 @@ func batchRawPut(value []byte) {
 	base := *dnums / *cnums
 	wg.Add(*cnums)
 	for i := 0; i < *cnums; i++ {
-		go func(i int) {
+		go func() {
 			defer wg.Done()
 
-			num := 0
+			// num := 0
 			rand.Seed(time.Now().Unix())
 			for j := 0; j < base; j++ {
 				k := rand.Intn(*dnums)
@@ -61,12 +61,12 @@ func batchRawPut(value []byte) {
 				key := fmt.Sprintf("key_%d", k)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
 				PutInCausal(key, string(value), p)
-				if j >= num+1000 {
-					num = j
-					// fmt.Printf("Client %v put key num: %v\n", i+1, num)
-				}
+				// if j >= num+1000 {
+				// 	num = j
+				// 	fmt.Printf("Client %v put key num: %v\n", i+1, num)
+				// }
 			}
-		}(i)
+		}()
 	}
 	wg.Wait()
 }
