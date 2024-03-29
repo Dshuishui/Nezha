@@ -753,9 +753,9 @@ func main() {
 	// 这就是自己修改grpc线程池option参数的做法
 	DesignOptions := pool.Options{
 		Dial:                 pool.Dial,
-		MaxIdle:              100,
-		MaxActive:            128,
-		MaxConcurrentStreams: 32,
+		MaxIdle:              128,
+		MaxActive:            200,
+		MaxConcurrentStreams: 64,
 		Reuse:                true,
 	}
 	// 根据servers的地址，创建了一一对应server地址的grpc连接池
