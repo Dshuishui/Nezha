@@ -94,13 +94,15 @@ type ValueLog struct {
 var wg = sync.WaitGroup{}
 
 // this method is used to execute the command from client with causal consistency
-func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[string]int32) bool {
-	vcFromClient := util.BecomeSyncMap(vcFromClientArg) // 将map类型转换成同步安全的Map类型
+func (kvs *KVServer) startInCausal(command interface{}) bool {
+	// vcFromClient := util.BecomeSyncMap(vcFromClientArg) // 将map类型转换成同步安全的Map类型
 	// 将 command 这个接口类型的值转换为 config.Log 类型的值
 	newLog := command.(config.Log)
 	// util.DPrintf("Log in Start(): %v ", newLog) //不要打印日志中的大value
 	// util.DPrintf("vcFromClient in Start(): %v", vcFromClient)
 	if newLog.Option == "Put" {
+		kvs.valuelog.Put([]byte(newLog.Key), []byte(newLog.Value))
+
 		// 开始同步日志
 		data, _ := json.Marshal(newLog)                      // 将结构体m1序列化为JSON格式的字节流，并将结果
 		args := &causalrpc.AppendEntriesInCausalRequest{ // 创建了一个指向该类型实例的指针，并把指针赋值给了变量args
@@ -140,13 +142,13 @@ func (kvs *KVServer) startInCausal(command interface{}, vcFromClientArg map[stri
 				}(i)
 			}
 		}
-		kvs.valuelog.Put([]byte(newLog.Key), []byte(newLog.Value))
 		return true
 	} else if newLog.Option == "Get" {
-		vcKVS, _ := kvs.vectorclock.Load(kvs.internalAddress)
-		vcKVC, _ := vcFromClient.Load(kvs.internalAddress)
-		return vcKVS.(int32) >= vcKVC.(int32) // 比较vectorclock数组中internalAddress对应的那一个键值即可，并且不会进行修改，而Put操作是更新整个vectorclock的数组。
+		// vcKVS, _ := kvs.vectorclock.Load(kvs.internalAddress)
+		// vcKVC, _ := vcFromClient.Load(kvs.internalAddress)
+		// return vcKVS.(int32) >= vcKVC.(int32) // 比较vectorclock数组中internalAddress对应的那一个键值即可，并且不会进行修改，而Put操作是更新整个vectorclock的数组。
 		// return util.IsUpper(kvs.vectorclock, vcFromClient)
+		return true
 	}
 	util.DPrintf("here is Start() in Causal: log command option is false")
 	return false
@@ -160,7 +162,7 @@ func (kvs *KVServer) GetInCausal(ctx context.Context, in *kvrpc.GetInCausalReque
 		Key:    in.Key,
 		Value:  "",
 	}
-	ok := kvs.startInCausal(op, in.Vectorclock)
+	ok := kvs.startInCausal(op)
 	if ok {
 		/* vt, _ := kvs.db.Load(in.Key)
 		if vt == nil {
@@ -212,7 +214,7 @@ func (kvs *KVServer) PutInCausal(ctx context.Context, in *kvrpc.PutInCausalReque
 		Key:    in.Key,
 		Value:  in.Value,
 	}
-	ok := kvs.startInCausal(op, in.Vectorclock)
+	ok := kvs.startInCausal(op)
 	if ok {
 		putInCausalResponse.Success = true
 	} else {
