@@ -610,11 +610,17 @@ func Make(peers []string, me int,
 		// grpc连接池组
 		rf.pools = append(rf.pools, p)
 	}
-	defer func() {
-		for _, pool := range rf.pools {
-			pool.Close()
+	// 设置一个定时器，每十秒检查一次条件
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C{
+		if rf.killed() {		// 如果上次KVS关闭了Raft，则可以关闭pool
+			for _, pool := range rf.pools {
+				pool.Close()
+				util.DPrintf("the pool of raft is close")
+			}
 		}
-	}()
+	}
 
 	util.DPrintf("RaftNode[%d] Make again", rf.me)
 
