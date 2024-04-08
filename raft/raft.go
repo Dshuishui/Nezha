@@ -299,7 +299,7 @@ func (rf *Raft) electionLoop() {
 			// defer rf.mu.Unlock()
 
 			now := time.Now()
-			timeout := time.Duration(200+rand.Int31n(150)) * time.Millisecond // 超时随机化 200-350
+			timeout := time.Duration(10000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
 			elapses := now.Sub(rf.lastActiveTime)
 			// follower -> candidates
 			if rf.role == ROLE_FOLLOWER {
@@ -310,7 +310,7 @@ func (rf *Raft) electionLoop() {
 			}
 			// 请求vote，当变成candidate后，等待10ms才进入到该if语句
 			if rf.role == ROLE_CANDIDATES && elapses >= timeout {
-				rf.lastActiveTime = now // 重置下次选举时间
+				rf.lastActiveTime = time.Now() // 重置下次选举时间
 				rf.currentTerm += 1     // 发起新任期
 				rf.votedFor = rf.me     // 该任期投了自己
 
@@ -387,6 +387,7 @@ func (rf *Raft) electionLoop() {
 				// 赢得大多数选票，则成为leader
 				if voteCount > len(rf.peers)/2 {
 					rf.role = ROLE_LEADER
+					util.DPrintf("RaftNode[%d] Candidate -> Leader", rf.me)
 					rf.leaderId = rf.me
 					rf.nextIndex = make([]int, len(rf.peers))
 					for i := 0; i < len(rf.peers); i++ {
