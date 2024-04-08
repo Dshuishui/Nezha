@@ -509,7 +509,7 @@ func main() {
 
 	// Raft层
 	kvs.applyCh = make(chan raft.ApplyMsg, 1)	// 至少1个容量，启动后初始化snapshot用
-	kvs.me = FindIndexInPeers(peers,address)
+	kvs.me = FindIndexInPeers(peers,internalAddress)
 	persisterRaft := &raft.Persister{}		// 初始化对Raft进行持久化操作的指针
 	kvs.raft = raft.Make(kvs.peers, kvs.me, persisterRaft, kvs.applyCh)
 	kvs.reqMap = make(map[int]*OpContext)
@@ -556,6 +556,8 @@ func main() {
 	defer func() {
 		for _, pool := range kvs.pools {
 			pool.Close()
+			kvs.raft.Kill()		// 关闭Raft层
+			util.DPrintf("the pool of KVS is close")
 		}
 	}()
 	wg.Wait()
