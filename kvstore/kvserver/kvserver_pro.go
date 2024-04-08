@@ -6,28 +6,29 @@ import (
 	"flag"
 	"fmt"
 	"sync/atomic"
+
 	// "math/rand"
+	"encoding/binary"
 	"net"
 	_ "net/http/pprof"
+	"os"
 	"strings"
 	"sync"
 	"time"
-	"encoding/binary"
-	"os"
 
 	// "github.com/JasonLou99/Hybrid_KV_Store/config"
 	"github.com/JasonLou99/Hybrid_KV_Store/raft"
 	// "github.com/JasonLou99/Hybrid_KV_Store/persister"
-	"github.com/JasonLou99/Hybrid_KV_Store/rpc/raftrpc"
 	"github.com/JasonLou99/Hybrid_KV_Store/rpc/kvrpc"
+	"github.com/JasonLou99/Hybrid_KV_Store/rpc/raftrpc"
 	"github.com/JasonLou99/Hybrid_KV_Store/util"
 
 	"google.golang.org/grpc"
 	// "google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/reflection"
-	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/JasonLou99/Hybrid_KV_Store/pool"
+	"github.com/syndtr/goleveldb/leveldb"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/reflection"
 )
 
 var (
@@ -37,29 +38,29 @@ var (
 )
 
 const (
-	OP_TYPE_PUT    = "Put"
-	OP_TYPE_GET    = "Get"
+	OP_TYPE_PUT = "Put"
+	OP_TYPE_GET = "Get"
 )
 
 type KVServer struct {
 	peers           []string
 	address         string
-	internalAddress string	    // internal address for communication between nodes
-	lastPutTime    time.Time	// lastPutTime记录最后一次PUT请求的时间
-	valuelog *ValueLog
-	pools []pool.Pool 			// 用于日志同步的连接池
+	internalAddress string    // internal address for communication between nodes
+	lastPutTime     time.Time // lastPutTime记录最后一次PUT请求的时间
+	valuelog        *ValueLog
+	pools           []pool.Pool // 用于日志同步的连接池
 
 	kvrpc.UnimplementedKVServer
 	raftrpc.UnimplementedRaftServer
-	me int
-	raft *raft.Raft
-	persister   *raft.Persister // 对数据库进行读写操作的接口
-	applyCh chan raft.ApplyMsg	// 用于与Raft层面传输数据的通道
-	dead    int32 				// set by Kill()
-	reqMap  map[int]*OpContext  // log index -> 请求上下文
-	seqMap  map[int64]int64     // 客户端id -> 客户端seq
+	me        int
+	raft      *raft.Raft
+	persister *raft.Persister    // 对数据库进行读写操作的接口
+	applyCh   chan raft.ApplyMsg // 用于与Raft层面传输数据的通道
+	dead      int32              // set by Kill()
+	reqMap    map[int]*OpContext // log index -> 请求上下文
+	seqMap    map[int64]int64    // 客户端id -> 客户端seq
 
-	lastAppliedIndex int		// 已持久化存储的日志index
+	lastAppliedIndex int // 已持久化存储的日志index
 }
 
 // ValueLog represents the Value Log file for storing values.
@@ -112,11 +113,11 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
-func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest)(reply *kvrpc.GetInRaftResponse ){
+func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInRaftResponse) {
 	reply.Err = raft.OK
 
 	op := &raftrpc.Interface{
-		OpType:     OP_TYPE_GET,
+		OpType:   OP_TYPE_GET,
 		Key:      args.Key,
 		ClientId: args.ClientId,
 		SeqId:    args.SeqId,
@@ -163,27 +164,27 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest)(reply *kvrpc.GetInRa
 	return reply
 }
 
-func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInRaftResponse,err error) {
+func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInRaftResponse, err error) {
 	reply = kvs.StartGet(in)
-	if reply.Err ==raft.ErrWrongLeader {
+	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
 	}
 	return reply, nil
 }
 
-func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) ( reply *kvrpc.PutInRaftResponse,err error) {
+func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) (reply *kvrpc.PutInRaftResponse, err error) {
 	reply = kvs.StartPut(in)
-	if reply.Err ==raft.ErrWrongLeader {
+	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
 	}
 	return reply, nil
 }
 
-func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest)(reply *kvrpc.PutInRaftResponse) {
+func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) (reply *kvrpc.PutInRaftResponse) {
 	reply.Err = raft.OK
 
 	op := &raftrpc.Interface{
-		OpType:     args.Op,
+		OpType:   args.Op,
 		Key:      args.Key,
 		Value:    args.Value,
 		ClientId: args.ClientId,
@@ -195,7 +196,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest)(reply *kvrpc.PutInRa
 	op.Index, op.Term, isLeader = kvs.raft.Start(op)
 	if !isLeader {
 		reply.Err = raft.ErrWrongLeader
-		return	reply	// 如果收到客户端put请求的不是leader，需要将leader的id返回给客户端的reply中
+		return reply // 如果收到客户端put请求的不是leader，需要将leader的id返回给客户端的reply中
 	}
 
 	opCtx := newOpContext(op)
@@ -217,7 +218,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest)(reply *kvrpc.PutInRa
 	timer := time.NewTimer(2000 * time.Millisecond)
 	defer timer.Stop()
 	select {
-		// 通道关闭或者有数据传入都会执行以下的分支
+	// 通道关闭或者有数据传入都会执行以下的分支
 	case <-opCtx.committed: // ApplyLoop函数执行完后，会关闭committed通道，再根据相关的值设置请求reply的结果
 		if opCtx.wrongLeader { // 同样index位置的term不一样了, 说明leader变了，需要client向新leader重新写入
 			reply.Err = raft.ErrWrongLeader
@@ -239,7 +240,7 @@ func (kvs *KVServer) RegisterKVServer(ctx context.Context, address string) { // 
 		if err != nil {
 			util.FPrintf("failed to listen: %v", err)
 		}
-		grpcServer := grpc.NewServer( 						// 设置自定义的grpc连接
+		grpcServer := grpc.NewServer( // 设置自定义的grpc连接
 			grpc.InitialWindowSize(pool.InitialWindowSize),
 			grpc.InitialConnWindowSize(pool.InitialConnWindowSize),
 			grpc.MaxSendMsgSize(pool.MaxSendMsgSize),
@@ -282,7 +283,7 @@ func (kvs *KVServer) RegisterRaftServer(ctx context.Context, address string) { /
 		if err != nil {
 			util.FPrintf("failed to listen: %v", err)
 		}
-		grpcServer := grpc.NewServer( 
+		grpcServer := grpc.NewServer(
 			grpc.InitialWindowSize(pool.InitialWindowSize),
 			grpc.InitialConnWindowSize(pool.InitialConnWindowSize),
 			grpc.MaxSendMsgSize(pool.MaxSendMsgSize),
@@ -406,8 +407,8 @@ func (vl *ValueLog) Get(key []byte) ([]byte, error) {
 
 // 返回了一个指向KVServer类型对象的指针
 func MakeKVServer(address string, internalAddress string, peers []string) *KVServer {
-	kvs := new(KVServer)                     // 返回一个指向新分配的、零值初始化的KVServer类型的指针
-	kvs.persister = new(raft.Persister) 	 // 实例化对数据库进行读写操作的接口对象
+	kvs := new(KVServer)                // 返回一个指向新分配的、零值初始化的KVServer类型的指针
+	kvs.persister = new(raft.Persister) // 实例化对数据库进行读写操作的接口对象
 	kvs.address = address
 	kvs.internalAddress = internalAddress
 	kvs.peers = peers
@@ -451,11 +452,11 @@ func (kvs *KVServer) applyLoop() {
 					kvs.lastAppliedIndex = index
 
 					// 操作日志
-					op := cmd.(*raftrpc.Interface)		// 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
+					op := cmd.(*raftrpc.Interface) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
 
-					opCtx, existOp := kvs.reqMap[index]		// 检查当前index对应的等待put的请求是否超时，即是否还在等待被apply
-					prevSeq, existSeq := kvs.seqMap[op.ClientId]		// 上一次该客户端发来的请求的序号
-					kvs.seqMap[op.ClientId] = op.SeqId	// 更新服务器端，客户端请求的序列号
+					opCtx, existOp := kvs.reqMap[index]          // 检查当前index对应的等待put的请求是否超时，即是否还在等待被apply
+					prevSeq, existSeq := kvs.seqMap[op.ClientId] // 上一次该客户端发来的请求的序号
+					kvs.seqMap[op.ClientId] = op.SeqId           // 更新服务器端，客户端请求的序列号
 
 					if existOp { // 存在等待结果的apply日志的RPC, 那么判断状态是否与写入时一致，可能之前接受过该日志，但是身份不是leader了，该index对应的请求日志被别的leader同步日志时覆盖了。
 						// 虽然没超时，但是如果已经和刚开始写入的请求不一致了，那也不行。
@@ -469,32 +470,32 @@ func (kvs *KVServer) applyLoop() {
 						if !existSeq || op.SeqId > prevSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
 							if op.OpType == OP_TYPE_PUT { // put操作
 								// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
-								
+
 								// kvs.persister.Put(op.Key, op.Value)		leveldb存储key,value
 								err := kvs.valuelog.Put([]byte(op.Key), []byte(op.Value))
 								if err != nil {
 									panic(err)
 								}
-							} 
-						} else if existOp {		// 虽然该请求的处理还未超时，但是已经处理过了。
+							}
+						} else if existOp { // 虽然该请求的处理还未超时，但是已经处理过了。
 							opCtx.ignored = true
 						}
 					} else { // OP_TYPE_GET
-						if existOp {	// 如果是GET请求，只要没超时，都可以进行幂等处理
+						if existOp { // 如果是GET请求，只要没超时，都可以进行幂等处理
 							// opCtx.value, opCtx.keyExist = kvs.kvStore[op.Key]	// --------------------------------------------
 
 							// value := kvs.persister.Get(op.Key)		leveldb拿取value
 							value, err := kvs.valuelog.Get([]byte(op.Key))
 							if err != nil {
 								panic(err)
-								// opCtx.keyExist = false	
+								// opCtx.keyExist = false
 							}
 							opCtx.value = string(value)
 						}
 					}
 
 					// 唤醒挂起的RPC
-					if existOp {		// 如果等待apply的请求还没超时
+					if existOp { // 如果等待apply的请求还没超时
 						close(opCtx.committed)
 					}
 				}()
@@ -512,10 +513,9 @@ func main() {
 	kvs := MakeKVServer(address, internalAddress, peers)
 
 	// Raft层
-	kvs.applyCh = make(chan raft.ApplyMsg, 1)	// 至少1个容量，启动后初始化snapshot用
-	kvs.me = FindIndexInPeers(peers,internalAddress)
-	persisterRaft := &raft.Persister{}		// 初始化对Raft进行持久化操作的指针
-	kvs.raft = raft.Make(kvs.peers, kvs.me, persisterRaft, kvs.applyCh)
+	kvs.applyCh = make(chan raft.ApplyMsg, 1) // 至少1个容量，启动后初始化snapshot用
+	kvs.me = FindIndexInPeers(peers, internalAddress)
+	persisterRaft := &raft.Persister{} // 初始化对Raft进行持久化操作的指针
 	kvs.reqMap = make(map[int]*OpContext)
 	kvs.seqMap = make(map[int64]int64)
 	kvs.lastAppliedIndex = 0
@@ -534,6 +534,8 @@ func main() {
 				cancel() // 超时后取消上下文
 				fmt.Println("38秒没有请求，停止服务器")
 				wg.Done()
+
+				kvs.raft.Kill() // 关闭Raft层
 				return // 退出main函数
 			}
 		}
@@ -541,29 +543,30 @@ func main() {
 	wg.Add(2 + 1)
 
 	// 这就是自己修改grpc线程池option参数的做法
-	DesignOptions := pool.Options{
-		Dial:                 pool.Dial,
-		MaxIdle:              128,
-		MaxActive:            200,
-		MaxConcurrentStreams: 64,
-		Reuse:                true,
-	}
-	// 根据servers的地址，创建了一一对应server地址的grpc连接池
-	for i := 0; i < len(peers); i++ {
-		peers_single := []string{peers[i]}
-		p, err := pool.New(peers_single, DesignOptions)
-		if err != nil {
-			util.EPrintf("failed to new pool: %v", err)
-		}
-		// grpc连接池组
-		kvs.pools = append(kvs.pools, p)
-	}
-	defer func() {
-		for _, pool := range kvs.pools {
-			pool.Close()
-			kvs.raft.Kill()		// 关闭Raft层
-			util.DPrintf("The KVS pool has been closed")
-		}
-	}()
+	// DesignOptions := pool.Options{
+	// 	Dial:                 pool.Dial,
+	// 	MaxIdle:              32,
+	// 	MaxActive:            64,
+	// 	MaxConcurrentStreams: 64,
+	// 	Reuse:                true,
+	// }
+	// // 根据servers的地址，创建了一一对应server地址的grpc连接池
+	// for i := 0; i < len(peers); i++ {
+	// 	peers_single := []string{peers[i]}
+	// 	p, err := pool.New(peers_single, DesignOptions)
+	// 	if err != nil {
+	// 		util.EPrintf("failed to new pool: %v", err)
+	// 	}
+	// 	// grpc连接池组
+	// 	kvs.pools = append(kvs.pools, p)
+	// }
+	// defer func() {
+	// 	for _, pool := range kvs.pools {
+	// 		pool.Close()
+	// 		util.DPrintf("The KVS pool has been closed")
+	// 	}
+	// }()
+	kvs.raft = raft.Make(kvs.peers, kvs.me, persisterRaft, kvs.applyCh) // 开启Raft
+
 	wg.Wait()
 }
