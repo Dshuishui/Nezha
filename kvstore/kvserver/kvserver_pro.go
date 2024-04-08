@@ -469,6 +469,8 @@ func (kvs *KVServer) applyLoop() {
 						if !existSeq || op.SeqId > prevSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
 							if op.OpType == OP_TYPE_PUT { // put操作
 								// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
+								
+								// kvs.persister.Put(op.Key, op.Value)		leveldb存储key,value
 								err := kvs.valuelog.Put([]byte(op.Key), []byte(op.Value))
 								if err != nil {
 									panic(err)
@@ -480,6 +482,8 @@ func (kvs *KVServer) applyLoop() {
 					} else { // OP_TYPE_GET
 						if existOp {	// 如果是GET请求，只要没超时，都可以进行幂等处理
 							// opCtx.value, opCtx.keyExist = kvs.kvStore[op.Key]	// --------------------------------------------
+
+							// value := kvs.persister.Get(op.Key)		leveldb拿取value
 							value, err := kvs.valuelog.Get([]byte(op.Key))
 							if err != nil {
 								panic(err)
@@ -519,6 +523,7 @@ func main() {
 	go kvs.applyLoop()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	util.EPrintf("走到这一步了嘛？？？")
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go kvs.RegisterRaftServer(ctx, kvs.internalAddress)
 	go func() {
@@ -557,7 +562,7 @@ func main() {
 		for _, pool := range kvs.pools {
 			pool.Close()
 			kvs.raft.Kill()		// 关闭Raft层
-			util.DPrintf("the pool of KVS is close")
+			util.DPrintf("The KVS pool has been closed")
 		}
 	}()
 	wg.Wait()
