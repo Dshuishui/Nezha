@@ -1,0 +1,70 @@
+syntax = "proto3";
+ 
+option go_package="./;raftrpc";
+
+/* 
+    this rpc is only for Raft consistency between nodes
+*/
+
+service Raft {
+  rpc AppendEntriesInRaft (AppendEntriesInRaftRequest) returns (AppendEntriesInRaftResponse) {}
+  rpc RequestVote (RequestVoteRequest) returns (RequestVoteResponse) {}
+  rpc InstallSnapshot (InstallSnapshotRequest) returns (InstallSnapshotResponse) {}
+}
+ 
+message AppendEntriesInRaftRequest{
+  int32 Term = 1;
+  int32 LeaderId = 2; 
+  int32 PrevLogIndex = 3;
+  int32 PrevLogTerm = 4;
+  repeated LogEntry Entries = 5;
+  int32 LeaderCommit = 6;
+}
+
+message LogEntry{
+  Interface Command = 1;
+  int32 Term = 2;
+}
+
+message Interface {
+  int32 Index = 1;
+  int32 Term = 2;
+  string OpType = 3;
+  string Key = 4;
+  string Value = 5;
+  int64 SeqId = 6;
+  int64 ClientId = 7;
+}
+
+message AppendEntriesInRaftResponse{
+  int32 Term = 1;
+  bool Success = 2;
+  int32 ConflictIndex = 3;
+  int32 ConflictTerm = 4;
+}
+
+message RequestVoteRequest{
+  int32 Term = 1;
+  int32 CandidateId = 2;
+  int32 LastLogIndex = 3;
+  int32 LastLogTerm = 4;
+}
+
+message RequestVoteResponse{
+  int32 Term = 1;
+  bool VoteGranted = 2;
+}
+
+message InstallSnapshotRequest{
+  int32 Term = 1;
+  int32 LeaderId = 2;
+  int32 LastIncludedIndex = 3;
+  int32 LastIncludedTerm = 4;
+  int32 Offset = 5;
+  bytes Data = 6;
+  bool Done = 7;
+}
+
+message InstallSnapshotResponse{
+  int32 Term = 1;
+}

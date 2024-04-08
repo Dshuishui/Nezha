@@ -7,58 +7,31 @@ option go_package="./;kvrpc";
 */
 
 service KV{
-  rpc GetInCausal (GetInCausalRequest) returns (GetInCausalResponse) {}
-  rpc PutInCausal (PutInCausalRequest) returns (PutInCausalResponse) {}
-  rpc GetInWritelessCausal (GetInWritelessCausalRequest) returns (GetInWritelessCausalResponse) {}
-  rpc PutInWritelessCausal (PutInWritelessCausalRequest) returns (PutInWritelessCausalResponse) {}
+  rpc GetInRaft (GetInRaftRequest) returns (GetInRaftResponse) {}
+  rpc PutInRaft (PutInRaftRequest) returns (PutInRaftResponse) {}
 }
 
-message GetInCausalRequest {
-  string key = 1;
-  map<string,int32> vectorclock = 2;
-  int64 timestamp = 3;
+message GetInRaftRequest {
+  string Key = 1;
+  int64 ClientId = 2;
+  int64 SeqId = 3;
 }
 
-message GetInCausalResponse {
-  string value = 1;
-  map<string,int32> vectorclock = 2;
-  bool success = 3;
+message GetInRaftResponse {
+  string Err = 1;
+  string Value = 2;
+  int32 LeaderId = 3;
 }
 
-message PutInCausalRequest {
-  string key = 1;
-  string value = 2;
-  map<string,int32> vectorclock = 3;
-  int64 timestamp = 4;
+message PutInRaftRequest {
+  string Key = 1;
+  string Value = 2;
+  string Op = 3;
+  int64 ClientId = 4;
+  int64 SeqId = 5;
 }
 
-message PutInCausalResponse {
-  bool success = 1;
-  map<string,int32> vectorclock = 2;
-}
-
-
-
-message GetInWritelessCausalRequest {
-  string key = 1;
-  map<string,int32> vectorclock = 2;
-  int64 timestamp = 3;
-}
-
-message GetInWritelessCausalResponse {
-  string value = 1;
-  map<string,int32> vectorclock = 2;
-  bool success = 3;
-}
-
-message PutInWritelessCausalRequest {
-  string key = 1;
-  string value = 2;
-  map<string,int32> vectorclock = 3;
-  int64 timestamp = 4;
-}
-
-message PutInWritelessCausalResponse {
-  bool success = 1;
-  map<string,int32> vectorclock = 2;
+message PutInRaftResponse {
+  string Err = 1;
+  int32 LeaderId = 2;
 }
