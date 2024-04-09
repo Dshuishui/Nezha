@@ -103,6 +103,8 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) GetLeaderId() (leaderId int32) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	return int32(rf.leaderId)
 }
 
@@ -420,7 +422,7 @@ func (rf *Raft) electionLoop() {
 					}
 				}
 			VOTE_END:
-				// rf.mu.Lock()
+				rf.mu.Lock()
 				defer func() {
 					util.DPrintf("RaftNode[%d] RequestVote ends, finishCount[%d] voteCount[%d] Role[%s] maxTerm[%d] currentTerm[%d]", rf.me, finishCount, voteCount,
 						rf.role, maxTerm, rf.currentTerm)
@@ -487,9 +489,9 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	args.LeaderId = int32(rf.me)
 	args.LeaderCommit = int32(rf.commitIndex)
 	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)
-	if args.PrevLogIndex ==0 {		// 确保在从0开始的时候直接进行日志追加即可
+	if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
 		args.PrevLogTerm = 0
-	}else{
+	} else {
 		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
 	}
 	args.Entries = append(args.Entries, rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]...)
@@ -631,6 +633,8 @@ func (rf *Raft) lastIndex() int {
 func (rf *Raft) lastTerm() (lastLogTerm int) {
 	if len(rf.log) != 0 {
 		lastLogTerm = int(rf.log[len(rf.log)-1].Term)
+	} else {
+		lastLogTerm = 0
 	}
 	return
 }
