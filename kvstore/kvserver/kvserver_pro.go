@@ -500,9 +500,8 @@ func main() {
 			}
 		}
 	}()
-	wg.Add(1 + 1 + 1)
-	go kvs.raft.RegisterRaftServer(ctx, kvs.internalAddress, &wg)
-	kvs.raft = raft.Make(kvs.peers, kvs.me, persisterRaft, kvs.applyCh) // 开启Raft
+	wg.Add(1 + 1)
+	kvs.raft = raft.Make(kvs.peers, kvs.me, persisterRaft, kvs.applyCh,ctx) // 开启Raft
 
 	wg.Wait()
 }
