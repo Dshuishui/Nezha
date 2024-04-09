@@ -43,12 +43,13 @@ const (
 )
 
 type KVServer struct {
+	mu      sync.Mutex
 	peers           []string
 	address         string
 	internalAddress string    // internal address for communication between nodes
 	lastPutTime     time.Time // lastPutTime记录最后一次PUT请求的时间
 	valuelog        *ValueLog
-	pools           []pool.Pool // 用于日志同步的连接池
+	// pools           []pool.Pool // 用于日志同步的连接池
 
 	me        int
 	raft      *raft.Raft
@@ -133,12 +134,16 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInR
 	opCtx := newOpContext(op)
 
 	func() {
+		kvs.mu.Lock()
+		defer kvs.mu.Unlock()
 		// 保存RPC上下文，等待提交回调，可能会因为Leader变更覆盖同样Index，不过前一个RPC会超时退出并令客户端重试
 		kvs.reqMap[int(op.Index)] = opCtx
 	}()
 
 	// RPC结束前清理上下文
 	defer func() {
+		kvs.mu.Lock()
+		defer kvs.mu.Unlock()
 		if one, ok := kvs.reqMap[int(op.Index)]; ok {
 			if one == opCtx {
 				delete(kvs.reqMap, int(op.Index))
@@ -201,12 +206,16 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) (reply *kvrpc.PutInR
 	opCtx := newOpContext(op)
 
 	func() {
+		kvs.mu.Lock()
+		defer kvs.mu.Unlock()
 		// 保存RPC上下文，等待提交回调，可能会因为Leader变更覆盖同样Index，不过前一个RPC会超时退出并令客户端重试
 		kvs.reqMap[int(op.Index)] = opCtx
 	}()
 
 	// 超时后，结束apply请求的RPC，清理该请求index的上下文
 	defer func() {
+		kvs.mu.Lock()
+		defer kvs.mu.Unlock()
 		if one, ok := kvs.reqMap[int(op.Index)]; ok {
 			if one == opCtx {
 				delete(kvs.reqMap, int(op.Index))
@@ -403,8 +412,8 @@ func (kvs *KVServer) applyLoop() {
 				index := msg.CommandIndex
 
 				func() {
-					// kv.mu.Lock()
-					// defer kv.mu.Unlock()
+					kvs.mu.Lock()
+					defer kvs.mu.Unlock()
 
 					// 更新已经应用到的日志
 					kvs.lastAppliedIndex = index

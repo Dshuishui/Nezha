@@ -9,4 +9,5 @@ kvstore/kvserver/db_key_addr
 kvstore/kvserver/db_key_value
 run_server.sh
 run_client.sh
+error.log
 result/causal_put-latency.csv
