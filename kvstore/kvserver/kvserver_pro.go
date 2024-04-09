@@ -453,6 +453,10 @@ func (kvs *KVServer) applyLoop() {
 
 					// 操作日志
 					op := cmd.(*raftrpc.Interface) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
+					
+					if op.OpType=="TermLog" {	// 需要进行类型断言才能访问结构体的字段，如果是leader开始第一个Term时发起的空指令，则不用执行。
+						return
+					}
 
 					opCtx, existOp := kvs.reqMap[index]          // 检查当前index对应的等待put的请求是否超时，即是否还在等待被apply
 					prevSeq, existSeq := kvs.seqMap[op.ClientId] // 上一次该客户端发来的请求的序号

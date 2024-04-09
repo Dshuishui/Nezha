@@ -182,7 +182,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		return reply, nil
 	}
 	// prevLogIndex位置有日志，那么判断term必须相同，否则false
-	if rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term != int32(args.PrevLogTerm) {
+	if args.PrevLogIndex != 0 && (rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term != int32(args.PrevLogTerm)) {
 		reply.ConflictTerm = rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term
 		for index := rf.lastIncludedIndex + 1; index <= int(args.PrevLogIndex); index++ { // 找到冲突term的首次出现位置，最差就是PrevLogIndex
 			if rf.log[rf.index2LogPos(index)].Term == int32(reply.ConflictTerm) {
@@ -264,6 +264,7 @@ func (rf *Raft) sendRequestVote(address string, args *raftrpc.RequestVoteRequest
 	reply, err := client.RequestVote(ctx, args)
 
 	if err != nil {
+		util.EPrintf("Error calling RequestVote method on server side; err:%v; address:%v ",err,address)
 		return false, reply
 	} else {
 		return true, reply
@@ -284,7 +285,7 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 	reply, err := client.AppendEntriesInRaft(ctx, args)
 
 	if err != nil {
-		util.EPrintf(" sendAppendEntries could not greet: ", err, address)
+		util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ",err,address)
 		return reply, false
 	}
 	return reply, true
@@ -311,8 +312,8 @@ func (rf *Raft) electionLoop() {
 			// 请求vote，当变成candidate后，等待10ms才进入到该if语句
 			if rf.role == ROLE_CANDIDATES && elapses >= timeout {
 				rf.lastActiveTime = time.Now() // 重置下次选举时间
-				rf.currentTerm += 1     // 发起新任期
-				rf.votedFor = rf.me     // 该任期投了自己
+				rf.currentTerm += 1            // 发起新任期
+				rf.votedFor = rf.me            // 该任期投了自己
 
 				// 请求投票req
 				args := raftrpc.RequestVoteRequest{
@@ -388,6 +389,10 @@ func (rf *Raft) electionLoop() {
 				if voteCount > len(rf.peers)/2 {
 					rf.role = ROLE_LEADER
 					util.DPrintf("RaftNode[%d] Candidate -> Leader", rf.me)
+					op := &raftrpc.Interface{
+						OpType:   "TermLog",
+					}
+					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
 					rf.leaderId = rf.me
 					rf.nextIndex = make([]int, len(rf.peers))
 					for i := 0; i < len(rf.peers); i++ {
@@ -431,8 +436,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	args.LeaderCommit = int32(rf.commitIndex)
 	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)
 	args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
-	tempEntries := make([]*raftrpc.LogEntry, len(rf.log)-int(args.PrevLogIndex+1))
-	args.Entries = append(args.Entries, tempEntries...)
+	args.Entries = append(args.Entries, rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]...)
 
 	util.DPrintf("RaftNode[%d] appendEntries starts,  currentTerm[%d] peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] args.Entries[%d] commitIndex[%d]",
 		rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
@@ -624,8 +628,8 @@ func Make(peers []string, me int,
 	// 设置一个定时器，每十秒检查一次条件
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C{
-		if rf.killed() {		// 如果上次KVS关闭了Raft，则可以关闭pool
+	for range ticker.C {
+		if rf.killed() { // 如果上次KVS关闭了Raft，则可以关闭pool
 			for _, pool := range rf.pools {
 				pool.Close()
 				util.DPrintf("The raft pool has been closed")
