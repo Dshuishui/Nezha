@@ -50,11 +50,9 @@ type Raft struct {
 	me        int        // this peer's index into peers[]
 	dead      int32      // set by Kill()
 
-	currentTerm       int                 // 见过的最大任期
-	votedFor          int                 // 记录在currentTerm任期投票给谁了
-	log               []*raftrpc.LogEntry // 操作日志
-	lastIncludedIndex int                 // snapshot最后1个logEntry的index，没有snapshot则为0
-	lastIncludedTerm  int                 // snapthost最后1个logEntry的term，没有snaphost则无意义
+	currentTerm int                 // 见过的最大任期
+	votedFor    int                 // 记录在currentTerm任期投票给谁了
+	log         []*raftrpc.LogEntry // 操作日志
 
 	// 所有服务器，易失状态
 	commitIndex int // 已知的最大已提交索引
@@ -108,11 +106,11 @@ func (rf *Raft) GetLeaderId() (leaderId int32) {
 	return int32(rf.leaderId)
 }
 
-func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteRequest) (*raftrpc.RequestVoteResponse,error) {
+func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteRequest) (*raftrpc.RequestVoteResponse, error) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	reply:=&raftrpc.RequestVoteResponse{}
+	reply := &raftrpc.RequestVoteResponse{}
 	reply.Term = int32(rf.currentTerm)
 	reply.VoteGranted = false
 
@@ -120,7 +118,7 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 		rf.me, args.CandidateId, args.Term, rf.currentTerm, args.LastLogIndex, args.LastLogTerm, rf.votedFor)
 	defer func() {
 		util.DPrintf("RaftNode[%d] Return RequestVote, CandidatesId[%d] Term[%d] currentTerm[%d] VoteGranted[%v] votedFor[%d]", rf.me, args.CandidateId,
-			args.Term, rf.currentTerm, reply.VoteGranted,rf.votedFor)
+			args.Term, rf.currentTerm, reply.VoteGranted, rf.votedFor)
 	}()
 
 	// 任期不如我大，拒绝投票
@@ -153,14 +151,14 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 }
 
 // 已兼容snapshot
-func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEntriesInRaftRequest) (*raftrpc.AppendEntriesInRaftResponse,error) {
+func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEntriesInRaftRequest) (*raftrpc.AppendEntriesInRaftResponse, error) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
 	util.DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
 		rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
-	
-	reply:=&raftrpc.AppendEntriesInRaftResponse{}
+
+	reply := &raftrpc.AppendEntriesInRaftResponse{}
 	reply.Term = int32(rf.currentTerm)
 	reply.Success = false
 	reply.ConflictIndex = -1
@@ -194,7 +192,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	// prevLogIndex位置有日志，那么判断term必须相同，否则false
 	if args.PrevLogIndex != 0 && (rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term != int32(args.PrevLogTerm)) {
 		reply.ConflictTerm = rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term
-		for index := rf.lastIncludedIndex + 1; index <= int(args.PrevLogIndex); index++ { // 找到冲突term的首次出现位置，最差就是PrevLogIndex
+		for index := 1; index <= int(args.PrevLogIndex); index++ { // 找到冲突term的首次出现位置，最差就是PrevLogIndex
 			if rf.log[rf.index2LogPos(index)].Term == int32(reply.ConflictTerm) {
 				reply.ConflictIndex = int32(index)
 				break
@@ -377,7 +375,7 @@ func (rf *Raft) electionLoop() {
 				}
 				args.LastLogTerm = int32(rf.lastTerm())
 
-				rf.mu.Unlock()	// 对raft的修改操作已经暂时结束，可以解锁
+				rf.mu.Unlock() // 对raft的修改操作已经暂时结束，可以解锁
 
 				util.DPrintf("RaftNode[%d] RequestVote starts, Term[%d] LastLogIndex[%d] LastLogTerm[%d]", rf.me, args.Term,
 					args.LastLogIndex, args.LastLogTerm)
@@ -531,7 +529,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				if reply.ConflictTerm != -1 { // follower的prevLogIndex位置term冲突了
 					// 我们找leader log中conflictTerm最后出现位置，如果找到了就用它作为nextIndex，否则用follower的conflictIndex
 					conflictTermIndex := -1
-					for index := args.PrevLogIndex; index > int32(rf.lastIncludedIndex); index-- {
+					for index := args.PrevLogIndex; index > 0; index-- {
 						// if rf.log[rf.index2LogPos(int(index))].Term == reply.ConflictTerm {
 						// 	conflictTermIndex = int(index)
 						// 	break
@@ -574,6 +572,9 @@ func (rf *Raft) appendEntriesLoop() {
 			// 100ms广播1次
 			now := time.Now()
 			if now.Sub(rf.lastBroadcastTime) < 100*time.Millisecond {
+				return
+			}
+			if rf.lastIndex() == 0 {
 				return
 			}
 			rf.lastBroadcastTime = time.Now() // 确定过了广播的时间间隔，才开始进行广播，并且设置新的广播时间
@@ -646,8 +647,6 @@ func Make(peers []string, me int,
 	rf.role = ROLE_FOLLOWER
 	rf.leaderId = -1
 	rf.votedFor = -1
-	rf.lastIncludedIndex = 0
-	rf.lastIncludedTerm = 0
 	rf.lastActiveTime = time.Now()
 	rf.applyCh = applyCh
 
