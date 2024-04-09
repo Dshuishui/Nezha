@@ -446,7 +446,9 @@ func (rf *Raft) electionLoop() {
 					op := &raftrpc.Interface{
 						OpType: "TermLog",
 					}
+					rf.mu.Unlock()
 					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
+					rf.mu.Lock()
 					util.DPrintf("成为leader后发送第一个空指令给Raft层")
 					rf.leaderId = rf.me
 					rf.nextIndex = make([]int, len(rf.peers))
