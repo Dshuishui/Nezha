@@ -50,8 +50,6 @@ type KVServer struct {
 	valuelog        *ValueLog
 	pools           []pool.Pool // 用于日志同步的连接池
 
-	kvrpc.UnimplementedKVServer
-	raftrpc.UnimplementedRaftServer
 	me        int
 	raft      *raft.Raft
 	persister *raft.Persister    // 对数据库进行读写操作的接口
@@ -61,6 +59,7 @@ type KVServer struct {
 	seqMap    map[int64]int64    // 客户端id -> 客户端seq
 
 	lastAppliedIndex int // 已持久化存储的日志index
+	kvrpc.UnimplementedKVServer
 }
 
 // ValueLog represents the Value Log file for storing values.
@@ -275,47 +274,6 @@ func (kvs *KVServer) RegisterKVServer(ctx context.Context, address string) { // 
 	}
 }
 
-func (kvs *KVServer) RegisterRaftServer(ctx context.Context, address string) { // 传入的地址是internalAddress，节点间交流用的地址（用于类似日志同步等）
-	defer wg.Done()
-	util.DPrintf("RegisterRaftServer: %s", address)
-	for { // 创建一个TCP监听器，并在指定的地址（）上监听传入的连接。如果监听失败，则会打印错误信息。
-		lis, err := net.Listen("tcp", address)
-		if err != nil {
-			util.FPrintf("failed to listen: %v", err)
-		}
-		grpcServer := grpc.NewServer(
-			grpc.InitialWindowSize(pool.InitialWindowSize),
-			grpc.InitialConnWindowSize(pool.InitialConnWindowSize),
-			grpc.MaxSendMsgSize(pool.MaxSendMsgSize),
-			grpc.MaxRecvMsgSize(pool.MaxRecvMsgSize),
-			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-				PermitWithoutStream: true,
-				MinTime:             10 * time.Second, // 这里设置与client的keepalive探测的最小时间间隔。
-			}),
-			grpc.KeepaliveParams(keepalive.ServerParameters{
-				Time:                  pool.KeepAliveTime,
-				Timeout:               pool.KeepAliveTimeout,
-				MaxConnectionAgeGrace: 20 * time.Second,
-			}),
-		)
-		raftrpc.RegisterRaftServer(grpcServer, kvs)
-		reflection.Register(grpcServer)
-
-		go func() {
-			<-ctx.Done()
-			grpcServer.GracefulStop()
-			fmt.Println("Server stopped due to context cancellation-Raft.")
-		}()
-
-		if err := grpcServer.Serve(lis); err != nil { // 调用Serve方法来启动gRPC服务器，监听传入的连接，并处理相应的请求
-			util.FPrintf("failed to serve: %v", err)
-		}
-
-		fmt.Println("跳出Raftserver的for循环，日志同步完成")
-		break
-	}
-}
-
 // NewValueLog creates a new Value Log.
 func NewValueLog(valueLogPath string, leveldbPath string) (*ValueLog, error) {
 	vLog := &ValueLog{valueLogPath: valueLogPath}
@@ -453,8 +411,8 @@ func (kvs *KVServer) applyLoop() {
 
 					// 操作日志
 					op := cmd.(*raftrpc.Interface) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
-					
-					if op.OpType=="TermLog" {	// 需要进行类型断言才能访问结构体的字段，如果是leader开始第一个Term时发起的空指令，则不用执行。
+
+					if op.OpType == "TermLog" { // 需要进行类型断言才能访问结构体的字段，如果是leader开始第一个Term时发起的空指令，则不用执行。
 						return
 					}
 
@@ -527,9 +485,7 @@ func main() {
 	go kvs.applyLoop()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	util.EPrintf("走到这一步了嘛？？？")
 	go kvs.RegisterKVServer(ctx, kvs.address)
-	go kvs.RegisterRaftServer(ctx, kvs.internalAddress)
 	go func() {
 		timeout := 38000 * time.Second
 		for {
@@ -540,37 +496,15 @@ func main() {
 				wg.Done()
 
 				kvs.raft.Kill() // 关闭Raft层
-				return // 退出main函数
+				return          // 退出main函数
 			}
 		}
 	}()
-	wg.Add(2 + 1)
+	wg.Add(1 + 1)
 
-	// 这就是自己修改grpc线程池option参数的做法
-	// DesignOptions := pool.Options{
-	// 	Dial:                 pool.Dial,
-	// 	MaxIdle:              32,
-	// 	MaxActive:            64,
-	// 	MaxConcurrentStreams: 64,
-	// 	Reuse:                true,
-	// }
-	// // 根据servers的地址，创建了一一对应server地址的grpc连接池
-	// for i := 0; i < len(peers); i++ {
-	// 	peers_single := []string{peers[i]}
-	// 	p, err := pool.New(peers_single, DesignOptions)
-	// 	if err != nil {
-	// 		util.EPrintf("failed to new pool: %v", err)
-	// 	}
-	// 	// grpc连接池组
-	// 	kvs.pools = append(kvs.pools, p)
-	// }
-	// defer func() {
-	// 	for _, pool := range kvs.pools {
-	// 		pool.Close()
-	// 		util.DPrintf("The KVS pool has been closed")
-	// 	}
-	// }()
 	kvs.raft = raft.Make(kvs.peers, kvs.me, persisterRaft, kvs.applyCh) // 开启Raft
-
+	go kvs.raft.RegisterRaftServer(ctx, kvs.internalAddress, &wg)
+	wg.Add(1)
+	
 	wg.Wait()
 }
