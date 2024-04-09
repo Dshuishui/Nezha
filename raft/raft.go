@@ -354,7 +354,7 @@ func (rf *Raft) electionLoop() {
 			defer rf.mu.Unlock()
 
 			now := time.Now()
-			timeout := time.Duration(15000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
+			timeout := time.Duration(30000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
 			elapses := now.Sub(rf.lastActiveTime)
 			// follower -> candidates
 			if rf.role == ROLE_FOLLOWER {
@@ -447,6 +447,7 @@ func (rf *Raft) electionLoop() {
 						OpType: "TermLog",
 					}
 					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
+					util.DPrintf("成为leader后发送第一个空指令给Raft层")
 					rf.leaderId = rf.me
 					rf.nextIndex = make([]int, len(rf.peers))
 					for i := 0; i < len(rf.peers); i++ {
@@ -590,6 +591,7 @@ func (rf *Raft) appendEntriesLoop() {
 				if peerId == rf.me {
 					continue
 				}
+				util.DPrintf("发送同步日志给节点[%v]",peerId)
 				rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
 			}
 		}()
