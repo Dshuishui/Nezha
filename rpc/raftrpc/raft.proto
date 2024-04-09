@@ -9,7 +9,6 @@ option go_package="./;raftrpc";
 service Raft {
   rpc AppendEntriesInRaft (AppendEntriesInRaftRequest) returns (AppendEntriesInRaftResponse) {}
   rpc RequestVote (RequestVoteRequest) returns (RequestVoteResponse) {}
-  rpc InstallSnapshot (InstallSnapshotRequest) returns (InstallSnapshotResponse) {}
 }
  
 message AppendEntriesInRaftRequest{
@@ -53,18 +52,4 @@ message RequestVoteRequest{
 message RequestVoteResponse{
   int32 Term = 1;
   bool VoteGranted = 2;
-}
-
-message InstallSnapshotRequest{
-  int32 Term = 1;
-  int32 LeaderId = 2;
-  int32 LastIncludedIndex = 3;
-  int32 LastIncludedTerm = 4;
-  int32 Offset = 5;
-  bytes Data = 6;
-  bool Done = 7;
-}
-
-message InstallSnapshotResponse{
-  int32 Term = 1;
 }
