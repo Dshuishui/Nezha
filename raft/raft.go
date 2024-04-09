@@ -487,7 +487,11 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	args.LeaderId = int32(rf.me)
 	args.LeaderCommit = int32(rf.commitIndex)
 	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)
-	args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
+	if args.PrevLogIndex ==0 {		// 确保在从0开始的时候直接进行日志追加即可
+		args.PrevLogTerm = 0
+	}else{
+		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
+	}
 	args.Entries = append(args.Entries, rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]...)
 
 	util.DPrintf("RaftNode[%d] appendEntries starts,  currentTerm[%d] peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] args.Entries[%d] commitIndex[%d]",
