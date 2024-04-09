@@ -305,6 +305,7 @@ func (rf *Raft) sendRequestVote(address string, args *raftrpc.RequestVoteRequest
 	conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
 	if err != nil {
 		util.EPrintf("did not connect: %v", err)
+		return false, nil
 	}
 	defer conn.Close()
 	client := raftrpc.NewRaftClient(conn)
@@ -578,7 +579,7 @@ func (rf *Raft) appendEntriesLoop() {
 				if peerId == rf.me {
 					continue
 				}
-				rf.doAppendEntries(peerId)
+				rf.doAppendEntries(peerId)	// 还要考虑append日志失败的情况
 			}
 		}()
 	}
