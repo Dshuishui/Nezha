@@ -119,8 +119,8 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 	util.DPrintf("RaftNode[%d] Handle RequestVote, CandidatesId[%d] Term[%d] CurrentTerm[%d] LastLogIndex[%d] LastLogTerm[%d] votedFor[%d]",
 		rf.me, args.CandidateId, args.Term, rf.currentTerm, args.LastLogIndex, args.LastLogTerm, rf.votedFor)
 	defer func() {
-		util.DPrintf("RaftNode[%d] Return RequestVote, CandidatesId[%d] Term[%d] currentTerm[%d] VoteGranted[%v] ", rf.me, args.CandidateId,
-			args.Term, rf.currentTerm, reply.VoteGranted)
+		util.DPrintf("RaftNode[%d] Return RequestVote, CandidatesId[%d] Term[%d] currentTerm[%d] VoteGranted[%v] votedFor[%d]", rf.me, args.CandidateId,
+			args.Term, rf.currentTerm, reply.VoteGranted,rf.votedFor)
 	}()
 
 	// 任期不如我大，拒绝投票
@@ -329,6 +329,8 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 	conn, err := p.Get()
 	if err != nil {
 		util.EPrintf("failed to get conn: %v", err)
+		return nil, false
+
 	}
 	defer conn.Close()
 	client := raftrpc.NewRaftClient(conn.Value())
