@@ -3,22 +3,22 @@ package raft
 import (
 	// "bytes"
 	"context"
+	"fmt"
 	"math/rand"
+	"net"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
-	"net"
-	"fmt"
 
 	"github.com/JasonLou99/Hybrid_KV_Store/pool"
 	"github.com/JasonLou99/Hybrid_KV_Store/rpc/raftrpc"
+
 	// "github.com/JasonLou99/Hybrid_KV_Store/rpc/kvrpc"
 	"github.com/JasonLou99/Hybrid_KV_Store/util"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
-
 )
 
 // 服务端和Raft层面的数据传输通道
@@ -259,7 +259,7 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) RegisterRaftServer(ctx context.Context, address string,wg *sync.WaitGroup) { // 传入的地址是internalAddress，节点间交流用的地址（用于类似日志同步等）
+func (rf *Raft) RegisterRaftServer(ctx context.Context, address string, wg *sync.WaitGroup) { // 传入的地址是internalAddress，节点间交流用的地址（用于类似日志同步等）
 	defer wg.Done()
 	util.DPrintf("RegisterRaftServer: %s", address)
 	for { // 创建一个TCP监听器，并在指定的地址（）上监听传入的连接。如果监听失败，则会打印错误信息。
@@ -313,7 +313,7 @@ func (rf *Raft) sendRequestVote(address string, args *raftrpc.RequestVoteRequest
 	reply, err := client.RequestVote(ctx, args)
 
 	if err != nil {
-		util.EPrintf("Error calling RequestVote method on server side; err:%v; address:%v ",err,address)
+		util.EPrintf("Error calling RequestVote method on server side; err:%v; address:%v ", err, address)
 		return false, reply
 	} else {
 		return true, reply
@@ -334,7 +334,7 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 	reply, err := client.AppendEntriesInRaft(ctx, args)
 
 	if err != nil {
-		util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ",err,address)
+		util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ", err, address)
 		return reply, false
 	}
 	return reply, true
@@ -349,7 +349,7 @@ func (rf *Raft) electionLoop() {
 			// defer rf.mu.Unlock()
 
 			now := time.Now()
-			timeout := time.Duration(10000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
+			timeout := time.Duration(15000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
 			elapses := now.Sub(rf.lastActiveTime)
 			// follower -> candidates
 			if rf.role == ROLE_FOLLOWER {
@@ -439,7 +439,7 @@ func (rf *Raft) electionLoop() {
 					rf.role = ROLE_LEADER
 					util.DPrintf("RaftNode[%d] Candidate -> Leader", rf.me)
 					op := &raftrpc.Interface{
-						OpType:   "TermLog",
+						OpType: "TermLog",
 					}
 					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
 					rf.leaderId = rf.me
