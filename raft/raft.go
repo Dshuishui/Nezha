@@ -108,10 +108,11 @@ func (rf *Raft) GetLeaderId() (leaderId int32) {
 	return int32(rf.leaderId)
 }
 
-func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteRequest) (reply *raftrpc.RequestVoteResponse, err error) {
+func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteRequest) (*raftrpc.RequestVoteResponse,error) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	reply:=&raftrpc.RequestVoteResponse{}
 	reply.Term = int32(rf.currentTerm)
 	reply.VoteGranted = false
 
@@ -152,13 +153,14 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 }
 
 // 已兼容snapshot
-func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEntriesInRaftRequest) (reply *raftrpc.AppendEntriesInRaftResponse, err error) {
+func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEntriesInRaftRequest) (*raftrpc.AppendEntriesInRaftResponse,error) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
 	util.DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
 		rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
-
+	
+	reply:=&raftrpc.AppendEntriesInRaftResponse{}
 	reply.Term = int32(rf.currentTerm)
 	reply.Success = false
 	reply.ConflictIndex = -1
