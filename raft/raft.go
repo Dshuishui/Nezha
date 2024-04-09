@@ -8,11 +8,17 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"net"
+	"fmt"
 
 	"github.com/JasonLou99/Hybrid_KV_Store/pool"
 	"github.com/JasonLou99/Hybrid_KV_Store/rpc/raftrpc"
+	// "github.com/JasonLou99/Hybrid_KV_Store/rpc/kvrpc"
 	"github.com/JasonLou99/Hybrid_KV_Store/util"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/reflection"
+
 )
 
 // 服务端和Raft层面的数据传输通道
@@ -66,6 +72,8 @@ type Raft struct {
 
 	applyCh chan ApplyMsg // 应用层的提交队列
 	pools   []pool.Pool   // 用于日志同步的连接池
+	// kvrpc.UnimplementedKVServer
+	raftrpc.UnimplementedRaftServer
 }
 
 type RequestVoteArgs struct {
@@ -249,6 +257,47 @@ func (rf *Raft) Kill() {
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
+}
+
+func (rf *Raft) RegisterRaftServer(ctx context.Context, address string,wg *sync.WaitGroup) { // 传入的地址是internalAddress，节点间交流用的地址（用于类似日志同步等）
+	defer wg.Done()
+	util.DPrintf("RegisterRaftServer: %s", address)
+	for { // 创建一个TCP监听器，并在指定的地址（）上监听传入的连接。如果监听失败，则会打印错误信息。
+		lis, err := net.Listen("tcp", address)
+		if err != nil {
+			util.FPrintf("failed to listen: %v", err)
+		}
+		grpcServer := grpc.NewServer(
+			grpc.InitialWindowSize(pool.InitialWindowSize),
+			grpc.InitialConnWindowSize(pool.InitialConnWindowSize),
+			grpc.MaxSendMsgSize(pool.MaxSendMsgSize),
+			grpc.MaxRecvMsgSize(pool.MaxRecvMsgSize),
+			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+				PermitWithoutStream: true,
+				MinTime:             10 * time.Second, // 这里设置与client的keepalive探测的最小时间间隔。
+			}),
+			grpc.KeepaliveParams(keepalive.ServerParameters{
+				Time:                  pool.KeepAliveTime,
+				Timeout:               pool.KeepAliveTimeout,
+				MaxConnectionAgeGrace: 20 * time.Second,
+			}),
+		)
+		raftrpc.RegisterRaftServer(grpcServer, rf)
+		reflection.Register(grpcServer)
+
+		go func() {
+			<-ctx.Done()
+			grpcServer.GracefulStop()
+			fmt.Println("Raft stopped due to context cancellation-Raft.")
+		}()
+
+		if err := grpcServer.Serve(lis); err != nil { // 调用Serve方法来启动gRPC服务器，监听传入的连接，并处理相应的请求
+			util.FPrintf("failed to serve: %v", err)
+		}
+
+		fmt.Println("跳出Raftserver的for循环，日志同步完成")
+		break
+	}
 }
 
 func (rf *Raft) sendRequestVote(address string, args *raftrpc.RequestVoteRequest) (bool, *raftrpc.RequestVoteResponse) {
