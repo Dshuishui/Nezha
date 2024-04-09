@@ -109,8 +109,8 @@ func (rf *Raft) GetLeaderId() (leaderId int32) {
 }
 
 func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteRequest) (reply *raftrpc.RequestVoteResponse, err error) {
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	reply.Term = int32(rf.currentTerm)
 	reply.VoteGranted = false
@@ -153,8 +153,8 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 
 // 已兼容snapshot
 func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEntriesInRaftRequest) (reply *raftrpc.AppendEntriesInRaftResponse, err error) {
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	util.DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
 		rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
@@ -259,8 +259,7 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) RegisterRaftServer(ctx context.Context, address string, wg *sync.WaitGroup) { // 传入的地址是internalAddress，节点间交流用的地址（用于类似日志同步等）
-	defer wg.Done()
+func (rf *Raft) RegisterRaftServer(ctx context.Context, address string) { // 传入的地址是internalAddress，节点间交流用的地址（用于类似日志同步等）
 	util.DPrintf("RegisterRaftServer: %s", address)
 	for { // 创建一个TCP监听器，并在指定的地址（）上监听传入的连接。如果监听失败，则会打印错误信息。
 		lis, err := net.Listen("tcp", address)
@@ -302,6 +301,7 @@ func (rf *Raft) RegisterRaftServer(ctx context.Context, address string, wg *sync
 
 func (rf *Raft) sendRequestVote(address string, args *raftrpc.RequestVoteRequest) (bool, *raftrpc.RequestVoteResponse) {
 	// time.Sleep(time.Millisecond * time.Duration(rf.delay+rand.Intn(25)))
+	util.DPrintf("Start sendRequestVote")
 	conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
 	if err != nil {
 		util.EPrintf("did not connect: %v", err)
@@ -346,8 +346,8 @@ func (rf *Raft) electionLoop() {
 		time.Sleep(10 * time.Millisecond) // 每隔一小段时间，检查是否超时，也就是说follower如果变成candidate，还得等10ms才能开始选举
 
 		func() {
-			// rf.mu.Lock()
-			// defer rf.mu.Unlock()
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
 
 			now := time.Now()
 			timeout := time.Duration(15000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
@@ -373,7 +373,7 @@ func (rf *Raft) electionLoop() {
 				}
 				args.LastLogTerm = int32(rf.lastTerm())
 
-				// rf.mu.Unlock()	// 对raft的修改操作已经暂时结束，可以解锁
+				rf.mu.Unlock()	// 对raft的修改操作已经暂时结束，可以解锁
 
 				util.DPrintf("RaftNode[%d] RequestVote starts, Term[%d] LastLogIndex[%d] LastLogTerm[%d]", rf.me, args.Term,
 					args.LastLogIndex, args.LastLogTerm)
@@ -494,8 +494,8 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	go func() {
 		util.DPrintf("RaftNode[%d] appendEntries starts, myTerm[%d] peerId[%d]", rf.me, args.Term, args.LeaderId)
 		if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
-			// rf.mu.Lock()
-			// defer rf.mu.Unlock()
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
 
 			defer func() {
 				util.DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
@@ -559,8 +559,8 @@ func (rf *Raft) appendEntriesLoop() {
 		time.Sleep(10 * time.Millisecond) // 间隔10ms
 
 		func() {
-			// rf.mu.Lock()
-			// defer rf.mu.Unlock()
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
 
 			// 只有leader才向外广播心跳
 			if rf.role != ROLE_LEADER {
@@ -579,7 +579,7 @@ func (rf *Raft) appendEntriesLoop() {
 				if peerId == rf.me {
 					continue
 				}
-				rf.doAppendEntries(peerId)	// 还要考虑append日志失败的情况
+				rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
 			}
 		}()
 	}
@@ -633,7 +633,7 @@ func (rf *Raft) index2LogPos(index int) (pos int) {
 
 // 服务器地址数组；当前方法对应的服务器地址数组中的下标；持久化存储了当前服务器状态的结构体；传递消息的通道结构体
 func Make(peers []string, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	persister *Persister, applyCh chan ApplyMsg, ctx context.Context) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
@@ -668,6 +668,7 @@ func Make(peers []string, me int,
 
 	util.DPrintf("RaftNode[%d] Make again", rf.me)
 
+	go rf.RegisterRaftServer(ctx, peers[me])
 	// election
 	go rf.electionLoop()
 	// sync
