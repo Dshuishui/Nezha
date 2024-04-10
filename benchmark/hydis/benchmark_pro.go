@@ -169,7 +169,8 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []*pool.Pool) (*k
 			return reply, nil
 		}else if reply.Err ==raft.ErrWrongLeader{
 			kvc.changeToLeader(int(reply.LeaderId))
-			time.Sleep(1 * time.Millisecond)
+			fmt.Println("等待leader的出现")
+			time.Sleep(2 * time.Millisecond)
 		}
 	}
 }
