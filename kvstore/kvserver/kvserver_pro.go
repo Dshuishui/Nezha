@@ -188,7 +188,7 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) (reply *kvrpc.PutInRaftResponse) {
 
 	reply.Err = raft.OK
-
+	fmt.Println("走到了这里嘛？？？？？")
 	op := &raftrpc.Interface{
 		OpType:   args.Op,
 		Key:      args.Key,
