@@ -38,6 +38,8 @@ type KVClient struct {
 	clientId  int64 // 客户端唯一标识
 	seqId     int64 // 该客户端单调递增的请求id
 	leaderId  int
+
+	pools []*pool.Pool
 }
 
 // batchRawPut blinds put bench.
@@ -50,11 +52,16 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 		MaxConcurrentStreams: 64,
 		Reuse:                true,
 	}
-	p, err := pool.New(kvc.Kvservers, DesignOptions) // 先把这个连接池里面的地址固定，后面需要改new函数里面的生成tcp连接的方法
-	if err != nil {
-		util.EPrintf("failed to new pool: %v", err)
+	// 根据servers的地址，创建了一一对应server地址的grpc连接池
+	for i := 0; i < len(kvc.Kvservers); i++ {
+		peers_single := []string{kvc.Kvservers[i]}
+		p, err := pool.New(peers_single, DesignOptions)
+		if err != nil {
+			util.EPrintf("failed to new pool: %v", err)
+		}
+		// grpc连接池组
+		kvc.pools = append(kvc.pools, &p)
 	}
-	defer p.Close()
 
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
@@ -70,7 +77,7 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 				//k := base*i + j
 				key := fmt.Sprintf("key_%d", k)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				kvc.PutInRaft(key, string(value), p)
+				kvc.PutInRaft(key, string(value), kvc.pools)		// 先随机传入一个地址的连接池
 				// if j >= num+1000 {
 				// 	num = j
 				// 	fmt.Printf("Client %v put key num: %v\n", i+1, num)
@@ -125,7 +132,7 @@ func (kvc *KVClient) Get(key string) (string,bool) {
 }
 
 // Method of Send RPC of PutInRaft
-func (kvc *KVClient) PutInRaft(key string, value string, p pool.Pool) (*kvrpc.PutInRaftResponse, error) {
+func (kvc *KVClient) PutInRaft(key string, value string, pools []*pool.Pool) (*kvrpc.PutInRaftResponse, error) {
 	request := &kvrpc.PutInRaftRequest{
 		Key: key,
 		Value: value,
@@ -133,20 +140,20 @@ func (kvc *KVClient) PutInRaft(key string, value string, p pool.Pool) (*kvrpc.Pu
 		ClientId: kvc.clientId,
 		SeqId: atomic.AddInt64(&kvc.seqId, 1),
 	}
-	// grpc连接池的使用
-	// conn, err := p.Get()
-	// if err != nil {
-	// 	util.EPrintf("failed to get conn: %v", err)
-	// }
-	// defer conn.Close()
-	// client := kvrpc.NewKVClient(conn.Value())
 	for{
-		conn, err := grpc.Dial(kvc.Kvservers[kvc.leaderId], grpc.WithInsecure(), grpc.WithBlock())
+		// conn, err := grpc.Dial(kvc.Kvservers[kvc.leaderId], grpc.WithInsecure(), grpc.WithBlock())
+		// if err != nil {
+		// 	util.EPrintf("failed to get conn: %v", err)
+		// }
+		// defer conn.Close()
+		p := pools[kvc.leaderId]
+		pp := *p	// 拿到leaderid对应的那个连接池
+		conn, err := pp.Get()
 		if err != nil {
 			util.EPrintf("failed to get conn: %v", err)
-	}
+		}
 		defer conn.Close()
-		client := kvrpc.NewKVClient(conn)
+		client := kvrpc.NewKVClient(conn.Value())
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*100) // 设置100秒定时往下传
 		defer cancel()
 
