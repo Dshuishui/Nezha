@@ -39,7 +39,7 @@ type KVClient struct {
 	seqId     int64 // 该客户端单调递增的请求id
 	leaderId  int
 
-	pools []*pool.Pool
+	pools []pool.Pool
 }
 
 // batchRawPut blinds put bench.
@@ -62,7 +62,7 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 			util.EPrintf("failed to new pool: %v", err)
 		}
 		// grpc连接池组
-		kvc.pools = append(kvc.pools, &p)
+		kvc.pools = append(kvc.pools, p)
 	}
 
 	wg := sync.WaitGroup{}
@@ -88,6 +88,10 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 		}()
 	}
 	wg.Wait()
+	for _, pool := range kvc.pools {
+		pool.Close()
+		util.DPrintf("The raft pool has been closed")
+	}
 }
 
 // Method of Send RPC of GetInRaft
@@ -134,7 +138,7 @@ func (kvc *KVClient) Get(key string) (string,bool) {
 }
 
 // Method of Send RPC of PutInRaft
-func (kvc *KVClient) PutInRaft(key string, value string, pools []*pool.Pool) (*kvrpc.PutInRaftResponse, error) {
+func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kvrpc.PutInRaftResponse, error) {
 	request := &kvrpc.PutInRaftRequest{
 		Key: key,
 		Value: value,
@@ -148,9 +152,8 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []*pool.Pool) (*k
 		// 	util.EPrintf("failed to get conn: %v", err)
 		// }
 		// defer conn.Close()
-		p := pools[kvc.leaderId]
-		pp := *p	// 拿到leaderid对应的那个连接池
-		conn, err := pp.Get()
+		p := pools[kvc.leaderId]	// 拿到leaderid对应的那个连接池
+		conn, err := p.Get()
 		if err != nil {
 			util.EPrintf("failed to get conn: %v", err)
 		}
