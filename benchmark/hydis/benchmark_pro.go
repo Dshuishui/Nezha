@@ -52,7 +52,7 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 		MaxConcurrentStreams: 64,
 		Reuse:                true,
 	}
-	// fmt.Println("进入到batchRawPut函数")
+	fmt.Printf("servers:%v\n",kvc.Kvservers)
 	// 根据servers的地址，创建了一一对应server地址的grpc连接池
 	for i := 0; i < len(kvc.Kvservers); i++ {
 		// fmt.Println("进入到生成连接池的for循环")
