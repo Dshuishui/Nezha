@@ -102,8 +102,8 @@ func New(address []string, option Options) (Pool, error) {
 	for i := 0; i < p.opt.MaxIdle; i++ {
 		c, err := p.opt.Dial(address[i%len(address)])
 		if err != nil {
-			p.Close()
 			return nil, fmt.Errorf("dial is not able to fill the pool: %s", err)
+			p.Close()
 		}
 		p.conns[i] = p.wrapConn(c, false)
 	}
