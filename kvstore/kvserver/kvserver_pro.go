@@ -125,7 +125,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInR
 
 	// 写入raft层
 	var isLeader bool
-	op.Index, op.Term, isLeader = kvs.raft.Start(op)
+	op.Index, op.Term, isLeader = kvs.raft.Start(op)	// 读操作不需要写入raft日志，即不需要作为日志追加进去
 	if !isLeader {
 		reply.Err = raft.ErrWrongLeader
 		return reply
