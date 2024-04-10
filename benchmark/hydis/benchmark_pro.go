@@ -199,10 +199,7 @@ func main() {
 	servers := strings.Split(*ser, ",")
 	// fmt.Printf("servers:%v\n",servers)
 	kvc := new(KVClient)
-	kvc.Kvservers = make([]string, len(servers))
-	// for i := 0; i < len(servers); i++ {
-	// 	kvc.Kvservers[i] = servers[i] + "1"
-	// }
+	kvc.Kvservers = servers
 	kvc.clientId = nrand()
 
 	value := make([]byte, *vsize)
