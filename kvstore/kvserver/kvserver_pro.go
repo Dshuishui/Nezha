@@ -185,8 +185,9 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 	return reply, nil
 }
 
-func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) (reply *kvrpc.PutInRaftResponse) {
+func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftResponse) {
 	fmt.Println("走到了这里嘛？？？？？111")
+	reply := &kvrpc.PutInRaftResponse{Err: "",LeaderId: kvs.raft.GetLeaderId()}
 	reply.Err = raft.OK
 	fmt.Println("走到了这里嘛？？？？？222")
 	op := &raftrpc.Interface{
