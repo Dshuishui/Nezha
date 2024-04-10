@@ -201,6 +201,7 @@ func main() {
 
 	value := make([]byte, *vsize)
 	startTime := time.Now()
+	// 开始发送请求
 	kvc.batchRawPut(value)
 
 	sum_Size_MB := float64(dataNum*valueSize) / 1000000
