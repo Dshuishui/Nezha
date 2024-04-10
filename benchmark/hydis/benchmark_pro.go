@@ -52,9 +52,10 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 		MaxConcurrentStreams: 64,
 		Reuse:                true,
 	}
-	fmt.Printf("进入到batchRawPut函数")
+	fmt.Println("进入到batchRawPut函数")
 	// 根据servers的地址，创建了一一对应server地址的grpc连接池
 	for i := 0; i < len(kvc.Kvservers); i++ {
+		fmt.Println("进入到生成连接池的for循环")
 		peers_single := []string{kvc.Kvservers[i]}
 		p, err := pool.New(peers_single, DesignOptions)
 		if err != nil {
@@ -192,7 +193,7 @@ func main() {
 	dataNum := *dnums
 	valueSize := *vsize
 	servers := strings.Split(*ser, ",")
-	fmt.Printf("servers:%v",servers)
+	fmt.Printf("servers:%v\n",servers)
 	kvc := new(KVClient)
 	kvc.Kvservers = make([]string, len(servers))
 	for i := 0; i < len(servers); i++ {
