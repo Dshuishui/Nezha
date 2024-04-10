@@ -168,16 +168,16 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInR
 	return reply
 }
 
-func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInRaftResponse, err error) {
-	reply = kvs.StartGet(in)
+func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
+	reply := kvs.StartGet(in)
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
 	}
 	return reply, nil
 }
 
-func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) (reply *kvrpc.PutInRaftResponse, err error) {
-	reply = kvs.StartPut(in)
+func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftResponse,  error) {
+	reply := kvs.StartPut(in)
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
 	}
