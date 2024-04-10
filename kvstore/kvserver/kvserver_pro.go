@@ -177,6 +177,7 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 }
 
 func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftResponse,  error) {
+	fmt.Println("走到了server端的put函数")
 	reply := kvs.StartPut(in)
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
@@ -185,6 +186,7 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 }
 
 func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) (reply *kvrpc.PutInRaftResponse) {
+
 	reply.Err = raft.OK
 
 	op := &raftrpc.Interface{
@@ -197,8 +199,11 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) (reply *kvrpc.PutInR
 
 	// 写入raft层
 	var isLeader bool
+	fmt.Println("开始写入日志")
 	op.Index, op.Term, isLeader = kvs.raft.Start(op)
+	fmt.Println("写入日志失败")
 	if !isLeader {
+		fmt.Println("不是leader，返回")
 		reply.Err = raft.ErrWrongLeader
 		return reply // 如果收到客户端put请求的不是leader，需要将leader的id返回给客户端的reply中
 	}
