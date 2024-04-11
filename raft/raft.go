@@ -235,6 +235,7 @@ func (rf *Raft) Start(command *raftrpc.Interface) (int32, int32, bool) {
 	isLeader := true
 	fmt.Println("到这了嘛1")
 	rf.mu.Lock()
+	fmt.Println("到这了嘛1.1，lock")
 	defer rf.mu.Unlock()
 	fmt.Println("到这了嘛2")
 	// 只有leader才能写入
