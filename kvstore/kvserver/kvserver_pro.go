@@ -151,7 +151,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInR
 		}
 	}()
 
-	timer := time.NewTimer(2000 * time.Millisecond)
+	timer := time.NewTimer(10000 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	case <-opCtx.committed: // 如果提交了
@@ -187,10 +187,8 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 
 func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftResponse) {
 	kvs.lastPutTime = time.Now()
-	fmt.Println("走到了这里嘛？？？？？111")
 	reply := &kvrpc.PutInRaftResponse{Err: "",LeaderId: 0}
 	reply.Err = raft.OK
-	fmt.Println("走到了这里嘛？？？？？222")
 	op := &raftrpc.Interface{
 		OpType:   args.Op,
 		Key:      args.Key,
@@ -201,9 +199,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftRe
 
 	// 写入raft层
 	var isLeader bool
-	fmt.Println("开始写入日志")
 	op.Index, op.Term, isLeader = kvs.raft.Start(op)
-	fmt.Println("写入日志失败")
 	if !isLeader {
 		fmt.Println("不是leader，返回")
 		reply.Err = raft.ErrWrongLeader
@@ -214,11 +210,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftRe
 
 	func() {
 		kvs.mu.Lock()
-		fmt.Println("拿到startput的锁1")
-		defer func() {
-			fmt.Println("释放startput的锁1")
-			kvs.mu.Unlock()
-		}()
+		defer kvs.mu.Unlock()
 		// 保存RPC上下文，等待提交回调，可能会因为Leader变更覆盖同样Index，不过前一个RPC会超时退出并令客户端重试
 		kvs.reqMap[int(op.Index)] = opCtx
 	}()
@@ -226,11 +218,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftRe
 	// 超时后，结束apply请求的RPC，清理该请求index的上下文
 	defer func() {
 		kvs.mu.Lock()
-		fmt.Println("拿到startput的锁2")
-		defer func() {
-			fmt.Println("释放startput的锁2")
-			kvs.mu.Unlock()
-		}()
+		defer kvs.mu.Unlock()
 		if one, ok := kvs.reqMap[int(op.Index)]; ok {
 			if one == opCtx {
 				delete(kvs.reqMap, int(op.Index))
@@ -238,13 +226,14 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftRe
 		}
 	}()
 
-	timer := time.NewTimer(2000 * time.Millisecond)
+	timer := time.NewTimer(10000 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	// 通道关闭或者有数据传入都会执行以下的分支
 	case <-opCtx.committed: // ApplyLoop函数执行完后，会关闭committed通道，再根据相关的值设置请求reply的结果
 		if opCtx.wrongLeader { // 同样index位置的term不一样了, 说明leader变了，需要client向新leader重新写入
 			reply.Err = raft.ErrWrongLeader
+			fmt.Println("设置reply为WrongLeader")
 		} else if opCtx.ignored {
 			// 说明req id过期了，该请求被忽略，对MIT这个lab来说只需要告知客户端OK跳过即可
 			reply.Err = raft.OK
@@ -431,7 +420,7 @@ func (kvs *KVServer) applyLoop() {
 					defer kvs.mu.Unlock()
 					// 更新已经应用到的日志
 					kvs.lastAppliedIndex = index
-
+					fmt.Println("进入到applyLoop")
 					// 操作日志
 					op := cmd.(*raftrpc.Interface) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
 
@@ -457,6 +446,7 @@ func (kvs *KVServer) applyLoop() {
 								// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
 
 								// kvs.persister.Put(op.Key, op.Value)		leveldb存储key,value
+								fmt.Println("底层执行了Put请求")
 								err := kvs.valuelog.Put([]byte(op.Key), []byte(op.Value))
 								if err != nil {
 									panic(err)
@@ -470,6 +460,7 @@ func (kvs *KVServer) applyLoop() {
 							// opCtx.value, opCtx.keyExist = kvs.kvStore[op.Key]	// --------------------------------------------
 
 							// value := kvs.persister.Get(op.Key)		leveldb拿取value
+							fmt.Println("底层执行了Get请求")
 							value, err := kvs.valuelog.Get([]byte(op.Key))
 							if err != nil {
 								panic(err)

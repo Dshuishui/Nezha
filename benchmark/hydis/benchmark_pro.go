@@ -170,6 +170,7 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kv
 			return nil, err
 		}
 		if reply.Err == raft.OK {
+			fmt.Println("找到了leader")
 			return reply, nil
 		}else if reply.Err ==raft.ErrWrongLeader{
 			kvc.changeToLeader(int(reply.LeaderId))
