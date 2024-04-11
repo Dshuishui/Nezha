@@ -104,21 +104,13 @@ type AppendEntriesReply struct {
 
 func (rf *Raft) GetLeaderId() (leaderId int32) {
 	rf.mu.Lock()
-	fmt.Println("拿到GetLeaderId的锁")
-	defer func() {
-		fmt.Println("释放GetLeaderId的锁")
-		rf.mu.Unlock()
-	}()
+	defer rf.mu.Unlock()
 	return int32(rf.leaderId)
 }
 
 func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteRequest) (*raftrpc.RequestVoteResponse, error) {
 	rf.mu.Lock()
-	fmt.Println("拿到RequestVote的锁")
-	defer func() {
-		fmt.Println("释放RequestVote的锁")
-		rf.mu.Unlock()
-	}()
+	defer rf.mu.Unlock()
 
 	reply := &raftrpc.RequestVoteResponse{}
 	reply.Term = int32(rf.currentTerm)
@@ -242,11 +234,7 @@ func (rf *Raft) Start(command *raftrpc.Interface) (int32, int32, bool) {
 	term := -1
 	isLeader := true
 	rf.mu.Lock()
-	fmt.Println("拿到Start的锁")
-	defer func() {
-		fmt.Println("释放Start的锁")
-		rf.mu.Unlock()
-	}()
+	defer rf.mu.Unlock()
 	// 只有leader才能写入
 	if rf.role != ROLE_LEADER {
 		fmt.Println("到这了嘛3")
@@ -438,7 +426,6 @@ func (rf *Raft) electionLoop() {
 				}
 			VOTE_END:
 				rf.mu.Lock()
-				fmt.Println("拿到electionLoop的锁2")
 				defer func() {
 					util.DPrintf("RaftNode[%d] RequestVote ends, finishCount[%d] voteCount[%d] Role[%s] maxTerm[%d] currentTerm[%d]", rf.me, finishCount, voteCount,
 						rf.role, maxTerm, rf.currentTerm)
@@ -463,10 +450,8 @@ func (rf *Raft) electionLoop() {
 						OpType: "TermLog",
 					}
 					rf.mu.Unlock()
-					fmt.Println("释放electionLoop的锁2")
 					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
 					rf.mu.Lock()
-					fmt.Println("拿到electionLoop的锁3")
 					util.DPrintf("成为leader后发送第一个空指令给Raft层")
 					rf.leaderId = rf.me
 					rf.nextIndex = make([]int, len(rf.peers))
