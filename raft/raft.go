@@ -583,7 +583,7 @@ func (rf *Raft) appendEntriesLoop() {
 
 			// 100ms广播1次
 			now := time.Now()
-			if now.Sub(rf.lastBroadcastTime) < 38*time.Millisecond {
+			if now.Sub(rf.lastBroadcastTime) < 18*time.Millisecond {
 				return
 			}
 			if rf.lastIndex() == 0 {
