@@ -142,7 +142,7 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kv
 	request := &kvrpc.PutInRaftRequest{
 		Key: key,
 		Value: value,
-		Op: "put",
+		Op: "Put",
 		ClientId: kvc.clientId,
 		SeqId: atomic.AddInt64(&kvc.seqId, 1),
 	}
