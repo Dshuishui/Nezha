@@ -103,8 +103,8 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) GetLeaderId() (leaderId int32) {
-	fmt.Println("拿到GetLeaderId的锁")
 	rf.mu.Lock()
+	fmt.Println("拿到GetLeaderId的锁")
 	defer func() {
 		fmt.Println("释放GetLeaderId的锁")
 		rf.mu.Unlock()
@@ -162,12 +162,8 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 
 // 已兼容snapshot
 func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEntriesInRaftRequest) (*raftrpc.AppendEntriesInRaftResponse, error) {
-	fmt.Println("拿到AppendEntriesInRaft的锁")
 	rf.mu.Lock()
-	defer func() {
-		fmt.Println("释放AppendEntriesInRaft的锁")
-		rf.mu.Unlock()
-	}()
+	defer rf.mu.Unlock()
 
 	util.DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
 		rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
@@ -368,12 +364,8 @@ func (rf *Raft) electionLoop() {
 		time.Sleep(10 * time.Millisecond) // 每隔一小段时间，检查是否超时，也就是说follower如果变成candidate，还得等10ms才能开始选举
 
 		func() {
-			fmt.Println("拿到electionLoop的锁1")
 			rf.mu.Lock()
-			defer func() {
-				fmt.Println("释放electionLoop的锁1")
-				rf.mu.Unlock()
-			}()
+			defer rf.mu.Unlock()
 
 			now := time.Now()
 			timeout := time.Duration(10000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
@@ -471,8 +463,8 @@ func (rf *Raft) electionLoop() {
 					}
 					rf.mu.Unlock()
 					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
-					fmt.Println("拿到electionLoop的锁3")
 					rf.mu.Lock()
+					fmt.Println("拿到electionLoop的锁3")
 					util.DPrintf("成为leader后发送第一个空指令给Raft层")
 					rf.leaderId = rf.me
 					rf.nextIndex = make([]int, len(rf.peers))
@@ -529,12 +521,8 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	go func() {
 		util.DPrintf("RaftNode[%d] appendEntries starts, myTerm[%d] peerId[%d]", rf.me, args.Term, args.LeaderId)
 		if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
-			fmt.Println("拿到doAppendEntries的锁")
 			rf.mu.Lock()
-			defer func() {
-				fmt.Println("释放doAppendEntries的锁")
-				rf.mu.Unlock()
-			}()
+			defer rf.mu.Unlock()
 
 			defer func() {
 				util.DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
@@ -598,12 +586,8 @@ func (rf *Raft) appendEntriesLoop() {
 		time.Sleep(10 * time.Millisecond) // 间隔10ms
 
 		func() {
-			fmt.Println("拿到appendEntriesLoop的锁")
 			rf.mu.Lock()
-			defer func() {
-				fmt.Println("释放appendEntriesLoop的锁")
-				rf.mu.Unlock()
-			}()
+			defer rf.mu.Unlock()
 
 			// 只有leader才向外广播心跳
 			if rf.role != ROLE_LEADER {
@@ -639,12 +623,8 @@ func (rf *Raft) applyLogLoop() {
 			time.Sleep(10 * time.Millisecond)
 		}
 		func() {
-			fmt.Println("拿到applyLogLoop的锁")
 			rf.mu.Lock()
-			defer func() {
-				fmt.Println("释放applyLogLoop的锁")
-				rf.mu.Unlock()
-			}()
+			defer rf.mu.Unlock()
 
 			noMore = true
 			if rf.commitIndex > rf.lastApplied {
