@@ -201,7 +201,11 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftRe
 	// 写入raft层
 	var isLeader bool
 	fmt.Println("开始写入日志")
+	kvs.mu.Lock()
+	fmt.Println("拿到kvs的锁")
 	op.Index, op.Term, isLeader = kvs.raft.Start(op)
+	kvs.mu.Unlock()
+	fmt.Println("解开kvs的锁")
 	fmt.Println("写入日志失败")
 	if !isLeader {
 		fmt.Println("不是leader，返回")
