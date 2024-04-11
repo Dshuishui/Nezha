@@ -497,7 +497,7 @@ func main() {
 	kvs := MakeKVServer(address, internalAddress, peers)
 
 	// Raft层
-	kvs.applyCh = make(chan raft.ApplyMsg, 1) // 至少1个容量，启动后初始化snapshot用
+	kvs.applyCh = make(chan raft.ApplyMsg, 3) // 至少1个容量，启动后初始化snapshot用
 	kvs.me = FindIndexInPeers(peers, internalAddress)
 	persisterRaft := &raft.Persister{} // 初始化对Raft进行持久化操作的指针
 	kvs.reqMap = make(map[int]*OpContext)
