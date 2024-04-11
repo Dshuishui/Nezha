@@ -133,7 +133,7 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 		rf.currentTerm = int(args.Term)
 		rf.role = ROLE_FOLLOWER
 		rf.votedFor = -1 // 有问题，如果两个leader同时选举，那会进行多次投票，因为都满足下方的投票条件---没有问题，如果第二个来请求投票，此时args.Term = rf.currentTerm。因为rf.currentTerm已经更新
-		rf.leaderId = -1
+		rf.leaderId = int(args.CandidateId)	// 先假设这个即将成为leader
 	}
 
 	// 每个任期，只能投票给1人
@@ -437,7 +437,7 @@ func (rf *Raft) electionLoop() {
 				// 发现了更高的任期，切回follower；这个是不是可以在接受投票时就判断，如果有任期比自己大的，就直接转换为follower，也不看投票结果了
 				if maxTerm > rf.currentTerm {
 					rf.role = ROLE_FOLLOWER
-					rf.leaderId = -1
+					rf.leaderId = 0
 					rf.currentTerm = maxTerm // 更新自己的Term和voteFor
 					rf.votedFor = -1
 					return
@@ -522,7 +522,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 			}
 			if reply.Term > int32(rf.currentTerm) { // 变成follower
 				rf.role = ROLE_FOLLOWER
-				rf.leaderId = -1
+				rf.leaderId = 0
 				rf.currentTerm = int(reply.Term)
 				rf.votedFor = -1
 				// rf.persist()
