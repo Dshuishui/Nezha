@@ -677,7 +677,7 @@ func Make(peers []string, me int,
 	rf.me = me
 
 	rf.role = ROLE_FOLLOWER
-	rf.leaderId = -1
+	rf.leaderId = 0
 	rf.votedFor = -1
 	rf.lastActiveTime = time.Now()
 	rf.applyCh = applyCh
