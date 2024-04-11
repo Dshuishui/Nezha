@@ -612,7 +612,9 @@ func (rf *Raft) appendEntriesLoop() {
 					continue
 				}
 				util.DPrintf("发送同步日志给节点[%v]",peerId)
+				rf.mu.Unlock()
 				rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
+				rf.mu.Lock()
 			}
 		}()
 	}
