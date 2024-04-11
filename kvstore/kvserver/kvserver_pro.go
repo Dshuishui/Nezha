@@ -177,7 +177,7 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 }
 
 func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftResponse,  error) {
-	fmt.Println("走到了server端的put函数")
+	// fmt.Println("走到了server端的put函数")
 	reply := kvs.StartPut(in)
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
@@ -200,7 +200,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftRe
 	var isLeader bool
 	op.Index, op.Term, isLeader = kvs.raft.Start(op)
 	if !isLeader {
-		fmt.Println("不是leader，返回")
+		// fmt.Println("不是leader，返回")
 		reply.Err = raft.ErrWrongLeader
 		return reply // 如果收到客户端put请求的不是leader，需要将leader的id返回给客户端的reply中
 	}
@@ -232,7 +232,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftRe
 	case <-opCtx.committed: // ApplyLoop函数执行完后，会关闭committed通道，再根据相关的值设置请求reply的结果
 		if opCtx.wrongLeader { // 同样index位置的term不一样了, 说明leader变了，需要client向新leader重新写入
 			reply.Err = raft.ErrWrongLeader
-			fmt.Println("设置reply为WrongLeader")
+			// fmt.Println("设置reply为WrongLeader")
 		} else if opCtx.ignored {
 			// 说明req id过期了，该请求被忽略，对MIT这个lab来说只需要告知客户端OK跳过即可
 			reply.Err = raft.OK
@@ -433,7 +433,7 @@ func (kvs *KVServer) applyLoop() {
 					defer kvs.mu.Unlock()
 					// 更新已经应用到的日志
 					kvs.lastAppliedIndex = index
-					fmt.Println("进入到applyLoop")
+					// fmt.Println("进入到applyLoop")
 					// 操作日志
 					op := cmd.(*raftrpc.Interface) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
 
@@ -462,7 +462,7 @@ func (kvs *KVServer) applyLoop() {
 							// kvs.valuelog.Put([]byte(op.Key), []byte(op.Value))		
 							// kvs.persister.Put(op.Key,op.Value)
 
-							fmt.Println("底层执行了Put请求")
+							// fmt.Println("底层执行了Put请求")
 							kvs.lastPutTime = time.Now()	// 更新put操作时间
 							err := kvs.valuelog.Put_Pure([]byte(op.Key), []byte(op.Value))
 							if err != nil {
@@ -474,10 +474,10 @@ func (kvs *KVServer) applyLoop() {
 					} else { // OP_TYPE_GET
 						if existOp { // 如果是GET请求，只要没超时，都可以进行幂等处理
 							// opCtx.value, opCtx.keyExist = kvs.kvStore[op.Key]	// --------------------------------------------
-							
+
 							// value := kvs.persister.Get(op.Key)		leveldb拿取value
 
-							fmt.Println("底层执行了Get请求")
+							// fmt.Println("底层执行了Get请求")
 							value, err := kvs.valuelog.Get([]byte(op.Key))
 							if err != nil {
 								panic(err)
