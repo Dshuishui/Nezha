@@ -212,16 +212,24 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftRe
 	opCtx := newOpContext(op)
 
 	func() {
+		fmt.Println("拿到startput的锁1")
 		kvs.mu.Lock()
-		defer kvs.mu.Unlock()
+		defer func() {
+			fmt.Println("释放startput的锁1")
+			kvs.mu.Unlock()
+		}()
 		// 保存RPC上下文，等待提交回调，可能会因为Leader变更覆盖同样Index，不过前一个RPC会超时退出并令客户端重试
 		kvs.reqMap[int(op.Index)] = opCtx
 	}()
 
 	// 超时后，结束apply请求的RPC，清理该请求index的上下文
 	defer func() {
+		fmt.Println("拿到startput的锁2")
 		kvs.mu.Lock()
-		defer kvs.mu.Unlock()
+		defer func() {
+			fmt.Println("释放startput的锁2")
+			kvs.mu.Unlock()
+		}()
 		if one, ok := kvs.reqMap[int(op.Index)]; ok {
 			if one == opCtx {
 				delete(kvs.reqMap, int(op.Index))
@@ -418,8 +426,12 @@ func (kvs *KVServer) applyLoop() {
 				index := msg.CommandIndex
 
 				func() {
+					fmt.Println("拿到applyloop的锁1")
 					kvs.mu.Lock()
-					defer kvs.mu.Unlock()
+					defer func() {
+						fmt.Println("释放applyloop的锁1")
+						kvs.mu.Unlock()
+					}()
 
 					// 更新已经应用到的日志
 					kvs.lastAppliedIndex = index
