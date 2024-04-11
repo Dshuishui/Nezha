@@ -186,7 +186,6 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 }
 
 func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftResponse) {
-	kvs.lastPutTime = time.Now()
 	reply := &kvrpc.PutInRaftResponse{Err: "",LeaderId: 0}
 	reply.Err = raft.OK
 	op := &raftrpc.Interface{
@@ -447,6 +446,7 @@ func (kvs *KVServer) applyLoop() {
 
 								// kvs.persister.Put(op.Key, op.Value)		leveldb存储key,value
 								fmt.Println("底层执行了Put请求")
+								kvs.lastPutTime = time.Now()	// 更新put操作时间
 								err := kvs.valuelog.Put([]byte(op.Key), []byte(op.Value))
 								if err != nil {
 									panic(err)
