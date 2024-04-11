@@ -365,9 +365,9 @@ func (rf *Raft) electionLoop() {
 
 		func() {
 			rf.mu.Lock()
-			fmt.Println("拿到electionLoop的锁1或者2或者3")
+			// fmt.Println("拿到electionLoop的锁1或者2或者3")
 			defer rf.mu.Unlock()
-			fmt.Println("释放electionLoop的锁1或者")
+			// fmt.Println("释放electionLoop的锁1或者")
 			now := time.Now()
 			timeout := time.Duration(10000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
 			elapses := now.Sub(rf.lastActiveTime)
