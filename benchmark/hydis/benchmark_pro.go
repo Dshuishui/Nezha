@@ -153,7 +153,7 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kv
 		// }
 		// defer conn.Close()
 		p := pools[kvc.leaderId]	// 拿到leaderid对应的那个连接池
-		fmt.Printf("拿出连接池对应的地址为%v",p.GetAddress())
+		// fmt.Printf("拿出连接池对应的地址为%v",p.GetAddress())
 		conn, err := p.Get()
 		if err != nil {
 			util.EPrintf("failed to get conn: %v", err)
@@ -170,7 +170,7 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kv
 			return nil, err
 		}
 		if reply.Err == raft.OK {
-			fmt.Printf("找到了leader %v\n",kvc.leaderId)
+			// fmt.Printf("找到了leader %v\n",kvc.leaderId)
 			return reply, nil
 		}else if reply.Err ==raft.ErrWrongLeader{
 			kvc.changeToLeader(int(reply.LeaderId))

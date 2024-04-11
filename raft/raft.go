@@ -237,16 +237,16 @@ func (rf *Raft) Start(command *raftrpc.Interface) (int32, int32, bool) {
 	defer rf.mu.Unlock()
 	// 只有leader才能写入
 	if rf.role != ROLE_LEADER {
-		fmt.Println("到这了嘛3")
+		// fmt.Println("到这了嘛3")
 		return -1, -1, false
 	}
 	logEntry := raftrpc.LogEntry{
 		Command: command,
 		Term:    int32(rf.currentTerm),
 	}
-	fmt.Println("到这了嘛4")
+	// fmt.Println("到这了嘛4")
 	rf.log = append(rf.log, &logEntry)
-	fmt.Println("到这了嘛5")
+	// fmt.Println("到这了嘛5")
 	index = rf.lastIndex()
 	term = rf.currentTerm
 
