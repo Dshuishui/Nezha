@@ -113,8 +113,8 @@ func (rf *Raft) GetLeaderId() (leaderId int32) {
 }
 
 func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteRequest) (*raftrpc.RequestVoteResponse, error) {
-	fmt.Println("拿到RequestVote的锁")
 	rf.mu.Lock()
+	fmt.Println("拿到RequestVote的锁")
 	defer func() {
 		fmt.Println("释放RequestVote的锁")
 		rf.mu.Unlock()
@@ -241,8 +241,8 @@ func (rf *Raft) Start(command *raftrpc.Interface) (int32, int32, bool) {
 	index := -1
 	term := -1
 	isLeader := true
-	fmt.Println("拿到Start的锁")
 	rf.mu.Lock()
+	fmt.Println("拿到Start的锁")
 	defer func() {
 		fmt.Println("释放Start的锁")
 		rf.mu.Unlock()
@@ -365,8 +365,9 @@ func (rf *Raft) electionLoop() {
 
 		func() {
 			rf.mu.Lock()
+			fmt.Println("拿到electionLoop的锁1或者2或者3")
 			defer rf.mu.Unlock()
-
+			fmt.Println("释放electionLoop的锁1或者")
 			now := time.Now()
 			timeout := time.Duration(10000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
 			elapses := now.Sub(rf.lastActiveTime)
@@ -436,8 +437,8 @@ func (rf *Raft) electionLoop() {
 					}
 				}
 			VOTE_END:
-				fmt.Println("拿到electionLoop的锁2")
 				rf.mu.Lock()
+				fmt.Println("拿到electionLoop的锁2")
 				defer func() {
 					util.DPrintf("RaftNode[%d] RequestVote ends, finishCount[%d] voteCount[%d] Role[%s] maxTerm[%d] currentTerm[%d]", rf.me, finishCount, voteCount,
 						rf.role, maxTerm, rf.currentTerm)
@@ -462,6 +463,7 @@ func (rf *Raft) electionLoop() {
 						OpType: "TermLog",
 					}
 					rf.mu.Unlock()
+					fmt.Println("释放electionLoop的锁2")
 					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
 					rf.mu.Lock()
 					fmt.Println("拿到electionLoop的锁3")
