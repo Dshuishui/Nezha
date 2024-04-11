@@ -712,17 +712,20 @@ func Make(peers []string, me int,
 	go rf.applyLogLoop()
 
 	// 设置一个定时器，每十秒检查一次条件
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		if rf.killed() { // 如果上次KVS关闭了Raft，则可以关闭pool
-			for _, pool := range rf.pools {
-				pool.Close()
+	go func ()  {
+		for range ticker.C {
+			if rf.killed() { // 如果上次KVS关闭了Raft，则可以关闭pool
+				for _, pool := range rf.pools {
+					pool.Close()
+				}
 				util.DPrintf("The raft pool has been closed")
+				break
 			}
 		}
-	}
+		util.DPrintf("Raft has been closed")
+	}()
 
-	util.DPrintf("Raft has been closed")
 	return rf
 }
