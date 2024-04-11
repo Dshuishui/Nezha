@@ -304,7 +304,7 @@ func NewValueLog(valueLogPath string, leveldbPath string) (*ValueLog, error) {
 }
 
 // Put stores the key-value pair in the Value Log and updates LevelDB.
-func (vl *ValueLog) Put(key []byte, value []byte) error {
+func (vl *ValueLog) Put_Pure(key []byte, value []byte) error {
 	// Calculate the position where the value will be written.
 	position, err := vl.file.Seek(0, os.SEEK_END)
 	if err != nil {
@@ -329,6 +329,20 @@ func (vl *ValueLog) Put(key []byte, value []byte) error {
 	positionBytes := make([]byte, binary.MaxVarintLen64)
 	binary.PutVarint(positionBytes, position)
 	return vl.leveldb.Put(key, positionBytes, nil)
+}
+
+func (vl *ValueLog) Put(key []byte, value []byte) error {
+	keySize := uint32(len(key))
+	valueSize := uint32(len(value))
+	buf := make([]byte, 8+keySize+valueSize)
+	binary.BigEndian.PutUint32(buf[0:4], keySize)
+	binary.BigEndian.PutUint32(buf[4:8], valueSize)
+	copy(buf[8:8+keySize], key)
+	copy(buf[8+keySize:], value)
+	if _, err := vl.file.Write(buf); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Get retrieves the value for a given key from the Value Log.
@@ -441,16 +455,18 @@ func (kvs *KVServer) applyLoop() {
 					// 只处理ID单调递增的客户端写请求
 					if op.OpType == OP_TYPE_PUT {
 						if !existSeq || op.SeqId > prevSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
-							if op.OpType == OP_TYPE_PUT { // put操作
-								// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
+							// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
 
-								// kvs.persister.Put(op.Key, op.Value)		leveldb存储key,value
-								fmt.Println("底层执行了Put请求")
-								kvs.lastPutTime = time.Now()	// 更新put操作时间
-								err := kvs.valuelog.Put([]byte(op.Key), []byte(op.Value))
-								if err != nil {
-									panic(err)
-								}
+							// leveldb存储key,value
+							// 先把log存到磁盘，在将key,value存到leveldb数据库文件
+							// kvs.valuelog.Put([]byte(op.Key), []byte(op.Value))		
+							// kvs.persister.Put(op.Key,op.Value)
+
+							fmt.Println("底层执行了Put请求")
+							kvs.lastPutTime = time.Now()	// 更新put操作时间
+							err := kvs.valuelog.Put_Pure([]byte(op.Key), []byte(op.Value))
+							if err != nil {
+								panic(err)
 							}
 						} else if existOp { // 虽然该请求的处理还未超时，但是已经处理过了。
 							opCtx.ignored = true
@@ -458,8 +474,9 @@ func (kvs *KVServer) applyLoop() {
 					} else { // OP_TYPE_GET
 						if existOp { // 如果是GET请求，只要没超时，都可以进行幂等处理
 							// opCtx.value, opCtx.keyExist = kvs.kvStore[op.Key]	// --------------------------------------------
-
+							
 							// value := kvs.persister.Get(op.Key)		leveldb拿取value
+
 							fmt.Println("底层执行了Get请求")
 							value, err := kvs.valuelog.Get([]byte(op.Key))
 							if err != nil {
