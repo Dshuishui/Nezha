@@ -512,7 +512,7 @@ func (rf *Raft) updateCommitIndex() {
 	sort.Ints(sortedMatchIndex)
 	newCommitIndex := sortedMatchIndex[len(rf.peers)/2]
 	// if语句的第一个条件则是排除掉还没有复制到大多数server的情况
-	fmt.Printf("此时log的长度：%v以及newcommitindex的值：%v\n",len(rf.log),newCommitIndex)
+	// fmt.Printf("此时log的长度：%v以及newcommitindex的值：%v\n",len(rf.log),newCommitIndex)
 	if newCommitIndex > rf.commitIndex && rf.log[rf.index2LogPos(newCommitIndex)].Term == int32(rf.currentTerm) {
 		rf.commitIndex = newCommitIndex // 保证是当前的Term才能根据同步到server的副本数量判断是否可以提交
 	}
@@ -632,7 +632,7 @@ func (rf *Raft) appendEntriesLoop() {
 				if peerId == rf.me {
 					continue
 				}
-				util.DPrintf("发送同步日志给节点[%v]",peerId)
+				// util.DPrintf("发送同步日志给节点[%v]",peerId)
 
 				rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
 
