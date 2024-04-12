@@ -481,7 +481,7 @@ func (rf *Raft) electionLoop() {
 					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
 					rf.mu.Lock()
 					util.DPrintf("成为leader后发送第一个空指令给Raft层")
-					fmt.Printf("此时log的长度%v",len(rf.log))
+					fmt.Printf("此时log的长度%v\n",len(rf.log))
 
 					rf.leaderId = rf.me
 					rf.nextIndex = make([]int, len(rf.peers))
@@ -512,11 +512,11 @@ func (rf *Raft) updateCommitIndex() {
 	sort.Ints(sortedMatchIndex)
 	newCommitIndex := sortedMatchIndex[len(rf.peers)/2]
 	// if语句的第一个条件则是排除掉还没有复制到大多数server的情况
-	fmt.Printf("此时log的长度：%v以及newcommitindex的值：%v",len(rf.log),newCommitIndex)
+	fmt.Printf("此时log的长度：%v以及newcommitindex的值：%v\n",len(rf.log),newCommitIndex)
 	if newCommitIndex > rf.commitIndex && rf.log[rf.index2LogPos(newCommitIndex)].Term == int32(rf.currentTerm) {
 		rf.commitIndex = newCommitIndex // 保证是当前的Term才能根据同步到server的副本数量判断是否可以提交
 	}
-	// util.DPrintf("RaftNode[%d] updateCommitIndex, newCommitIndex[%d] matchIndex[%v]", rf.me, rf.commitIndex, sortedMatchIndex)
+	util.DPrintf("RaftNode[%d] updateCommitIndex, newCommitIndex[%d] matchIndex[%v]", rf.me, rf.commitIndex, sortedMatchIndex)
 }
 
 // 已兼容snapshot
