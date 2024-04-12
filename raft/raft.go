@@ -3,6 +3,7 @@ package raft
 import (
 	// "bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net"
@@ -33,8 +34,18 @@ type ApplyMsg struct {
 
 // 日志项
 type LogEntry struct {
-	Command interface{}
-	Term    int
+	Command DetailCod
+	Term    int32
+}
+
+type DetailCod struct {
+	Index    int32
+	Term     int32
+	OpType   string
+	Key      string
+	Value    string
+	SeqId    int64
+	ClientId int64
 }
 
 // 当前角色
@@ -50,9 +61,9 @@ type Raft struct {
 	me        int        // this peer's index into peers[]
 	dead      int32      // set by Kill()
 
-	currentTerm int                 // 见过的最大任期
-	votedFor    int                 // 记录在currentTerm任期投票给谁了
-	log         []*raftrpc.LogEntry // 操作日志
+	currentTerm int        // 见过的最大任期
+	votedFor    int        // 记录在currentTerm任期投票给谁了
+	log         []LogEntry // 操作日志
 
 	// 所有服务器，易失状态
 	commitIndex int // 已知的最大已提交索引
@@ -75,33 +86,33 @@ type Raft struct {
 	lastAppendTime time.Time
 }
 
-type RequestVoteArgs struct {
-	Term         int
-	CandidateId  int
-	LastLogIndex int
-	LastLogTerm  int
-}
+// type RequestVoteArgs struct {
+// 	Term         int
+// 	CandidateId  int
+// 	LastLogIndex int
+// 	LastLogTerm  int
+// }
 
-type RequestVoteReply struct {
-	Term        int
-	VoteGranted bool
-}
+// type RequestVoteReply struct {
+// 	Term        int
+// 	VoteGranted bool
+// }
 
-type AppendEntriesArgs struct {
-	Term         int
-	LeaderId     int
-	PrevLogIndex int
-	PrevLogTerm  int
-	Entries      []LogEntry
-	LeaderCommit int
-}
+// type AppendEntriesArgs struct {
+// 	Term         int
+// 	LeaderId     int
+// 	PrevLogIndex int
+// 	PrevLogTerm  int
+// 	Entries      []LogEntry
+// 	LeaderCommit int
+// }
 
-type AppendEntriesReply struct {
-	Term          int
-	Success       bool
-	ConflictIndex int
-	ConflictTerm  int
-}
+// type AppendEntriesReply struct {
+// 	Term          int
+// 	Success       bool
+// 	ConflictIndex int
+// 	ConflictTerm  int
+// }
 
 func (rf *Raft) GetLeaderId() (leaderId int32) {
 	rf.mu.Lock()
@@ -165,8 +176,8 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	reply.Success = false
 	reply.ConflictIndex = -1
 	reply.ConflictTerm = -1
-	if len(args.Entries)!=0 {	// 除去普通的心跳
-		rf.lastAppendTime = time.Now()	// 检查有没有收到日志同步，是不是自己的连接断掉了
+	if len(args.Entries) != 0 { // 除去普通的心跳
+		rf.lastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
 	}
 
 	// defer func() {
@@ -206,8 +217,10 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		return reply, nil
 	}
 
+	var logEntrys []LogEntry
+	json.Unmarshal(args.Entries, &logEntrys)
 	// 找到了第一个不同的index，开始同步日志
-	for i, logEntry := range args.Entries {
+	for i, logEntry := range logEntrys {
 		index := int(args.PrevLogIndex) + 1 + i
 		logPos := rf.index2LogPos(index)
 		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
@@ -232,7 +245,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 }
 
 // 已兼容snapshot
-func (rf *Raft) Start(command *raftrpc.Interface) (int32, int32, bool) {
+func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	index := -1
 	term := -1
 	isLeader := true
@@ -243,12 +256,12 @@ func (rf *Raft) Start(command *raftrpc.Interface) (int32, int32, bool) {
 		// fmt.Println("到这了嘛3")
 		return -1, -1, false
 	}
-	logEntry := raftrpc.LogEntry{
-		Command: command,
+	logEntry := LogEntry{
+		Command: command.(DetailCod),
 		Term:    int32(rf.currentTerm),
 	}
 	// fmt.Println("到这了嘛4")
-	rf.log = append(rf.log, &logEntry)
+	rf.log = append(rf.log, logEntry)
 	// fmt.Println("到这了嘛5")
 	index = rf.lastIndex()
 	term = rf.currentTerm
@@ -356,7 +369,7 @@ func (rf *Raft) AppendMonitor() {
 		time.Sleep(timeout)
 		if time.Since(rf.lastAppendTime) > timeout {
 			fmt.Println("5秒没有收到日志同步信息，什么垃圾！")
-			return          // 退出main函数
+			return // 退出main函数
 		}
 	}
 }
@@ -461,15 +474,13 @@ func (rf *Raft) electionLoop() {
 					rf.role = ROLE_LEADER
 					util.DPrintf("RaftNode[%d] Candidate -> Leader", rf.me)
 
-
-					op := &raftrpc.Interface{
+					op := DetailCod{
 						OpType: "TermLog",
 					}
 					rf.mu.Unlock()
 					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
 					rf.mu.Lock()
 					util.DPrintf("成为leader后发送第一个空指令给Raft层")
-
 
 					rf.leaderId = rf.me
 					rf.nextIndex = make([]int, len(rf.peers))
@@ -507,7 +518,7 @@ func (rf *Raft) updateCommitIndex() {
 }
 
 // 已兼容snapshot
-func (rf *Raft) doAppendEntries(peerId int)(AppendOK bool){
+func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
 	AppendOK = false
 	args := raftrpc.AppendEntriesInRaftRequest{}
 	args.Term = int32(rf.currentTerm)
@@ -519,8 +530,11 @@ func (rf *Raft) doAppendEntries(peerId int)(AppendOK bool){
 	} else {
 		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
 	}
-	args.Entries = append(args.Entries, rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]...)
+	appendLog := rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
+	data, _ := json.Marshal(appendLog)
+	args.Entries = data
 
+	// args.Entries = append(args.Entries, rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]...)
 	// util.DPrintf("RaftNode[%d] appendEntries starts,  currentTerm[%d] peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] args.Entries[%d] commitIndex[%d]",
 	// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
 
@@ -610,16 +624,16 @@ func (rf *Raft) appendEntriesLoop() {
 				return
 			}
 			rf.lastBroadcastTime = time.Now() // 确定过了广播的时间间隔，才开始进行广播，并且设置新的广播时间
-			rf.mu.Unlock()		// 这里考虑到peers不会动态变化，就不在for循环内锁了
+			rf.mu.Unlock()                    // 这里考虑到peers不会动态变化，就不在for循环内锁了
 			// 向所有follower发送心跳
 			for peerId := 0; peerId < len(rf.peers); peerId++ {
 				if peerId == rf.me {
 					continue
 				}
 				// util.DPrintf("发送同步日志给节点[%v]",peerId)
-				
+
 				rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
-				
+
 			}
 			rf.mu.Lock()
 		}()
@@ -647,7 +661,7 @@ func (rf *Raft) applyLogLoop() {
 					CommandTerm:  int(rf.log[appliedIndex].Term),
 				}
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
-				if rf.lastApplied % 50000 == 0 {
+				if rf.lastApplied%50000 == 0 {
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 				}
 				noMore = false

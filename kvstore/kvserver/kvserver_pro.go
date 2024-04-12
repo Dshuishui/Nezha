@@ -20,7 +20,7 @@ import (
 	"github.com/JasonLou99/Hybrid_KV_Store/raft"
 	// "github.com/JasonLou99/Hybrid_KV_Store/persister"
 	"github.com/JasonLou99/Hybrid_KV_Store/rpc/kvrpc"
-	"github.com/JasonLou99/Hybrid_KV_Store/rpc/raftrpc"
+	// "github.com/JasonLou99/Hybrid_KV_Store/rpc/raftrpc"
 	"github.com/JasonLou99/Hybrid_KV_Store/util"
 
 	"google.golang.org/grpc"
@@ -82,7 +82,7 @@ type Op struct {
 
 // 等待Raft提交期间的Op上下文, 用于唤醒阻塞的RPC
 type OpContext struct {
-	op        *raftrpc.Interface
+	op        raft.DetailCod
 	committed chan byte
 
 	wrongLeader bool // 因为index位置log的term不一致, 说明leader换过了
@@ -95,7 +95,7 @@ type OpContext struct {
 
 var wg = sync.WaitGroup{}
 
-func newOpContext(op *raftrpc.Interface) (opCtx *OpContext) {
+func newOpContext(op raft.DetailCod) (opCtx *OpContext) {
 	opCtx = &OpContext{
 		op:        op,
 		committed: make(chan byte),
@@ -116,7 +116,7 @@ func (kv *KVServer) killed() bool {
 func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInRaftResponse) {
 	reply.Err = raft.OK
 
-	op := &raftrpc.Interface{
+	op := raft.DetailCod{
 		OpType:   OP_TYPE_GET,
 		Key:      args.Key,
 		ClientId: args.ClientId,
@@ -188,7 +188,7 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftResponse) {
 	reply := &kvrpc.PutInRaftResponse{Err: "",LeaderId: 0}
 	reply.Err = raft.OK
-	op := &raftrpc.Interface{
+	op := raft.DetailCod{
 		OpType:   args.Op,
 		Key:      args.Key,
 		Value:    args.Value,
@@ -435,7 +435,7 @@ func (kvs *KVServer) applyLoop() {
 					kvs.lastAppliedIndex = index
 					// fmt.Println("进入到applyLoop")
 					// 操作日志
-					op := cmd.(*raftrpc.Interface) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
+					op := cmd.(raft.DetailCod) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
 
 					if op.OpType == "TermLog" { // 需要进行类型断言才能访问结构体的字段，如果是leader开始第一个Term时发起的空指令，则不用执行。
 						return
