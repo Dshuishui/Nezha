@@ -169,21 +169,23 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	util.DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
-	rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
+	// util.DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
+	// rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
 	reply := &raftrpc.AppendEntriesInRaftResponse{}
 	reply.Term = int32(rf.currentTerm)
 	reply.Success = false
 	reply.ConflictIndex = -1
 	reply.ConflictTerm = -1
-	if len(args.Entries) != 0 { // 除去普通的心跳
+	var logEntrys []LogEntry
+	json.Unmarshal(args.Entries, &logEntrys)
+	if len(logEntrys) != 0 { // 除去普通的心跳
 		rf.lastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
 	}
 
-	defer func() {
-		util.DPrintf("RaftNode[%d] Return AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] Success[%v] commitIndex[%d] log[%v] ConflictIndex[%d]",
-			rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, reply.Success, rf.commitIndex, len(rf.log), reply.ConflictIndex)
-	}()
+	// defer func() {
+	// 	util.DPrintf("RaftNode[%d] Return AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] Success[%v] commitIndex[%d] log[%v] ConflictIndex[%d]",
+	// 		rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, reply.Success, rf.commitIndex, len(rf.log), reply.ConflictIndex)
+	// }()
 
 	if args.Term < int32(rf.currentTerm) {
 		return reply, nil
@@ -217,8 +219,6 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		return reply, nil
 	}
 
-	var logEntrys []LogEntry
-	json.Unmarshal(args.Entries, &logEntrys)
 	// 找到了第一个不同的index，开始同步日志
 	for i, logEntry := range logEntrys {
 		index := int(args.PrevLogIndex) + 1 + i
@@ -481,7 +481,7 @@ func (rf *Raft) electionLoop() {
 					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
 					rf.mu.Lock()
 					util.DPrintf("成为leader后发送第一个空指令给Raft层")
-					fmt.Printf("此时log的长度%v\n",len(rf.log))
+					// fmt.Printf("此时log的长度%v\n",len(rf.log))
 
 					rf.leaderId = rf.me
 					rf.nextIndex = make([]int, len(rf.peers))
@@ -516,7 +516,7 @@ func (rf *Raft) updateCommitIndex() {
 	if newCommitIndex > rf.commitIndex && rf.log[rf.index2LogPos(newCommitIndex)].Term == int32(rf.currentTerm) {
 		rf.commitIndex = newCommitIndex // 保证是当前的Term才能根据同步到server的副本数量判断是否可以提交
 	}
-	util.DPrintf("RaftNode[%d] updateCommitIndex, newCommitIndex[%d] matchIndex[%v]", rf.me, rf.commitIndex, sortedMatchIndex)
+	// util.DPrintf("RaftNode[%d] updateCommitIndex, newCommitIndex[%d] matchIndex[%v]", rf.me, rf.commitIndex, sortedMatchIndex)
 }
 
 // 已兼容snapshot
@@ -532,13 +532,13 @@ func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
 	} else {
 		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
 	}
-	appendLog := rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
-	data, _ := json.Marshal(appendLog)
+	appendLog := rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]	
+	data, _ := json.Marshal(appendLog)		// 后续计算日志的长度的时候可千万别用这个转换后的直接数组
 	args.Entries = data
 
 	// args.Entries = append(args.Entries, rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]...)
-	util.DPrintf("RaftNode[%d] appendEntries starts,  currentTerm[%d] peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] args.Entries[%d] commitIndex[%d]",
-		rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
+	// util.DPrintf("RaftNode[%d] appendEntries starts,  currentTerm[%d] peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] args.Entries[%d] commitIndex[%d]",
+	// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
 
 	go func() {
 		// util.DPrintf("RaftNode[%d] appendEntries starts, myTerm[%d] peerId[%d]", rf.me, args.Term, args.LeaderId)
@@ -546,10 +546,10 @@ func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
 			AppendOK = true
-			defer func() {
-				util.DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
-					rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
-			}()
+			// defer func() {
+			// 	util.DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
+			// 		rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
+			// }()
 
 			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server
 			if rf.currentTerm != int(args.Term) {
@@ -566,7 +566,7 @@ func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
 			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
 			// 因此这里得根据发出RPC请求时的状态做更新，而不要直接对nextIndex和matchIndex做相对加减
 			if reply.Success { // 同步日志成功
-				rf.nextIndex[peerId] = int(args.PrevLogIndex) + len(args.Entries) + 1
+				rf.nextIndex[peerId] = int(args.PrevLogIndex) + len(appendLog) + 1
 				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // 记录已经复制到其他server的日志的最后index的情况
 				rf.updateCommitIndex()                           // 更新commitIndex
 			} else {
@@ -619,7 +619,7 @@ func (rf *Raft) appendEntriesLoop() {
 
 			// 100ms广播1次
 			now := time.Now()
-			if now.Sub(rf.lastBroadcastTime) < 2000*time.Millisecond {
+			if now.Sub(rf.lastBroadcastTime) < 16*time.Millisecond {
 				return
 			}
 			if rf.lastIndex() == 0 {
