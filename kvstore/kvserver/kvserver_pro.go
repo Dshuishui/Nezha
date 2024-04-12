@@ -151,7 +151,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInR
 		}
 	}()
 
-	timer := time.NewTimer(10000 * time.Millisecond)
+	timer := time.NewTimer(20000 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	case <-opCtx.committed: // 如果提交了
@@ -225,7 +225,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftRe
 		}
 	}()
 
-	timer := time.NewTimer(10000 * time.Millisecond)
+	timer := time.NewTimer(20000 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	// 通道关闭或者有数据传入都会执行以下的分支
@@ -518,7 +518,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 38 * time.Second
+		timeout := 3800000 * time.Second
 		for {
 			time.Sleep(timeout)
 			if time.Since(kvs.lastPutTime) > timeout {
