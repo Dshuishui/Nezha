@@ -165,7 +165,9 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	reply.Success = false
 	reply.ConflictIndex = -1
 	reply.ConflictTerm = -1
-	rf.lastAppendTime = time.Now()	// 检查有没有收到日志同步，是不是自己的连接断掉了
+	if len(args.Entries)!=0 {	// 除去普通的心跳
+		rf.lastAppendTime = time.Now()	// 检查有没有收到日志同步，是不是自己的连接断掉了
+	}
 
 	// defer func() {
 	// 	util.DPrintf("RaftNode[%d] Return AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] Success[%v] commitIndex[%d] log[%v] ConflictIndex[%d]",
@@ -459,14 +461,14 @@ func (rf *Raft) electionLoop() {
 					rf.role = ROLE_LEADER
 					util.DPrintf("RaftNode[%d] Candidate -> Leader", rf.me)
 
-					
-					// op := &raftrpc.Interface{
-					// 	OpType: "TermLog",
-					// }
-					// rf.mu.Unlock()
-					// op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
-					// rf.mu.Lock()
-					// util.DPrintf("成为leader后发送第一个空指令给Raft层")
+
+					op := &raftrpc.Interface{
+						OpType: "TermLog",
+					}
+					rf.mu.Unlock()
+					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
+					rf.mu.Lock()
+					util.DPrintf("成为leader后发送第一个空指令给Raft层")
 
 
 					rf.leaderId = rf.me
@@ -507,7 +509,7 @@ func (rf *Raft) updateCommitIndex() {
 // 已兼容snapshot
 func (rf *Raft) doAppendEntries(peerId int)(AppendOK bool){
 	AppendOK = false
-	args := raftrpc.AppendEntriesInRaftRequest{Entries: []*raftrpc.LogEntry{}}
+	args := raftrpc.AppendEntriesInRaftRequest{}
 	args.Term = int32(rf.currentTerm)
 	args.LeaderId = int32(rf.me)
 	args.LeaderCommit = int32(rf.commitIndex)
