@@ -488,7 +488,8 @@ func (rf *Raft) updateCommitIndex() {
 }
 
 // 已兼容snapshot
-func (rf *Raft) doAppendEntries(peerId int) {
+func (rf *Raft) doAppendEntries(peerId int)(AppendOK bool){
+	AppendOK = false
 	args := raftrpc.AppendEntriesInRaftRequest{Entries: []*raftrpc.LogEntry{}}
 	args.Term = int32(rf.currentTerm)
 	args.LeaderId = int32(rf.me)
@@ -509,7 +510,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 		if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
-
+			AppendOK = true
 			// defer func() {
 			// 	util.DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
 			// 		rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
@@ -565,6 +566,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 			}
 		}
 	}()
+	return AppendOK
 }
 
 func (rf *Raft) appendEntriesLoop() {
@@ -589,17 +591,18 @@ func (rf *Raft) appendEntriesLoop() {
 				return
 			}
 			rf.lastBroadcastTime = time.Now() // 确定过了广播的时间间隔，才开始进行广播，并且设置新的广播时间
-
+			rf.mu.Unlock()		// 这里考虑到peers不会动态变化，就不在for循环内锁了
 			// 向所有follower发送心跳
 			for peerId := 0; peerId < len(rf.peers); peerId++ {
 				if peerId == rf.me {
 					continue
 				}
 				// util.DPrintf("发送同步日志给节点[%v]",peerId)
-				rf.mu.Unlock()
+				
 				rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
-				rf.mu.Lock()
+				
 			}
+			rf.mu.Lock()
 		}()
 	}
 }
