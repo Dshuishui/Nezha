@@ -72,6 +72,7 @@ type Raft struct {
 	pools   []pool.Pool   // 用于日志同步的连接池
 	// kvrpc.UnimplementedKVServer
 	raftrpc.UnimplementedRaftServer
+	lastAppendTime time.Time
 }
 
 type RequestVoteArgs struct {
@@ -164,6 +165,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	reply.Success = false
 	reply.ConflictIndex = -1
 	reply.ConflictTerm = -1
+	rf.lastAppendTime = time.Now()	// 检查有没有收到日志同步，是不是自己的连接断掉了
 
 	// defer func() {
 	// 	util.DPrintf("RaftNode[%d] Return AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] Success[%v] commitIndex[%d] log[%v] ConflictIndex[%d]",
@@ -344,6 +346,17 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 		return reply, false
 	}
 	return reply, true
+}
+
+func (rf *Raft) AppendMonitor() {
+	timeout := 4 * time.Second
+	for {
+		time.Sleep(timeout)
+		if time.Since(rf.lastAppendTime) > timeout {
+			fmt.Println("5秒没有收到日志同步信息，什么垃圾！")
+			return          // 退出main函数
+		}
+	}
 }
 
 func (rf *Raft) electionLoop() {
@@ -670,6 +683,7 @@ func Make(peers []string, me int,
 	rf.votedFor = -1
 	rf.lastActiveTime = time.Now()
 	rf.applyCh = applyCh
+	rf.lastAppendTime = time.Now()
 
 	// 这就是自己修改grpc线程池option参数的做法
 	DesignOptions := pool.Options{
@@ -699,6 +713,8 @@ func Make(peers []string, me int,
 	go rf.appendEntriesLoop()
 	// apply
 	go rf.applyLogLoop()
+	// 检查有没有收到日志同步的消息，若没有则连接有问题
+	go rf.AppendMonitor()
 
 	// 设置一个定时器，每十秒检查一次条件
 	ticker := time.NewTicker(5 * time.Second)

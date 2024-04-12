@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+
 	// "strconv"
 	"context"
 	"strings"
@@ -14,12 +15,14 @@ import (
 	// kvc "github.com/JasonLou99/Hybrid_KV_Store/kvstore/kvclient"
 	"github.com/JasonLou99/Hybrid_KV_Store/pool"
 	"github.com/JasonLou99/Hybrid_KV_Store/raft"
+
 	// raftrpc "github.com/JasonLou99/Hybrid_KV_Store/rpc/Raftrpc"
 	"github.com/JasonLou99/Hybrid_KV_Store/rpc/kvrpc"
 	"github.com/JasonLou99/Hybrid_KV_Store/util"
 
 	crand "crypto/rand"
 	"math/big"
+
 	"google.golang.org/grpc"
 )
 
@@ -52,7 +55,7 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 		MaxConcurrentStreams: 64,
 		Reuse:                true,
 	}
-	fmt.Printf("servers:%v\n",kvc.Kvservers)
+	fmt.Printf("servers:%v\n", kvc.Kvservers)
 	// 根据servers的地址，创建了一一对应server地址的grpc连接池
 	for i := 0; i < len(kvc.Kvservers); i++ {
 		// fmt.Println("进入到生成连接池的for循环")
@@ -68,24 +71,22 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
 	wg.Add(*cnums)
+	num := 0
 	for i := 0; i < *cnums; i++ {
-		go func() {
+		go func(i int) {
 			defer wg.Done()
-
-			// num := 0
 			rand.Seed(time.Now().Unix())
 			for j := 0; j < base; j++ {
 				k := rand.Intn(*dnums)
 				//k := base*i + j
 				key := fmt.Sprintf("key_%d", k)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				kvc.PutInRaft(key, string(value), kvc.pools)		// 先随机传入一个地址的连接池
-				// if j >= num+1000 {
-				// 	num = j
-				// 	fmt.Printf("Client %v put key num: %v\n", i+1, num)
-				// }
+				kvc.PutInRaft(key, string(value), kvc.pools) // 先随机传入一个地址的连接池
+				if ((i+1)*j)%50000 == 0 {
+					fmt.Printf("Client %v put key num: %v\n", (i+1)*j, num)
+				}
 			}
-		}()
+		}(i)
 	}
 	wg.Wait()
 	for _, pool := range kvc.pools {
@@ -113,24 +114,24 @@ func (kvc *KVClient) SendGetInRaft(address string, request *kvrpc.GetInRaftReque
 	return reply, nil
 }
 
-func (kvc *KVClient) Get(key string) (string,bool) {
-	args := &kvrpc.GetInRaftRequest{		
-		Key: key,
+func (kvc *KVClient) Get(key string) (string, bool) {
+	args := &kvrpc.GetInRaftRequest{
+		Key:      key,
 		ClientId: kvc.clientId,
-		SeqId: atomic.AddInt64(&kvc.seqId, 1),
+		SeqId:    atomic.AddInt64(&kvc.seqId, 1),
 	}
 
 	for {
 		reply, err := kvc.SendGetInRaft(kvc.Kvservers[kvc.leaderId], args)
-		if err!=nil {
+		if err != nil {
 			util.EPrintf("can not connect ", kvc.Kvservers[kvc.leaderId], "or it's not leader")
-			return "",false
+			return "", false
 		}
-		if reply.Err==raft.OK {
-			return reply.Value,true
-		}else if reply.Err == raft.ErrNoKey{
-			return "",false
-		}else if reply.Err == raft.ErrWrongLeader{
+		if reply.Err == raft.OK {
+			return reply.Value, true
+		} else if reply.Err == raft.ErrNoKey {
+			return "", false
+		} else if reply.Err == raft.ErrWrongLeader {
 			kvc.changeToLeader(int(reply.LeaderId))
 			time.Sleep(1 * time.Millisecond)
 		}
@@ -140,19 +141,19 @@ func (kvc *KVClient) Get(key string) (string,bool) {
 // Method of Send RPC of PutInRaft
 func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kvrpc.PutInRaftResponse, error) {
 	request := &kvrpc.PutInRaftRequest{
-		Key: key,
-		Value: value,
-		Op: "Put",
+		Key:      key,
+		Value:    value,
+		Op:       "Put",
 		ClientId: kvc.clientId,
-		SeqId: atomic.AddInt64(&kvc.seqId, 1),
+		SeqId:    atomic.AddInt64(&kvc.seqId, 1),
 	}
-	for{
+	for {
 		// conn, err := grpc.Dial(kvc.Kvservers[kvc.leaderId], grpc.WithInsecure(), grpc.WithBlock())
 		// if err != nil {
 		// 	util.EPrintf("failed to get conn: %v", err)
 		// }
 		// defer conn.Close()
-		p := pools[kvc.leaderId]	// 拿到leaderid对应的那个连接池
+		p := pools[kvc.leaderId] // 拿到leaderid对应的那个连接池
 		// fmt.Printf("拿出连接池对应的地址为%v",p.GetAddress())
 		conn, err := p.Get()
 		if err != nil {
@@ -172,7 +173,7 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kv
 		if reply.Err == raft.OK {
 			// fmt.Printf("找到了leader %v\n",kvc.leaderId)
 			return reply, nil
-		}else if reply.Err ==raft.ErrWrongLeader{
+		} else if reply.Err == raft.ErrWrongLeader {
 			kvc.changeToLeader(int(reply.LeaderId))
 			fmt.Println("等待leader的出现")
 			time.Sleep(10 * time.Millisecond)
@@ -187,7 +188,7 @@ func (kvc *KVClient) changeToLeader(Id int) (leaderId int) {
 	return kvc.leaderId
 }
 
-func nrand() int64 {		//随机生成clientId
+func nrand() int64 { //随机生成clientId
 	max := big.NewInt(int64(1) << 62)
 	bigx, _ := crand.Int(crand.Reader, max)
 	x := bigx.Int64()
