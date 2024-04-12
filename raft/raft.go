@@ -159,7 +159,6 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 
 	// util.DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
 	// rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
-
 	reply := &raftrpc.AppendEntriesInRaftResponse{}
 	reply.Term = int32(rf.currentTerm)
 	reply.Success = false
@@ -583,7 +582,7 @@ func (rf *Raft) appendEntriesLoop() {
 
 			// 100ms广播1次
 			now := time.Now()
-			if now.Sub(rf.lastBroadcastTime) < 18*time.Millisecond {
+			if now.Sub(rf.lastBroadcastTime) < 15*time.Millisecond {
 				return
 			}
 			if rf.lastIndex() == 0 {
@@ -626,7 +625,7 @@ func (rf *Raft) applyLogLoop() {
 					CommandTerm:  int(rf.log[appliedIndex].Term),
 				}
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
-				if rf.lastApplied % 5000 == 0 {
+				if rf.lastApplied % 50000 == 0 {
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 				}
 				noMore = false
