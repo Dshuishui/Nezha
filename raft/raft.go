@@ -132,8 +132,8 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 	if args.Term > int32(rf.currentTerm) {
 		rf.currentTerm = int(args.Term)
 		rf.role = ROLE_FOLLOWER
-		rf.votedFor = -1 // 有问题，如果两个leader同时选举，那会进行多次投票，因为都满足下方的投票条件---没有问题，如果第二个来请求投票，此时args.Term = rf.currentTerm。因为rf.currentTerm已经更新
-		rf.leaderId = int(args.CandidateId)	// 先假设这个即将成为leader
+		rf.votedFor = -1                    // 有问题，如果两个leader同时选举，那会进行多次投票，因为都满足下方的投票条件---没有问题，如果第二个来请求投票，此时args.Term = rf.currentTerm。因为rf.currentTerm已经更新
+		rf.leaderId = int(args.CandidateId) // 先假设这个即将成为leader
 	}
 
 	// 每个任期，只能投票给1人
@@ -158,7 +158,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	defer rf.mu.Unlock()
 
 	// util.DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
-		// rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
+	// rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
 
 	reply := &raftrpc.AppendEntriesInRaftResponse{}
 	reply.Term = int32(rf.currentTerm)
@@ -383,7 +383,7 @@ func (rf *Raft) electionLoop() {
 				rf.mu.Unlock() // 对raft的修改操作已经暂时结束，可以解锁
 
 				// util.DPrintf("RaftNode[%d] RequestVote starts, Term[%d] LastLogIndex[%d] LastLogTerm[%d]", rf.me, args.Term,
-					// args.LastLogIndex, args.LastLogTerm)
+				// args.LastLogIndex, args.LastLogTerm)
 				// 并发RPC请求vote
 				type VoteResult struct {
 					peerId int
@@ -626,7 +626,7 @@ func (rf *Raft) applyLogLoop() {
 					CommandTerm:  int(rf.log[appliedIndex].Term),
 				}
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
-				if rf.lastApplied == 1000 {
+				if rf.lastApplied % 1000 == 0 {
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 				}
 				noMore = false
@@ -701,7 +701,7 @@ func Make(peers []string, me int,
 	// 设置一个定时器，每十秒检查一次条件
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	go func ()  {
+	go func() {
 		for range ticker.C {
 			if rf.killed() { // 如果上次KVS关闭了Raft，则可以关闭pool
 				for _, pool := range rf.pools {
