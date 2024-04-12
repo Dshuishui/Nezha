@@ -210,6 +210,6 @@ func main() {
 	kvc.batchRawPut(value)
 
 	sum_Size_MB := float64(dataNum*valueSize) / 1000000
-	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, total %v, value %v, client %v, Size %vMB",
+	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, total %v, value %v, client %v, Size %vMB\n",
 		time.Since(startTime), float64(sum_Size_MB)/time.Since(startTime).Seconds(), *dnums, *vsize, *cnums, sum_Size_MB)
 }
