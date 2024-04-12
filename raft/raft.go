@@ -116,12 +116,12 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 	reply.Term = int32(rf.currentTerm)
 	reply.VoteGranted = false
 
-	util.DPrintf("RaftNode[%d] Handle RequestVote, CandidatesId[%d] Term[%d] CurrentTerm[%d] LastLogIndex[%d] LastLogTerm[%d] votedFor[%d]",
-		rf.me, args.CandidateId, args.Term, rf.currentTerm, args.LastLogIndex, args.LastLogTerm, rf.votedFor)
-	defer func() {
-		util.DPrintf("RaftNode[%d] Return RequestVote, CandidatesId[%d] Term[%d] currentTerm[%d] VoteGranted[%v] votedFor[%d]", rf.me, args.CandidateId,
-			args.Term, rf.currentTerm, reply.VoteGranted, rf.votedFor)
-	}()
+	// util.DPrintf("RaftNode[%d] Handle RequestVote, CandidatesId[%d] Term[%d] CurrentTerm[%d] LastLogIndex[%d] LastLogTerm[%d] votedFor[%d]",
+	// 	rf.me, args.CandidateId, args.Term, rf.currentTerm, args.LastLogIndex, args.LastLogTerm, rf.votedFor)
+	// defer func() {
+	// 	util.DPrintf("RaftNode[%d] Return RequestVote, CandidatesId[%d] Term[%d] currentTerm[%d] VoteGranted[%v] votedFor[%d]", rf.me, args.CandidateId,
+	// 		args.Term, rf.currentTerm, reply.VoteGranted, rf.votedFor)
+	// }()
 
 	// 任期不如我大，拒绝投票
 	if args.Term < int32(rf.currentTerm) {
@@ -157,8 +157,8 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	util.DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
-		rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
+	// util.DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
+		// rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
 
 	reply := &raftrpc.AppendEntriesInRaftResponse{}
 	reply.Term = int32(rf.currentTerm)
@@ -166,10 +166,10 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	reply.ConflictIndex = -1
 	reply.ConflictTerm = -1
 
-	defer func() {
-		util.DPrintf("RaftNode[%d] Return AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] Success[%v] commitIndex[%d] log[%v] ConflictIndex[%d]",
-			rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, reply.Success, rf.commitIndex, len(rf.log), reply.ConflictIndex)
-	}()
+	// defer func() {
+	// 	util.DPrintf("RaftNode[%d] Return AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] Success[%v] commitIndex[%d] log[%v] ConflictIndex[%d]",
+	// 		rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, reply.Success, rf.commitIndex, len(rf.log), reply.ConflictIndex)
+	// }()
 
 	if args.Term < int32(rf.currentTerm) {
 		return reply, nil
@@ -250,7 +250,7 @@ func (rf *Raft) Start(command *raftrpc.Interface) (int32, int32, bool) {
 	index = rf.lastIndex()
 	term = rf.currentTerm
 
-	util.DPrintf("RaftNode[%d] Add Command, logIndex[%d] currentTerm[%d]", rf.me, index, term)
+	// util.DPrintf("RaftNode[%d] Add Command, logIndex[%d] currentTerm[%d]", rf.me, index, term)
 	return int32(index), int32(term), isLeader
 }
 
@@ -305,7 +305,7 @@ func (rf *Raft) RegisterRaftServer(ctx context.Context, address string) { // 传
 
 func (rf *Raft) sendRequestVote(address string, args *raftrpc.RequestVoteRequest) (bool, *raftrpc.RequestVoteResponse) {
 	// time.Sleep(time.Millisecond * time.Duration(rf.delay+rand.Intn(25)))
-	util.DPrintf("Start sendRequestVote")
+	// util.DPrintf("Start sendRequestVote")
 	conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
 	if err != nil {
 		util.EPrintf("did not connect: %v", err)
@@ -382,8 +382,8 @@ func (rf *Raft) electionLoop() {
 
 				rf.mu.Unlock() // 对raft的修改操作已经暂时结束，可以解锁
 
-				util.DPrintf("RaftNode[%d] RequestVote starts, Term[%d] LastLogIndex[%d] LastLogTerm[%d]", rf.me, args.Term,
-					args.LastLogIndex, args.LastLogTerm)
+				// util.DPrintf("RaftNode[%d] RequestVote starts, Term[%d] LastLogIndex[%d] LastLogTerm[%d]", rf.me, args.Term,
+					// args.LastLogIndex, args.LastLogTerm)
 				// 并发RPC请求vote
 				type VoteResult struct {
 					peerId int
@@ -426,10 +426,10 @@ func (rf *Raft) electionLoop() {
 				}
 			VOTE_END:
 				rf.mu.Lock()
-				defer func() {
-					util.DPrintf("RaftNode[%d] RequestVote ends, finishCount[%d] voteCount[%d] Role[%s] maxTerm[%d] currentTerm[%d]", rf.me, finishCount, voteCount,
-						rf.role, maxTerm, rf.currentTerm)
-				}()
+				// defer func() {
+				// 	util.DPrintf("RaftNode[%d] RequestVote ends, finishCount[%d] voteCount[%d] Role[%s] maxTerm[%d] currentTerm[%d]", rf.me, finishCount, voteCount,
+				// 		rf.role, maxTerm, rf.currentTerm)
+				// }()
 				// 如果角色改变了，则忽略本轮投票结果；当多个server同时开始选举，有一个leader已经选出后，则本server的选举结果可直接不用管。
 				if rf.role != ROLE_CANDIDATES {
 					return
@@ -485,7 +485,7 @@ func (rf *Raft) updateCommitIndex() {
 	if newCommitIndex > rf.commitIndex && rf.log[rf.index2LogPos(newCommitIndex)].Term == int32(rf.currentTerm) {
 		rf.commitIndex = newCommitIndex // 保证是当前的Term才能根据同步到server的副本数量判断是否可以提交
 	}
-	util.DPrintf("RaftNode[%d] updateCommitIndex, newCommitIndex[%d] matchIndex[%v]", rf.me, rf.commitIndex, sortedMatchIndex)
+	// util.DPrintf("RaftNode[%d] updateCommitIndex, newCommitIndex[%d] matchIndex[%v]", rf.me, rf.commitIndex, sortedMatchIndex)
 }
 
 // 已兼容snapshot
@@ -502,19 +502,19 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	}
 	args.Entries = append(args.Entries, rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]...)
 
-	util.DPrintf("RaftNode[%d] appendEntries starts,  currentTerm[%d] peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] args.Entries[%d] commitIndex[%d]",
-		rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
+	// util.DPrintf("RaftNode[%d] appendEntries starts,  currentTerm[%d] peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] args.Entries[%d] commitIndex[%d]",
+	// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
 
 	go func() {
-		util.DPrintf("RaftNode[%d] appendEntries starts, myTerm[%d] peerId[%d]", rf.me, args.Term, args.LeaderId)
+		// util.DPrintf("RaftNode[%d] appendEntries starts, myTerm[%d] peerId[%d]", rf.me, args.Term, args.LeaderId)
 		if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
 
-			defer func() {
-				util.DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
-					rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
-			}()
+			// defer func() {
+			// 	util.DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
+			// 		rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
+			// }()
 
 			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server
 			if rf.currentTerm != int(args.Term) {
@@ -536,7 +536,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				rf.updateCommitIndex()                           // 更新commitIndex
 			} else {
 				// 回退优化，参考：https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations
-				nextIndexBefore := rf.nextIndex[peerId] // 仅为打印log
+				// nextIndexBefore := rf.nextIndex[peerId] // 仅为打印log
 
 				if reply.ConflictTerm != -1 { // follower的prevLogIndex位置term冲突了
 					// 我们找leader log中conflictTerm最后出现位置，如果找到了就用它作为nextIndex，否则用follower的conflictIndex
@@ -562,7 +562,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 					// 这时候我们将返回的conflictIndex设置为nextIndex即可
 					rf.nextIndex[peerId] = int(reply.ConflictIndex)
 				}
-				util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
+				// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
 			}
 		}
 	}()
@@ -570,7 +570,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 
 func (rf *Raft) appendEntriesLoop() {
 	for !rf.killed() {
-		time.Sleep(10 * time.Millisecond) // 间隔10ms
+		time.Sleep(6 * time.Millisecond) // 间隔10ms
 
 		func() {
 			rf.mu.Lock()
@@ -596,7 +596,7 @@ func (rf *Raft) appendEntriesLoop() {
 				if peerId == rf.me {
 					continue
 				}
-				util.DPrintf("发送同步日志给节点[%v]",peerId)
+				// util.DPrintf("发送同步日志给节点[%v]",peerId)
 				rf.mu.Unlock()
 				rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
 				rf.mu.Lock()
