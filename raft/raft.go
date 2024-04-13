@@ -368,7 +368,7 @@ func (rf *Raft) AppendMonitor() {
 	timeout := 5 * time.Second
 	for {
 		time.Sleep(timeout)
-		if time.Since(rf.lastAppendTime) > timeout {
+		if (time.Since(rf.lastAppendTime) > timeout)&&rf.GetLeaderId()==int32(rf.me) {
 			fmt.Println("5秒没有收到日志同步信息，什么垃圾！")
 			continue
 		}
