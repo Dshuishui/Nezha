@@ -186,8 +186,7 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 }
 
 func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftResponse) {
-	reply := &kvrpc.PutInRaftResponse{Err: "",LeaderId: 0}
-	reply.Err = raft.OK
+	reply := &kvrpc.PutInRaftResponse{Err: raft.OK,LeaderId: 0}
 	op := raft.DetailCod{
 		OpType:   args.Op,
 		Key:      args.Key,
@@ -235,7 +234,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftRe
 			// fmt.Println("设置reply为WrongLeader")
 		} else if opCtx.ignored {
 			// 说明req id过期了，该请求被忽略，对MIT这个lab来说只需要告知客户端OK跳过即可
-			reply.Err = raft.OK
+			// reply.Err = raft.OK
 		}
 	case <-timer.C: // 如果2秒都没提交成功，让client重试
 		reply.Err = raft.ErrWrongLeader
