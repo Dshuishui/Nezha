@@ -428,6 +428,7 @@ func (kvs *KVServer) applyLoop() {
 			if msg.CommandValid {
 				cmd := msg.Command
 				index := msg.CommandIndex
+				cmdTerm := msg.CommandTerm
 
 				func() {
 					kvs.mu.Lock()
@@ -448,8 +449,8 @@ func (kvs *KVServer) applyLoop() {
 
 					if existOp { // 存在等待结果的apply日志的RPC, 那么判断状态是否与写入时一致，可能之前接受过该日志，但是身份不是leader了，该index对应的请求日志被别的leader同步日志时覆盖了。
 						// 虽然没超时，但是如果已经和刚开始写入的请求不一致了，那也不行。
-						if opCtx.op.Term != op.Term {
-							fmt.Printf("这里有问题吗,opCtx.op.Term:%v,op.Term:%v\n",opCtx.op.Term,op.Term)
+						if opCtx.op.Term != int32(cmdTerm) {		//这里要用msg里面的CommandTerm而不是cmd里面的Term，因为当拿去到的是空指令时，其cmd里面的Term是0，会重复发生错误
+							// fmt.Printf("这里有问题吗,opCtx.op.Term:%v,op.Term:%v\n",opCtx.op.Term,op.Term)
 							opCtx.wrongLeader = true
 						}
 					}
