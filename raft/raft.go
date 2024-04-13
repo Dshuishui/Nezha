@@ -649,6 +649,7 @@ func (rf *Raft) applyLogLoop() {
 	for !rf.killed() {
 		if noMore {
 			time.Sleep(10 * time.Millisecond)
+			fmt.Println("commitindex不够")
 		}
 		func() {
 			rf.mu.Lock()
