@@ -43,7 +43,7 @@ const (
 )
 
 type KVServer struct {
-	mu      sync.Mutex
+	mu              sync.Mutex
 	peers           []string
 	address         string
 	internalAddress string    // internal address for communication between nodes
@@ -125,7 +125,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInR
 
 	// 写入raft层
 	var isLeader bool
-	op.Index, op.Term, isLeader = kvs.raft.Start(op)	// 读操作不需要写入raft日志，即不需要作为日志追加进去
+	op.Index, op.Term, isLeader = kvs.raft.Start(op) // 读操作不需要写入raft日志，即不需要作为日志追加进去
 	if !isLeader {
 		reply.Err = raft.ErrWrongLeader
 		return reply
@@ -176,7 +176,7 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 	return reply, nil
 }
 
-func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftResponse,  error) {
+func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) (*kvrpc.PutInRaftResponse, error) {
 	// fmt.Println("走到了server端的put函数")
 	reply := kvs.StartPut(in)
 	if reply.Err == raft.ErrWrongLeader {
@@ -185,8 +185,8 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 	return reply, nil
 }
 
-func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftResponse) {
-	reply := &kvrpc.PutInRaftResponse{Err: raft.OK,LeaderId: 0}
+func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResponse {
+	reply := &kvrpc.PutInRaftResponse{Err: raft.OK, LeaderId: 0}
 	op := raft.DetailCod{
 		OpType:   args.Op,
 		Key:      args.Key,
@@ -449,7 +449,7 @@ func (kvs *KVServer) applyLoop() {
 
 					if existOp { // 存在等待结果的apply日志的RPC, 那么判断状态是否与写入时一致，可能之前接受过该日志，但是身份不是leader了，该index对应的请求日志被别的leader同步日志时覆盖了。
 						// 虽然没超时，但是如果已经和刚开始写入的请求不一致了，那也不行。
-						if opCtx.op.Term != int32(cmdTerm) {		//这里要用msg里面的CommandTerm而不是cmd里面的Term，因为当拿去到的是空指令时，其cmd里面的Term是0，会重复发生错误
+						if opCtx.op.Term != int32(cmdTerm) { //这里要用msg里面的CommandTerm而不是cmd里面的Term，因为当拿去到的是空指令时，其cmd里面的Term是0，会重复发生错误
 							// fmt.Printf("这里有问题吗,opCtx.op.Term:%v,op.Term:%v\n",opCtx.op.Term,op.Term)
 							opCtx.wrongLeader = true
 						}
@@ -462,11 +462,13 @@ func (kvs *KVServer) applyLoop() {
 
 							// leveldb存储key,value
 							// 先把log存到磁盘，在将key,value存到leveldb数据库文件
-							// kvs.valuelog.Put([]byte(op.Key), []byte(op.Value))		
+							// kvs.valuelog.Put([]byte(op.Key), []byte(op.Value))
 							// kvs.persister.Put(op.Key,op.Value)
 
-							// fmt.Println("底层执行了Put请求，以及重置put操作时间")
-							kvs.lastPutTime = time.Now()	// 更新put操作时间
+							if op.SeqId%10000 == 0 {
+								fmt.Println("底层执行了Put请求，以及重置put操作时间")
+							}
+							kvs.lastPutTime = time.Now() // 更新put操作时间
 							err := kvs.valuelog.Put_Pure([]byte(op.Key), []byte(op.Value))
 							if err != nil {
 								panic(err)
@@ -535,7 +537,7 @@ func main() {
 		}
 	}()
 	wg.Add(1 + 1)
-	kvs.raft = raft.Make(kvs.peers, kvs.me, persisterRaft, kvs.applyCh,ctx) // 开启Raft
+	kvs.raft = raft.Make(kvs.peers, kvs.me, persisterRaft, kvs.applyCh, ctx) // 开启Raft
 
 	wg.Wait()
 }
