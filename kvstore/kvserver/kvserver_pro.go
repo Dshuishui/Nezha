@@ -531,10 +531,11 @@ func main() {
 	// Raft层
 	kvs.applyCh = make(chan raft.ApplyMsg, 3) // 至少1个容量，启动后初始化snapshot用
 	kvs.me = FindIndexInPeers(peers, internalAddress)
-	persisterRaft := &raft.Persister{} // 初始化对Raft进行持久化操作的指针
+	// persisterRaft := &raft.Persister{} // 初始化对Raft进行持久化操作的指针
 	kvs.reqMap = make(map[int]*OpContext)
 	kvs.seqMap = make(map[int64]int64)
 	kvs.lastAppliedIndex = 0
+	kvs.persister.Init("./kvstore/kvserver/db_key_index")	// 初始化存储<key,index>的leveldb文件
 
 	go kvs.applyLoop()
 
@@ -555,7 +556,7 @@ func main() {
 		}
 	}()
 	wg.Add(1 + 1)
-	kvs.raft = raft.Make(kvs.peers, kvs.me, persisterRaft, kvs.applyCh, ctx) // 开启Raft
+	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
 
 	wg.Wait()
 }
