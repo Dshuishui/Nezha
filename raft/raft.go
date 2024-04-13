@@ -365,12 +365,12 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 }
 
 func (rf *Raft) AppendMonitor() {
-	timeout := 4 * time.Second
+	timeout := 5 * time.Second
 	for {
 		time.Sleep(timeout)
 		if time.Since(rf.lastAppendTime) > timeout {
 			fmt.Println("5秒没有收到日志同步信息，什么垃圾！")
-			return // 退出main函数
+			continue
 		}
 	}
 }
@@ -533,8 +533,8 @@ func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
 	} else {
 		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
 	}
-	appendLog := rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]		//这里如果下标大于或等于log数组的长度，只是会返回一个空切片 
-	fmt.Printf("此时下标会不会有问题，log长度：%v，下标：%v", len(rf.log), args.PrevLogIndex+1)
+	appendLog := rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片
+	// fmt.Printf("此时下标会不会有问题，log长度：%v，下标：%v", len(rf.log), args.PrevLogIndex+1)
 	data, _ := json.Marshal(appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
 	args.Entries = data
 
