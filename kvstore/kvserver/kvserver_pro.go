@@ -465,7 +465,7 @@ func (kvs *KVServer) applyLoop() {
 							// kvs.valuelog.Put([]byte(op.Key), []byte(op.Value))		
 							// kvs.persister.Put(op.Key,op.Value)
 
-							fmt.Println("底层执行了Put请求，以及重置put操作时间")
+							// fmt.Println("底层执行了Put请求，以及重置put操作时间")
 							kvs.lastPutTime = time.Now()	// 更新put操作时间
 							err := kvs.valuelog.Put_Pure([]byte(op.Key), []byte(op.Value))
 							if err != nil {

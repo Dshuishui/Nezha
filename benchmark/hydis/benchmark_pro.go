@@ -172,12 +172,12 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kv
 			return nil, err
 		}
 		if reply.Err == raft.OK {
-			fmt.Printf("找到了leader %v\n",kvc.leaderId)
+			// fmt.Printf("找到了leader %v\n",kvc.leaderId)
 			return reply, nil
 		} else if reply.Err == raft.ErrWrongLeader {
 			kvc.changeToLeader(int(reply.LeaderId))
 			fmt.Printf("等待leader的出现,更改后的leaderid是%v\n",kvc.leaderId)
-			time.Sleep(1000 * time.Millisecond)
+			time.Sleep(6 * time.Millisecond)
 		}
 	}
 }
