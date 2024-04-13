@@ -691,21 +691,21 @@ func (rf *Raft) applyLogLoop() {
 					CommandTerm:  int(rf.log[appliedIndex].Term),
 				}
 
-				// 设置一个定时器，每十秒检查一次条件
-				ticker := time.NewTicker(3 * time.Second)
-				// defer ticker.Stop()
-				go func() {
-					for range ticker.C {
-						fmt.Printf("传给server的Term是：%v\n", rf.log[appliedIndex].Term)
-					}
-					util.DPrintf("Raft has been closed")
-				}()
-
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
-				if rf.lastApplied%50000 == 0 {
+				if rf.lastApplied % 50000 == 0 {
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 				}
 				noMore = false
+			}
+		}()
+		//		设置一个定时器，每十秒检查一次条件
+		ticker := time.NewTicker(3 * time.Second)
+		// defer ticker.Stop()
+		go func() {
+			for range ticker.C {
+				if !noMore{
+					fmt.Println("Raft层还在传输数据给上层server")
+				}
 			}
 		}()
 	}
