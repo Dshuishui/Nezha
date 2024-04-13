@@ -267,7 +267,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	index = rf.lastIndex()
 	term = rf.currentTerm
 
-	util.DPrintf("RaftNode[%d] Add Command, logIndex[%d] currentTerm[%d]", rf.me, index, term)
+	// util.DPrintf("RaftNode[%d] Add Command, logIndex[%d] currentTerm[%d]", rf.me, index, term)
 	return int32(index), int32(term), isLeader
 }
 
@@ -368,7 +368,7 @@ func (rf *Raft) AppendMonitor() {
 	timeout := 5 * time.Second
 	for {
 		time.Sleep(timeout)
-		if (time.Since(rf.lastAppendTime) > timeout)&&rf.GetLeaderId()==int32(rf.me) {
+		if (time.Since(rf.lastAppendTime) > timeout)&&rf.GetLeaderId()!=int32(rf.me) {
 			fmt.Println("5秒没有收到日志同步信息，什么垃圾！")
 			continue
 		}
@@ -665,7 +665,7 @@ func (rf *Raft) applyLogLoop() {
 					CommandIndex: rf.lastApplied,
 					CommandTerm:  int(rf.log[appliedIndex].Term),
 				}
-				fmt.Printf("传给server的Term是：%v\n",rf.log[appliedIndex].Term)
+				// fmt.Printf("传给server的Term是：%v\n",rf.log[appliedIndex].Term)
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
 				if rf.lastApplied%50000 == 0 {
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
