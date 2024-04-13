@@ -179,7 +179,7 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 			rf.lastActiveTime = time.Now() // 为其他人投票，重置选举超时的时间
 		}
 	}
-	rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 	return reply, nil
 }
 
@@ -216,7 +216,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		rf.currentTerm = int(args.Term)
 		rf.role = ROLE_FOLLOWER
 		rf.votedFor = -1
-		rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+		// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 	}
 
 	// 认识新的leader
@@ -253,7 +253,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			} // term一样啥也不用做，继续向后比对Log
 		}
 	}
-	rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
 	// 更新提交下标
 	if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
@@ -287,7 +287,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// fmt.Println("到这了嘛5")
 	index = rf.lastIndex()
 	term = rf.currentTerm
-	rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
 	// util.DPrintf("RaftNode[%d] Add Command, logIndex[%d] currentTerm[%d]", rf.me, index, term)
 	return int32(index), int32(term), isLeader
@@ -421,7 +421,7 @@ func (rf *Raft) electionLoop() {
 				rf.lastActiveTime = time.Now() // 重置下次选举时间
 				rf.currentTerm += 1            // 发起新任期
 				rf.votedFor = rf.me            // 该任期投了自己
-				rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
 				// 请求投票req
 				args := raftrpc.RequestVoteRequest{
@@ -491,7 +491,7 @@ func (rf *Raft) electionLoop() {
 					rf.leaderId = 0
 					rf.currentTerm = maxTerm // 更新自己的Term和voteFor
 					rf.votedFor = -1
-					rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+					// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 					return
 				}
 				// 赢得大多数选票，则成为leader
@@ -506,7 +506,7 @@ func (rf *Raft) electionLoop() {
 					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
 					rf.mu.Lock()
 					util.DPrintf("成为leader后发送第一个空指令给Raft层")
-					fmt.Printf("此时log的长度%v\n", len(rf.log))
+					// fmt.Printf("此时log的长度%v\n", len(rf.log))
 
 					rf.leaderId = rf.me
 					rf.nextIndex = make([]int, len(rf.peers))
@@ -586,7 +586,7 @@ func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
 				rf.leaderId = 0
 				rf.currentTerm = int(reply.Term)
 				rf.votedFor = -1
-				rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				return
 			}
 			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
@@ -682,6 +682,7 @@ func (rf *Raft) applyLogLoop() {
 			noMore = true
 			// fmt.Printf("此时的commitIndex是多少：%v",rf.commitIndex)
 			if rf.commitIndex > rf.lastApplied {
+				rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				rf.lastApplied += 1
 				appliedIndex := rf.index2LogPos(rf.lastApplied)
 				appliedMsg := ApplyMsg{
