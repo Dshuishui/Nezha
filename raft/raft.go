@@ -3,16 +3,16 @@ package raft
 import (
 	// "bytes"
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
-	"os"
-	"encoding/gob"
 
 	"github.com/JasonLou99/Hybrid_KV_Store/pool"
 	"github.com/JasonLou99/Hybrid_KV_Store/rpc/raftrpc"
@@ -50,7 +50,7 @@ type DetailCod struct {
 	ClientId int64
 }
 
-type RaftState struct{
+type RaftState struct {
 	CurrentTerm int        // 见过的最大任期
 	VotedFor    int        // 记录在currentTerm任期投票给谁了
 	Log         []LogEntry // 操作日志
@@ -95,9 +95,9 @@ type Raft struct {
 }
 
 // save Raft's persistent state to stable storage
-func (rf *Raft) raftStateForPersist(filePath string, currentTerm int,votedFor int,log []LogEntry  ){
-	state := RaftState{CurrentTerm: currentTerm,VotedFor: votedFor,Log: log}
-	file, err := os.Create(filePath)	// 如果文件已存在，则会截断该文件，原文件中的所有数据都会丢失
+func (rf *Raft) raftStateForPersist(filePath string, currentTerm int, votedFor int, log []LogEntry) {
+	state := RaftState{CurrentTerm: currentTerm, VotedFor: votedFor, Log: log}
+	file, err := os.Create(filePath) // 如果文件已存在，则会截断该文件，原文件中的所有数据都会丢失
 	if err != nil {
 		util.EPrintf("Failed to create file: %v", err)
 	}
@@ -110,12 +110,18 @@ func (rf *Raft) raftStateForPersist(filePath string, currentTerm int,votedFor in
 }
 
 // restore previously persisted state.
-func (rf *Raft) ReadPersist(filePath string) *RaftState{
+func (rf *Raft) ReadPersist(filePath string) *RaftState {
 	file, err := os.Open(filePath)
 	if err != nil {
 		util.EPrintf("Failed to open file: %v", err)
 	}
 	defer file.Close()
+	// var err error
+	// file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	// if err != nil {
+	// 	fmt.Println("打开RaftState文件有问题")
+	// 	return nil
+	// }
 
 	var state RaftState
 	decoder := gob.NewDecoder(file)
@@ -172,7 +178,7 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 			rf.lastActiveTime = time.Now() // 为其他人投票，重置选举超时的时间
 		}
 	}
-	rf.raftStateForPersist("./raft/RaftState.log",rf.currentTerm,rf.votedFor,rf.log)
+	rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 	return reply, nil
 }
 
@@ -209,7 +215,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		rf.currentTerm = int(args.Term)
 		rf.role = ROLE_FOLLOWER
 		rf.votedFor = -1
-		rf.raftStateForPersist("./raft/RaftState.log",rf.currentTerm,rf.votedFor,rf.log)
+		rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 	}
 
 	// 认识新的leader
@@ -246,7 +252,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			} // term一样啥也不用做，继续向后比对Log
 		}
 	}
-	rf.raftStateForPersist("./raft/RaftState.log",rf.currentTerm,rf.votedFor,rf.log)
+	rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
 	// 更新提交下标
 	if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
@@ -280,7 +286,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// fmt.Println("到这了嘛5")
 	index = rf.lastIndex()
 	term = rf.currentTerm
-	rf.raftStateForPersist("./raft/RaftState.log",rf.currentTerm,rf.votedFor,rf.log)
+	rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
 	// util.DPrintf("RaftNode[%d] Add Command, logIndex[%d] currentTerm[%d]", rf.me, index, term)
 	return int32(index), int32(term), isLeader
@@ -414,7 +420,7 @@ func (rf *Raft) electionLoop() {
 				rf.lastActiveTime = time.Now() // 重置下次选举时间
 				rf.currentTerm += 1            // 发起新任期
 				rf.votedFor = rf.me            // 该任期投了自己
-				rf.raftStateForPersist("./raft/RaftState.log",rf.currentTerm,rf.votedFor,rf.log)
+				rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
 				// 请求投票req
 				args := raftrpc.RequestVoteRequest{
@@ -484,7 +490,7 @@ func (rf *Raft) electionLoop() {
 					rf.leaderId = 0
 					rf.currentTerm = maxTerm // 更新自己的Term和voteFor
 					rf.votedFor = -1
-					rf.raftStateForPersist("./raft/RaftState.log",rf.currentTerm,rf.votedFor,rf.log)
+					rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 					return
 				}
 				// 赢得大多数选票，则成为leader
@@ -499,7 +505,7 @@ func (rf *Raft) electionLoop() {
 					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
 					rf.mu.Lock()
 					util.DPrintf("成为leader后发送第一个空指令给Raft层")
-					fmt.Printf("此时log的长度%v\n",len(rf.log))
+					fmt.Printf("此时log的长度%v\n", len(rf.log))
 
 					rf.leaderId = rf.me
 					rf.nextIndex = make([]int, len(rf.peers))
@@ -579,7 +585,7 @@ func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
 				rf.leaderId = 0
 				rf.currentTerm = int(reply.Term)
 				rf.votedFor = -1
-				rf.raftStateForPersist("./raft/RaftState.log",rf.currentTerm,rf.votedFor,rf.log)
+				rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				return
 			}
 			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
@@ -759,7 +765,7 @@ func Make(peers []string, me int,
 	}
 
 	util.DPrintf("RaftNode[%d] Make again", rf.me)
-	rf.ReadPersist("./raft/RaftState.log")		// 如果文件已存在，则截断文件，后续如果有要求恢复raft状态的功能，可以修改打开文件的方式。
+	// go rf.ReadPersist("./raft/RaftState.log") // 如果文件已存在，则截断文件，后续如果有要求恢复raft状态的功能，可以修改打开文件的方式。
 
 	go rf.RegisterRaftServer(ctx, peers[me])
 	// election
