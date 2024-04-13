@@ -664,7 +664,7 @@ func (rf *Raft) applyLogLoop() {
 					CommandIndex: rf.lastApplied,
 					CommandTerm:  int(rf.log[appliedIndex].Term),
 				}
-				fmt.Printf("传进去的Term是多少%v\n",rf.log[appliedIndex].Term)
+				fmt.Printf("传给server的Term是：%v\n",rf.log[appliedIndex].Term)
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
 				if rf.lastApplied%50000 == 0 {
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
