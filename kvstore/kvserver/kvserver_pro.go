@@ -542,10 +542,10 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 20 * time.Second
+		timeout := 38 * time.Second
 		for {
 			time.Sleep(timeout)
-			if time.Since(kvs.lastPutTime) > timeout {
+			if (time.Since(kvs.lastPutTime) > timeout)&&(time.Since(kvs.raft.LastAppendTime) > timeout) {
 				cancel() // 超时后取消上下文
 				fmt.Println("38秒没有请求，停止服务器")
 				wg.Done()
