@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/JasonLou99/Hybrid_KV_Store/pool"
+	// "github.com/JasonLou99/Hybrid_KV_Store/raft"
 	"github.com/JasonLou99/Hybrid_KV_Store/rpc/raftrpc"
 
 	// "github.com/JasonLou99/Hybrid_KV_Store/rpc/kvrpc"
@@ -97,7 +98,7 @@ type Raft struct {
 // save Raft's persistent state to stable storage
 func (rf *Raft) raftStateForPersist(filePath string, currentTerm int, votedFor int, log []LogEntry) {
 	state := RaftState{CurrentTerm: currentTerm, VotedFor: votedFor, Log: log}
-	file, err := os.Create(filePath) // 如果文件已存在，则会截断该文件，原文件中的所有数据都会丢失
+	file, err := os.Create(filePath) // 如果文件已存在，则会截断该文件，原文件中的所有数据都会丢失，即不断更新持久化的数据
 	if err != nil {
 		util.EPrintf("Failed to create file: %v", err)
 	}
@@ -764,6 +765,7 @@ func Make(peers []string, me int,
 		rf.pools = append(rf.pools, p)
 	}
 
+	rf.persister.Init("./kvstore/kvserver/db_key_index")	// 初始化存储<key,index>的leveldb文件
 	util.DPrintf("RaftNode[%d] Make again", rf.me)
 	// go rf.ReadPersist("./raft/RaftState.log") // 如果文件已存在，则截断文件，后续如果有要求恢复raft状态的功能，可以修改打开文件的方式。
 
