@@ -369,7 +369,7 @@ func (rf *Raft) AppendMonitor() {
 	for {
 		time.Sleep(timeout)
 		if (time.Since(rf.lastAppendTime) > timeout)&&rf.GetLeaderId()!=int32(rf.me) {
-			fmt.Println("5秒没有收到日志同步信息，什么垃圾！")
+			fmt.Println("5秒没有收到来自leader，日志条目不为零的同步信息！")
 			continue
 		}
 	}
