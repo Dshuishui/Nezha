@@ -655,7 +655,7 @@ func (rf *Raft) applyLogLoop() {
 			defer rf.mu.Unlock()
 
 			noMore = true
-			fmt.Printf("此时的commitIndex是多少：%v",rf.commitIndex)
+			// fmt.Printf("此时的commitIndex是多少：%v",rf.commitIndex)
 			if rf.commitIndex > rf.lastApplied {
 				rf.lastApplied += 1
 				appliedIndex := rf.index2LogPos(rf.lastApplied)
