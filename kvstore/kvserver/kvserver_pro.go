@@ -177,7 +177,7 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 }
 
 func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftResponse,  error) {
-	// fmt.Println("走到了server端的put函数")
+	fmt.Println("走到了server端的put函数")
 	reply := kvs.StartPut(in)
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
@@ -432,7 +432,7 @@ func (kvs *KVServer) applyLoop() {
 					defer kvs.mu.Unlock()
 					// 更新已经应用到的日志
 					kvs.lastAppliedIndex = index
-					// fmt.Println("进入到applyLoop")
+					fmt.Println("进入到applyLoop")
 					// 操作日志
 					op := cmd.(raft.DetailCod) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
 
