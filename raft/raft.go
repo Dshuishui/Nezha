@@ -180,6 +180,8 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	json.Unmarshal(args.Entries, &logEntrys)
 	if len(logEntrys) != 0 { // 除去普通的心跳
 		rf.lastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
+	} else {
+		fmt.Println("有日志为0的情况吗")
 	}
 
 	// defer func() {
@@ -532,8 +534,9 @@ func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
 	} else {
 		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
 	}
-	appendLog := rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]	
-	data, _ := json.Marshal(appendLog)		// 后续计算日志的长度的时候可千万别用这个转换后的直接数组
+	appendLog := rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
+	fmt.Printf("此时下标会不会有问题，log长度：%v，下标：%v", len(rf.log), args.PrevLogIndex+1)
+	data, _ := json.Marshal(appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
 	args.Entries = data
 
 	// args.Entries = append(args.Entries, rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]...)
