@@ -699,15 +699,15 @@ func (rf *Raft) applyLogLoop() {
 			}
 		}()
 		//		设置一个定时器，每十秒检查一次条件
-		ticker := time.NewTicker(3 * time.Second)
-		// defer ticker.Stop()
-		go func() {
-			for range ticker.C {
-				if !noMore{
-					fmt.Println("Raft层还在传输数据给上层server")
-				}
-			}
-		}()
+		// ticker := time.NewTicker(3 * time.Second)
+		// // defer ticker.Stop()
+		// go func() {
+		// 	for range ticker.C {
+		// 		if !noMore{
+		// 			fmt.Println("Raft层还在传输数据给上层server")
+		// 		}
+		// 	}
+		// }()
 	}
 }
 
