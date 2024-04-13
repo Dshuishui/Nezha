@@ -682,7 +682,7 @@ func (rf *Raft) applyLogLoop() {
 			noMore = true
 			// fmt.Printf("此时的commitIndex是多少：%v",rf.commitIndex)
 			if rf.commitIndex > rf.lastApplied {
-				rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				rf.lastApplied += 1
 				appliedIndex := rf.index2LogPos(rf.lastApplied)
 				appliedMsg := ApplyMsg{
@@ -693,7 +693,8 @@ func (rf *Raft) applyLogLoop() {
 				}
 
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
-				if rf.lastApplied % 50000 == 0 {
+				if rf.lastApplied % 10000 == 0 {
+					rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 				}
 				noMore = false
