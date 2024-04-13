@@ -92,7 +92,7 @@ type Raft struct {
 	pools   []pool.Pool   // 用于日志同步的连接池
 	// kvrpc.UnimplementedKVServer
 	raftrpc.UnimplementedRaftServer
-	lastAppendTime time.Time
+	LastAppendTime time.Time
 }
 
 // save Raft's persistent state to stable storage
@@ -198,7 +198,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	var logEntrys []LogEntry
 	json.Unmarshal(args.Entries, &logEntrys)
 	if len(logEntrys) != 0 { // 除去普通的心跳
-		rf.lastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
+		rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
 		// fmt.Println("重置lastAppendTime")
 	}
 
@@ -390,7 +390,7 @@ func (rf *Raft) AppendMonitor() {
 	timeout := 5 * time.Second
 	for {
 		time.Sleep(timeout)
-		if (time.Since(rf.lastAppendTime) > timeout) && rf.GetLeaderId() != int32(rf.me) {
+		if (time.Since(rf.LastAppendTime) > timeout) && rf.GetLeaderId() != int32(rf.me) {
 			fmt.Println("5秒没有收到来自leader，日志条目不为零的同步信息！")
 			continue
 		}
@@ -566,7 +566,7 @@ func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
 	// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
 
 	if len(appendLog) != 0 { // 除去普通的心跳
-		rf.lastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
+		rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
 		// fmt.Println("重置lastAppendTime")
 	}
 
@@ -750,7 +750,7 @@ func Make(peers []string, me int,
 	rf.votedFor = -1
 	rf.lastActiveTime = time.Now()
 	rf.applyCh = applyCh
-	rf.lastAppendTime = time.Now()
+	rf.LastAppendTime = time.Now()
 
 	// 这就是自己修改grpc线程池option参数的做法
 	DesignOptions := pool.Options{
