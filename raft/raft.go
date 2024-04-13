@@ -267,7 +267,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	index = rf.lastIndex()
 	term = rf.currentTerm
 
-	// util.DPrintf("RaftNode[%d] Add Command, logIndex[%d] currentTerm[%d]", rf.me, index, term)
+	util.DPrintf("RaftNode[%d] Add Command, logIndex[%d] currentTerm[%d]", rf.me, index, term)
 	return int32(index), int32(term), isLeader
 }
 
