@@ -177,7 +177,7 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 }
 
 func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftResponse,  error) {
-	fmt.Println("走到了server端的put函数")
+	// fmt.Println("走到了server端的put函数")
 	reply := kvs.StartPut(in)
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
@@ -231,10 +231,10 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) ( *kvrpc.PutInRaftRe
 	case <-opCtx.committed: // ApplyLoop函数执行完后，会关闭committed通道，再根据相关的值设置请求reply的结果
 		if opCtx.wrongLeader { // 同样index位置的term不一样了, 说明leader变了，需要client向新leader重新写入
 			reply.Err = raft.ErrWrongLeader
-			fmt.Println("走了哪个操作1")
+			// fmt.Println("走了哪个操作1")
 			// fmt.Println("设置reply为WrongLeader")
 		} else if opCtx.ignored {
-			fmt.Println("走了哪个操作2")
+			// fmt.Println("走了哪个操作2")
 			// 说明req id过期了，该请求被忽略，对MIT这个lab来说只需要告知客户端OK跳过即可
 			// reply.Err = raft.OK
 		}
@@ -434,7 +434,7 @@ func (kvs *KVServer) applyLoop() {
 					defer kvs.mu.Unlock()
 					// 更新已经应用到的日志
 					kvs.lastAppliedIndex = index
-					fmt.Println("进入到applyLoop")
+					// fmt.Println("进入到applyLoop")
 					// 操作日志
 					op := cmd.(raft.DetailCod) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
 
