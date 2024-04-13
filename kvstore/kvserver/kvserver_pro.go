@@ -227,19 +227,20 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 	timer := time.NewTimer(200000 * time.Millisecond)
 	defer timer.Stop()
 	select {
-	// 通道关闭或者有数据传入都会执行以下的分支
-	case <-opCtx.committed: // ApplyLoop函数执行完后，会关闭committed通道，再根据相关的值设置请求reply的结果
-		if opCtx.wrongLeader { // 同样index位置的term不一样了, 说明leader变了，需要client向新leader重新写入
+		// 通道关闭或者有数据传入都会执行以下的分支
+		case <-opCtx.committed: // ApplyLoop函数执行完后，会关闭committed通道，再根据相关的值设置请求reply的结果
+			if opCtx.wrongLeader { // 同样index位置的term不一样了, 说明leader变了，需要client向新leader重新写入
+				reply.Err = raft.ErrWrongLeader
+				// fmt.Println("走了哪个操作1")
+				// fmt.Println("设置reply为WrongLeader")
+			} else if opCtx.ignored {
+				// fmt.Println("走了哪个操作2")
+				// 说明req id过期了，该请求被忽略，对MIT这个lab来说只需要告知客户端OK跳过即可
+				reply.Err = raft.OK
+			}
+		case <-timer.C: // 如果2秒都没提交成功，让client重试
+			fmt.Println("Put请求执行超时了，超过了200s，重新让client发送执行")
 			reply.Err = raft.ErrWrongLeader
-			// fmt.Println("走了哪个操作1")
-			// fmt.Println("设置reply为WrongLeader")
-		} else if opCtx.ignored {
-			// fmt.Println("走了哪个操作2")
-			// 说明req id过期了，该请求被忽略，对MIT这个lab来说只需要告知客户端OK跳过即可
-			// reply.Err = raft.OK
-		}
-	case <-timer.C: // 如果2秒都没提交成功，让client重试
-		reply.Err = raft.ErrWrongLeader
 	}
 	return reply
 }
