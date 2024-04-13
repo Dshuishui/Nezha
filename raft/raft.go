@@ -475,13 +475,13 @@ func (rf *Raft) electionLoop() {
 					rf.role = ROLE_LEADER
 					util.DPrintf("RaftNode[%d] Candidate -> Leader", rf.me)
 
-					op := DetailCod{
-						OpType: "TermLog",
-					}
-					rf.mu.Unlock()
-					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
-					rf.mu.Lock()
-					util.DPrintf("成为leader后发送第一个空指令给Raft层")
+					// op := DetailCod{
+					// 	OpType: "TermLog",
+					// }
+					// rf.mu.Unlock()
+					// op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
+					// rf.mu.Lock()
+					// util.DPrintf("成为leader后发送第一个空指令给Raft层")
 					// fmt.Printf("此时log的长度%v\n",len(rf.log))
 
 					rf.leaderId = rf.me
