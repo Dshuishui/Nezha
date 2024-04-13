@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	// "strconv"
 	// "encoding/json"
 	"flag"
 	"fmt"
@@ -172,6 +173,9 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 	reply := kvs.StartGet(in)
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
+	}else if reply.Err == raft.ErrNoKey{
+		// 返回客户端没有该key即可，这里先不做操作
+		fmt.Println("server端没有client查询的key")
 	}
 	return reply, nil
 }
@@ -227,20 +231,20 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 	timer := time.NewTimer(200000 * time.Millisecond)
 	defer timer.Stop()
 	select {
-		// 通道关闭或者有数据传入都会执行以下的分支
-		case <-opCtx.committed: // ApplyLoop函数执行完后，会关闭committed通道，再根据相关的值设置请求reply的结果
-			if opCtx.wrongLeader { // 同样index位置的term不一样了, 说明leader变了，需要client向新leader重新写入
-				reply.Err = raft.ErrWrongLeader
-				// fmt.Println("走了哪个操作1")
-				// fmt.Println("设置reply为WrongLeader")
-			} else if opCtx.ignored {
-				// fmt.Println("走了哪个操作2")
-				// 说明req id过期了，该请求被忽略，对MIT这个lab来说只需要告知客户端OK跳过即可
-				reply.Err = raft.OK
-			}
-		case <-timer.C: // 如果2秒都没提交成功，让client重试
-			fmt.Println("Put请求执行超时了，超过了200s，重新让client发送执行")
+	// 通道关闭或者有数据传入都会执行以下的分支
+	case <-opCtx.committed: // ApplyLoop函数执行完后，会关闭committed通道，再根据相关的值设置请求reply的结果
+		if opCtx.wrongLeader { // 同样index位置的term不一样了, 说明leader变了，需要client向新leader重新写入
 			reply.Err = raft.ErrWrongLeader
+			// fmt.Println("走了哪个操作1")
+			// fmt.Println("设置reply为WrongLeader")
+		} else if opCtx.ignored {
+			// fmt.Println("走了哪个操作2")
+			// 说明req id过期了，该请求被忽略，对MIT这个lab来说只需要告知客户端OK跳过即可
+			reply.Err = raft.OK
+		}
+	case <-timer.C: // 如果2秒都没提交成功，让client重试
+		fmt.Println("Put请求执行超时了，超过了200s，重新让client发送执行")
+		reply.Err = raft.ErrWrongLeader
 	}
 	return reply
 }
@@ -313,10 +317,12 @@ func (vl *ValueLog) Put_Pure(key []byte, value []byte) error {
 		return err
 	}
 
-	// Write <keysize, valuesize, key, value> to the Value Log.
+	// Write <keysize, valuesize, key, value, currentTerm, votedFor, log[]> to the Value Log.
 	// 固定整数的长度，即四个字节
 	keySize := uint32(len(key))
 	valueSize := uint32(len(value))
+	// extraSize := uint32(8) // 八个字节存储currentTerm和votedFor
+	// structSize := uint32(structBuf.Len())
 	buf := make([]byte, 8+keySize+valueSize)
 	binary.BigEndian.PutUint32(buf[0:4], keySize)
 	binary.BigEndian.PutUint32(buf[4:8], valueSize)
@@ -470,26 +476,37 @@ func (kvs *KVServer) applyLoop() {
 								fmt.Println("底层执行了Put请求，以及重置put操作时间")
 							}
 							kvs.lastPutTime = time.Now() // 更新put操作时间
-							err := kvs.valuelog.Put_Pure([]byte(op.Key), []byte(op.Value))
-							if err != nil {
-								panic(err)
-							}
+
+							// raftState := kvs.raft.ReadPersist("./raft/RaftState.log")
+							// entry := raftState.Log[op.Index]
+							// index := entry.Command.Index
+
+							// 将整数编码为字节流并存入 LevelDB
+							indexKey := make([]byte, 4)                            // 假设整数是 int32 类型
+							binary.BigEndian.PutUint32(indexKey, uint32(op.Index)) // 这里注意是把op.Index放进去还是对应日志的entry.Command.Index，两者应该都一样
+							kvs.persister.Put(op.Key, indexKey)                    // <key,idnex>,其中index是string类型
 						} else if existOp { // 虽然该请求的处理还未超时，但是已经处理过了。
 							opCtx.ignored = true
 						}
 					} else { // OP_TYPE_GET
 						if existOp { // 如果是GET请求，只要没超时，都可以进行幂等处理
 							// opCtx.value, opCtx.keyExist = kvs.kvStore[op.Key]	// --------------------------------------------
-
 							// value := kvs.persister.Get(op.Key)		leveldb拿取value
 
-							// fmt.Println("底层执行了Get请求")
-							value, err := kvs.valuelog.Get([]byte(op.Key))
-							if err != nil {
-								panic(err)
-								// opCtx.keyExist = false
+							// 从 LevelDB 中获取键对应的值，并解码为整数
+							data := kvs.persister.Get(op.Key)
+
+							if data == nil {	//  说明没有该key
+								opCtx.keyExist = false
+								opCtx.value = ""
+							}else{
+								indexKey := binary.BigEndian.Uint32(data) // 将字节流解码为整数，拿到key对应的index
+								raftState := kvs.raft.ReadPersist("./raft/RaftState.log") // 读取持久化存储
+								entry := raftState.Log[indexKey]                          // 拿到index对应的日志
+								value := entry.Command.Value                              // 拿到日志中对应的value
+	
+								opCtx.value = value
 							}
-							opCtx.value = string(value)
 						}
 					}
 

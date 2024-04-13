@@ -7,6 +7,7 @@ kvstore/kvserver/valueLog_WiscKey.log
 kvstore/kvserver/valueLog_Leveldb.log
 kvstore/kvserver/db_key_addr
 kvstore/kvserver/db_key_value
+raft/RaftState.log
 run_server.sh
 run_client.sh
 error.log

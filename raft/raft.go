@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"os"
+	"encoding/gob"
 
 	"github.com/JasonLou99/Hybrid_KV_Store/pool"
 	"github.com/JasonLou99/Hybrid_KV_Store/rpc/raftrpc"
@@ -46,6 +48,12 @@ type DetailCod struct {
 	Value    string
 	SeqId    int64
 	ClientId int64
+}
+
+type RaftState struct{
+	CurrentTerm int        // 见过的最大任期
+	VotedFor    int        // 记录在currentTerm任期投票给谁了
+	Log         []LogEntry // 操作日志
 }
 
 // 当前角色
@@ -86,33 +94,36 @@ type Raft struct {
 	lastAppendTime time.Time
 }
 
-// type RequestVoteArgs struct {
-// 	Term         int
-// 	CandidateId  int
-// 	LastLogIndex int
-// 	LastLogTerm  int
-// }
+// save Raft's persistent state to stable storage
+func (rf *Raft) raftStateForPersist(filePath string, currentTerm int,votedFor int,log []LogEntry  ){
+	state := RaftState{CurrentTerm: currentTerm,VotedFor: votedFor,Log: log}
+	file, err := os.Create(filePath)	// 如果文件已存在，则会截断该文件，原文件中的所有数据都会丢失
+	if err != nil {
+		util.EPrintf("Failed to create file: %v", err)
+	}
+	defer file.Close()
 
-// type RequestVoteReply struct {
-// 	Term        int
-// 	VoteGranted bool
-// }
+	encoder := gob.NewEncoder(file)
+	if err := encoder.Encode(state); err != nil {
+		util.EPrintf("Failed to encode data: %v", err)
+	}
+}
 
-// type AppendEntriesArgs struct {
-// 	Term         int
-// 	LeaderId     int
-// 	PrevLogIndex int
-// 	PrevLogTerm  int
-// 	Entries      []LogEntry
-// 	LeaderCommit int
-// }
+// restore previously persisted state.
+func (rf *Raft) ReadPersist(filePath string) *RaftState{
+	file, err := os.Open(filePath)
+	if err != nil {
+		util.EPrintf("Failed to open file: %v", err)
+	}
+	defer file.Close()
 
-// type AppendEntriesReply struct {
-// 	Term          int
-// 	Success       bool
-// 	ConflictIndex int
-// 	ConflictTerm  int
-// }
+	var state RaftState
+	decoder := gob.NewDecoder(file)
+	if err := decoder.Decode(&state); err != nil {
+		util.EPrintf("Failed to decode data: %v", err)
+	}
+	return &state
+}
 
 func (rf *Raft) GetLeaderId() (leaderId int32) {
 	rf.mu.Lock()
@@ -161,6 +172,7 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 			rf.lastActiveTime = time.Now() // 为其他人投票，重置选举超时的时间
 		}
 	}
+	rf.raftStateForPersist("./raft/RaftState.log",rf.currentTerm,rf.votedFor,rf.log)
 	return reply, nil
 }
 
@@ -197,6 +209,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		rf.currentTerm = int(args.Term)
 		rf.role = ROLE_FOLLOWER
 		rf.votedFor = -1
+		rf.raftStateForPersist("./raft/RaftState.log",rf.currentTerm,rf.votedFor,rf.log)
 	}
 
 	// 认识新的leader
@@ -233,6 +246,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			} // term一样啥也不用做，继续向后比对Log
 		}
 	}
+	rf.raftStateForPersist("./raft/RaftState.log",rf.currentTerm,rf.votedFor,rf.log)
 
 	// 更新提交下标
 	if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
@@ -266,6 +280,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// fmt.Println("到这了嘛5")
 	index = rf.lastIndex()
 	term = rf.currentTerm
+	rf.raftStateForPersist("./raft/RaftState.log",rf.currentTerm,rf.votedFor,rf.log)
 
 	// util.DPrintf("RaftNode[%d] Add Command, logIndex[%d] currentTerm[%d]", rf.me, index, term)
 	return int32(index), int32(term), isLeader
@@ -368,7 +383,7 @@ func (rf *Raft) AppendMonitor() {
 	timeout := 5 * time.Second
 	for {
 		time.Sleep(timeout)
-		if (time.Since(rf.lastAppendTime) > timeout)&&rf.GetLeaderId()!=int32(rf.me) {
+		if (time.Since(rf.lastAppendTime) > timeout) && rf.GetLeaderId() != int32(rf.me) {
 			fmt.Println("5秒没有收到来自leader，日志条目不为零的同步信息！")
 			continue
 		}
@@ -399,6 +414,7 @@ func (rf *Raft) electionLoop() {
 				rf.lastActiveTime = time.Now() // 重置下次选举时间
 				rf.currentTerm += 1            // 发起新任期
 				rf.votedFor = rf.me            // 该任期投了自己
+				rf.raftStateForPersist("./raft/RaftState.log",rf.currentTerm,rf.votedFor,rf.log)
 
 				// 请求投票req
 				args := raftrpc.RequestVoteRequest{
@@ -468,6 +484,7 @@ func (rf *Raft) electionLoop() {
 					rf.leaderId = 0
 					rf.currentTerm = maxTerm // 更新自己的Term和voteFor
 					rf.votedFor = -1
+					rf.raftStateForPersist("./raft/RaftState.log",rf.currentTerm,rf.votedFor,rf.log)
 					return
 				}
 				// 赢得大多数选票，则成为leader
@@ -475,14 +492,14 @@ func (rf *Raft) electionLoop() {
 					rf.role = ROLE_LEADER
 					util.DPrintf("RaftNode[%d] Candidate -> Leader", rf.me)
 
-					// op := DetailCod{
-					// 	OpType: "TermLog",
-					// }
-					// rf.mu.Unlock()
-					// op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
-					// rf.mu.Lock()
-					// util.DPrintf("成为leader后发送第一个空指令给Raft层")
-					// fmt.Printf("此时log的长度%v\n",len(rf.log))
+					op := DetailCod{
+						OpType: "TermLog",
+					}
+					rf.mu.Unlock()
+					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
+					rf.mu.Lock()
+					util.DPrintf("成为leader后发送第一个空指令给Raft层")
+					fmt.Printf("此时log的长度%v\n",len(rf.log))
 
 					rf.leaderId = rf.me
 					rf.nextIndex = make([]int, len(rf.peers))
@@ -562,7 +579,7 @@ func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
 				rf.leaderId = 0
 				rf.currentTerm = int(reply.Term)
 				rf.votedFor = -1
-				// rf.persist()
+				rf.raftStateForPersist("./raft/RaftState.log",rf.currentTerm,rf.votedFor,rf.log)
 				return
 			}
 			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
@@ -666,7 +683,17 @@ func (rf *Raft) applyLogLoop() {
 					CommandIndex: rf.lastApplied,
 					CommandTerm:  int(rf.log[appliedIndex].Term),
 				}
-				// fmt.Printf("传给server的Term是：%v\n",rf.log[appliedIndex].Term)
+
+				// 设置一个定时器，每十秒检查一次条件
+				ticker := time.NewTicker(3 * time.Second)
+				// defer ticker.Stop()
+				go func() {
+					for range ticker.C {
+						fmt.Printf("传给server的Term是：%v\n", rf.log[appliedIndex].Term)
+					}
+					util.DPrintf("Raft has been closed")
+				}()
+
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
 				if rf.lastApplied%50000 == 0 {
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
@@ -732,6 +759,7 @@ func Make(peers []string, me int,
 	}
 
 	util.DPrintf("RaftNode[%d] Make again", rf.me)
+	rf.ReadPersist("./raft/RaftState.log")		// 如果文件已存在，则截断文件，后续如果有要求恢复raft状态的功能，可以修改打开文件的方式。
 
 	go rf.RegisterRaftServer(ctx, peers[me])
 	// election
