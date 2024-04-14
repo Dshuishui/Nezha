@@ -152,7 +152,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInR
 		}
 	}()
 
-	timer := time.NewTimer(2000 * time.Millisecond)
+	timer := time.NewTimer(4000 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	case <-opCtx.committed: // 如果提交了
@@ -228,7 +228,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 		}
 	}()
 
-	timer := time.NewTimer(2000 * time.Millisecond)
+	timer := time.NewTimer(4000 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	// 通道关闭或者有数据传入都会执行以下的分支
