@@ -644,6 +644,7 @@ func (rf *Raft) appendEntriesLoop() {
 
 			// 只有leader才向外广播心跳
 			if rf.role != ROLE_LEADER {
+				rf.mu.Unlock() 
 				return
 			}
 
@@ -653,6 +654,7 @@ func (rf *Raft) appendEntriesLoop() {
 			// 	return
 			// }
 			if rf.lastIndex() == 0 {
+				rf.mu.Unlock() 
 				return
 			}
 			rf.lastBroadcastTime = time.Now() // 确定过了广播的时间间隔，才开始进行广播，并且设置新的广播时间
