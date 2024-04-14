@@ -152,7 +152,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInR
 		}
 	}()
 
-	timer := time.NewTimer(20000 * time.Millisecond)
+	timer := time.NewTimer(2000 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	case <-opCtx.committed: // 如果提交了
@@ -228,7 +228,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 		}
 	}()
 
-	timer := time.NewTimer(200000 * time.Millisecond)
+	timer := time.NewTimer(2000 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	// 通道关闭或者有数据传入都会执行以下的分支
@@ -243,7 +243,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 			reply.Err = raft.OK
 		}
 	case <-timer.C: // 如果2秒都没提交成功，让client重试
-		fmt.Println("Put请求执行超时了，超过了200s，重新让client发送执行")
+		fmt.Println("Put请求执行超时了，超过了2s，重新让client发送执行")
 		reply.Err = raft.ErrWrongLeader
 	}
 	return reply

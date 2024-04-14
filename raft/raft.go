@@ -581,7 +581,7 @@ func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
 			// 		rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
 			// }()
 
-			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server
+			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
 			if rf.currentTerm != int(args.Term) {
 				return
 			}
@@ -648,26 +648,24 @@ func (rf *Raft) appendEntriesLoop() {
 			}
 
 			// 100ms广播1次
-			now := time.Now()
-			if now.Sub(rf.lastBroadcastTime) < 16*time.Millisecond {
-				return
-			}
+			// now := time.Now()
+			// if now.Sub(rf.lastBroadcastTime) < 16*time.Millisecond {
+			// 	return
+			// }
 			if rf.lastIndex() == 0 {
 				return
 			}
 			rf.lastBroadcastTime = time.Now() // 确定过了广播的时间间隔，才开始进行广播，并且设置新的广播时间
-			rf.mu.Unlock()                    // 这里考虑到peers不会动态变化，就不在for循环内锁了
 			// 向所有follower发送心跳
 			for peerId := 0; peerId < len(rf.peers); peerId++ {
 				if peerId == rf.me {
 					continue
 				}
 				// util.DPrintf("发送同步日志给节点[%v]",peerId)
-
+				rf.mu.Unlock()               
 				rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
-
+				rf.mu.Lock()
 			}
-			rf.mu.Lock()
 		}()
 	}
 }
