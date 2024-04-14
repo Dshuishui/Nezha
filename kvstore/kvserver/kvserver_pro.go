@@ -243,7 +243,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 			reply.Err = raft.OK
 		}
 	case <-timer.C: // 如果2秒都没提交成功，让client重试
-		fmt.Println("Put请求执行超时了，超过了2s，重新让client发送执行")
+		// fmt.Println("Put请求执行超时了，超过了2s，重新让client发送执行")
 		reply.Err = raft.ErrWrongLeader
 	}
 	return reply

@@ -50,9 +50,9 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 	// 这就是自己修改grpc线程池option参数的做法
 	DesignOptions := pool.Options{
 		Dial:                 pool.Dial,
-		MaxIdle:              100,
-		MaxActive:            168,
-		MaxConcurrentStreams: 64,
+		MaxIdle:              200,
+		MaxActive:            300,
+		MaxConcurrentStreams: 100,
 		Reuse:                true,
 	}
 	fmt.Printf("servers:%v\n", kvc.Kvservers)
