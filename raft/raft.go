@@ -748,7 +748,6 @@ func Make(peers []string, me int,
 	rf.votedFor = -1
 	rf.lastActiveTime = time.Now()
 	rf.applyCh = applyCh
-	rf.LastAppendTime = time.Now()
 
 	// 这就是自己修改grpc线程池option参数的做法
 	DesignOptions := pool.Options{
@@ -770,6 +769,7 @@ func Make(peers []string, me int,
 	}
 
 	util.DPrintf("RaftNode[%d] Make again", rf.me)
+	rf.LastAppendTime = time.Now()
 	// go rf.ReadPersist("./raft/RaftState.log") // 如果文件已存在，则截断文件，后续如果有要求恢复raft状态的功能，可以修改打开文件的方式。
 
 	go rf.RegisterRaftServer(ctx, peers[me])
