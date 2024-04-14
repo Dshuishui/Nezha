@@ -162,13 +162,13 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kv
 		}
 		defer conn.Close()
 		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*100) // 设置100秒定时往下传
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10) // 设置100秒定时往下传
 		defer cancel()
 
 		reply, err := client.PutInRaft(ctx, request)
 		if err != nil {
-			fmt.Println("客户端调用PutInRaft有问题")
-			util.EPrintf("err in PutInRaft-调用了服务器的put方法: %v", err)
+			// fmt.Println("客户端调用PutInRaft有问题")
+			// util.EPrintf("err in PutInRaft-调用了服务器的put方法: %v", err)
 			return nil, err
 		}
 		if reply.Err == raft.OK {
@@ -176,7 +176,7 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kv
 			return reply, nil
 		} else if reply.Err == raft.ErrWrongLeader {
 			kvc.changeToLeader(int(reply.LeaderId))
-			fmt.Printf("等待leader的出现,更改后的leaderid是%v\n",kvc.leaderId)
+			// fmt.Printf("等待leader的出现,更改后的leaderid是%v\n",kvc.leaderId)
 			// time.Sleep(6 * time.Millisecond)
 		}
 	}
