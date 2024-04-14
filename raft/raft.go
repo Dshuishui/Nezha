@@ -517,7 +517,7 @@ func (rf *Raft) electionLoop() {
 					for i := 0; i < len(rf.peers); i++ {
 						rf.matchIndex[i] = 0
 					}
-					rf.lastBroadcastTime = time.Unix(0, 0) // 令appendEntries广播立即执行，因为leader的term开始时，需要提交一条空的无操作记录。
+					// rf.lastBroadcastTime = time.Unix(0, 0) // 令appendEntries广播立即执行，因为leader的term开始时，需要提交一条空的无操作记录。
 					return
 				}
 			}
@@ -636,7 +636,7 @@ func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
 
 func (rf *Raft) appendEntriesLoop() {
 	for !rf.killed() {
-		time.Sleep(6 * time.Millisecond) // 间隔10ms
+		time.Sleep(10 * time.Millisecond) // 间隔10ms
 
 		func() {
 			rf.mu.Lock()
@@ -649,15 +649,15 @@ func (rf *Raft) appendEntriesLoop() {
 			}
 
 			// 100ms广播1次
-			now := time.Now()
-			if now.Sub(rf.lastBroadcastTime) < 11*time.Millisecond {
-				return
-			}
+			// now := time.Now()
+			// if now.Sub(rf.lastBroadcastTime) < 11*time.Millisecond {
+			// 	return
+			// }
 			if rf.lastIndex() == 0 {
 				rf.mu.Unlock() 
 				return
 			}
-			rf.lastBroadcastTime = time.Now() // 确定过了广播的时间间隔，才开始进行广播，并且设置新的广播时间
+			// rf.lastBroadcastTime = time.Now() // 确定过了广播的时间间隔，才开始进行广播，并且设置新的广播时间
 			rf.mu.Unlock()               
 			// 向所有follower发送心跳
 			// for peerId := 0; peerId < len(rf.peers); peerId++ {
@@ -699,7 +699,7 @@ func (rf *Raft) applyLogLoop() {
 
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
 				if rf.lastApplied % 10000 == 0 {
-					// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+					rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 				}
 				noMore = false
