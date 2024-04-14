@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	// "strconv"
+	"strconv"
 	// "encoding/json"
 	"flag"
 	"fmt"
@@ -36,6 +36,7 @@ var (
 	internalAddress_arg = flag.String("internalAddress", "", "Input Your address") // 返回的是一个指向string类型的指针
 	address_arg         = flag.String("address", "", "Input Your address")
 	peers_arg           = flag.String("peers", "", "Input Your Peers")
+	gap_arg 			= flag.String("gap", "", "Input Your gap")
 )
 
 const (
@@ -523,6 +524,7 @@ func (kvs *KVServer) applyLoop() {
 func main() {
 	// peers inputed by command line
 	flag.Parse()
+	gap,_ := strconv.Atoi(*gap_arg)
 	internalAddress := *internalAddress_arg // 取出指针所指向的值，存入internalAddress变量
 	address := *address_arg
 	peers := strings.Split(*peers_arg, ",") // 将逗号作为分隔符传递给strings.Split函数，以便将peers_arg字符串分割成多个子字符串，并存储在peers的切片中
@@ -557,6 +559,7 @@ func main() {
 	}()
 	wg.Add(1 + 1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
+	kvs.raft.Gap = gap
 
 	wg.Wait()
 }

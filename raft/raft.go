@@ -93,6 +93,7 @@ type Raft struct {
 	// kvrpc.UnimplementedKVServer
 	raftrpc.UnimplementedRaftServer
 	LastAppendTime time.Time
+	Gap int
 }
 
 // save Raft's persistent state to stable storage
@@ -698,7 +699,7 @@ func (rf *Raft) applyLogLoop() {
 				}
 
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
-				if rf.lastApplied % 10000 == 0 {
+				if rf.lastApplied % rf.Gap == 0 {
 					rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 				}
