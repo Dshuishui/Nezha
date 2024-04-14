@@ -636,7 +636,7 @@ func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
 
 func (rf *Raft) appendEntriesLoop() {
 	for !rf.killed() {
-		time.Sleep(6 * time.Millisecond) // 间隔10ms
+		time.Sleep(600 * time.Millisecond) // 间隔10ms
 
 		func() {
 			rf.mu.Lock()
