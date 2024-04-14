@@ -152,7 +152,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInR
 		}
 	}()
 
-	timer := time.NewTimer(6000 * time.Millisecond)
+	timer := time.NewTimer(8000 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	case <-opCtx.committed: // 如果提交了
