@@ -466,7 +466,7 @@ func (kvs *KVServer) applyLoop() {
 					if op.OpType == OP_TYPE_PUT {
 						if !existSeq || op.SeqId > prevSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
 							// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
-							if op.SeqId%10000 == 0 {
+							if op.SeqId%10 == 0 {
 								fmt.Println("底层执行了Put请求，以及重置put操作时间")
 							}
 							kvs.lastPutTime = time.Now() // 更新put操作时间
