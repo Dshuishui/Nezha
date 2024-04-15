@@ -477,7 +477,6 @@ func (rf *Raft) sendRequestVote(address string, args *raftrpc.RequestVoteRequest
 		return false, reply
 	} else {
 		return true, reply
-
 	}
 }
 
@@ -491,7 +490,7 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 	}
 	defer conn.Close()
 	client := raftrpc.NewRaftClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
 	defer cancel()
 	reply, err := client.AppendEntriesInRaft(ctx, args)
 
@@ -523,7 +522,7 @@ func (rf *Raft) electionLoop() {
 			defer rf.mu.Unlock()
 			// fmt.Println("释放electionLoop的锁1或者")
 			now := time.Now()
-			timeout := time.Duration(10000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
+			timeout := time.Duration(20000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
 			elapses := now.Sub(rf.lastActiveTime)
 			// follower -> candidates
 			if rf.role == ROLE_FOLLOWER {
@@ -764,30 +763,30 @@ func (rf *Raft) appendEntriesLoop() {
 				return
 			}
 
-				// 100ms广播1次
-				// now := time.Now()
-				// if now.Sub(rf.lastBroadcastTime) < 11*time.Millisecond {
-				// 	return
-				// }
-				if rf.lastIndex() == 0 {
-					rf.mu.Unlock()
-					return
-				}
-				// rf.lastBroadcastTime = time.Now() // 确定过了广播的时间间隔，才开始进行广播，并且设置新的广播时间
+			// 100ms广播1次
+			// now := time.Now()
+			// if now.Sub(rf.lastBroadcastTime) < 11*time.Millisecond {
+			// 	return
+			// }
+			if rf.lastIndex() == 0 {
 				rf.mu.Unlock()
-				// 向所有follower发送心跳
-				// for peerId := 0; peerId < len(rf.peers); peerId++ {
-				for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
-					if peerId == rf.me {
-						continue
-					}
-					// util.DPrintf("发送同步日志给节点[%v]",peerId)
-					rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
+				return
+			}
+			// rf.lastBroadcastTime = time.Now() // 确定过了广播的时间间隔，才开始进行广播，并且设置新的广播时间
+			rf.mu.Unlock()
+			// 向所有follower发送心跳
+			// for peerId := 0; peerId < len(rf.peers); peerId++ {
+			for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
+				if peerId == rf.me {
+					continue
 				}
-				// rf.mu.Lock()
-			}()
-		}
+				// util.DPrintf("发送同步日志给节点[%v]",peerId)
+				rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
+			}
+			// rf.mu.Lock()
+		}()
 	}
+}
 // func (rf *Raft) appendEntriesLoop() {
 // 	for !rf.killed() {
 // 		time.Sleep(10 * time.Millisecond)       // 间隔10ms
