@@ -765,7 +765,7 @@ func (rf *Raft) doAppendEntries(peerId int){
 
 func (rf *Raft) appendEntriesLoop() {
 	for !rf.killed() {
-		time.Sleep(4 * time.Millisecond) // 间隔10ms
+		time.Sleep(1 * time.Millisecond) // 间隔10ms
 
 		func() {
 			rf.mu.Lock()
@@ -897,7 +897,7 @@ func (rf *Raft) applyLogLoop() {
 	noMore := false
 	for !rf.killed() {
 		if noMore {
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(1 * time.Millisecond)
 			// fmt.Println("commitindex不够")
 		}
 		func() {
@@ -921,7 +921,7 @@ func (rf *Raft) applyLogLoop() {
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
 				if rf.lastApplied%rf.Gap == 0 {
 					// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
+					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, len(rf.Offsets))
 				}
 				noMore = false
 			}
