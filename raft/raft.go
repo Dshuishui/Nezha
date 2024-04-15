@@ -765,7 +765,7 @@ func (rf *Raft) doAppendEntries(peerId int){
 
 func (rf *Raft) appendEntriesLoop() {
 	for !rf.killed() {
-		time.Sleep(1 * time.Millisecond) // 间隔10ms
+		time.Sleep(5 * time.Millisecond) // 间隔10ms
 
 		func() {
 			rf.mu.Lock()
@@ -897,7 +897,7 @@ func (rf *Raft) applyLogLoop() {
 	noMore := false
 	for !rf.killed() {
 		if noMore {
-			time.Sleep(1 * time.Millisecond)
+			time.Sleep(7 * time.Millisecond)
 			// fmt.Println("commitindex不够")
 		}
 		func() {
