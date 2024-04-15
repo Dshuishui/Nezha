@@ -364,7 +364,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				rf.log = rf.log[:logPos]          // 删除当前以及后续所有log
 				rf.log = append(rf.log, logEntry) // 把新log加入进来
 
-				offset:=rf.Offsets[logEntry.Command.Index]		// 截取后面错误的offset
+				offset:=rf.Offsets[index]		// 截取后面错误的offset
 				rf.Offsets = rf.Offsets[:logPos]		// 删除当前错误的offset，以及后续的所有
 				offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log",offset)
 				rf.Offsets = append(rf.Offsets, offset)
@@ -765,7 +765,7 @@ func (rf *Raft) doAppendEntries(peerId int){
 
 func (rf *Raft) appendEntriesLoop() {
 	for !rf.killed() {
-		time.Sleep(20 * time.Millisecond) // 间隔10ms
+		time.Sleep(10 * time.Millisecond) // 间隔10ms
 
 		func() {
 			rf.mu.Lock()
@@ -897,7 +897,7 @@ func (rf *Raft) applyLogLoop() {
 	noMore := false
 	for !rf.killed() {
 		if noMore {
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(5 * time.Millisecond)
 			// fmt.Println("commitindex不够")
 		}
 		func() {
@@ -921,7 +921,7 @@ func (rf *Raft) applyLogLoop() {
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
 				if rf.lastApplied%rf.Gap == 0 {
 					// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
+					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, len(rf.Offsets))
 				}
 				noMore = false
 			}
