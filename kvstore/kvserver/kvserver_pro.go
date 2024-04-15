@@ -436,6 +436,7 @@ func (kvs *KVServer) applyLoop() {
 				cmd := msg.Command
 				index := msg.CommandIndex
 				cmdTerm := msg.CommandTerm
+				offset  := msg.Offset
 
 				func() {
 					kvs.mu.Lock()
@@ -475,10 +476,10 @@ func (kvs *KVServer) applyLoop() {
 							// indexKey := make([]byte, 4)                            // 假设整数是 int32 类型
 							// binary.BigEndian.PutUint32(indexKey, uint32(op.Index)) // 这里注意是把op.Index放进去还是对应日志的entry.Command.Index，两者应该都一样
 							// kvs.persister.Put(op.Key, indexKey)                    // <key,idnex>,其中index是string类型
-							addrs := kvs.raft.GetOffsets()		// 拿到raft层的offsets，这个可以优化用通道传输
-							addr := addrs[op.Index]
+							// addrs := kvs.raft.GetOffsets()		// 拿到raft层的offsets，这个可以优化用通道传输
+							// addr := addrs[op.Index]
 							positionBytes := make([]byte, binary.MaxVarintLen64)		// 相当于把地址（指向keysize开始处）压缩一下
-							binary.PutVarint(positionBytes, addr)
+							binary.PutVarint(positionBytes, offset)
 							kvs.persister.Put(op.Key,positionBytes)		
 
 							// kvs.persister.Put(op.Key, []byte(op.Value))

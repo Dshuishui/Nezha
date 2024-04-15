@@ -36,6 +36,7 @@ type ApplyMsg struct {
 	Command      interface{}
 	CommandIndex int
 	CommandTerm  int
+	Offset int64
 }
 
 // 日志项
@@ -91,7 +92,7 @@ type Raft struct {
 	role              string    // 身份
 	leaderId          int       // leader的id
 	lastActiveTime    time.Time // 上次活跃时间（刷新时机：收到leader心跳、给其他candidates投票、请求其他节点投票）
-	lastBroadcastTime time.Time // 作为leader，上次的广播时间
+	// lastBroadcastTime time.Time // 作为leader，上次的广播时间
 
 	applyCh chan ApplyMsg // 应用层的提交队列
 	pools   []pool.Pool   // 用于日志同步的连接池
@@ -901,6 +902,7 @@ func (rf *Raft) applyLogLoop() {
 					Command:      rf.log[appliedIndex].Command,
 					CommandIndex: rf.lastApplied,
 					CommandTerm:  int(rf.log[appliedIndex].Term),
+					Offset:       rf.Offsets[rf.lastApplied],		// 将偏移量传进通道
 				}
 
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
