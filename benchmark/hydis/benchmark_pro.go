@@ -43,6 +43,7 @@ type KVClient struct {
 	leaderId  int
 
 	pools []pool.Pool
+	goodPut int 	// 有效吞吐量
 }
 
 // batchRawPut blinds put bench.
@@ -72,6 +73,7 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 	base := *dnums / *cnums
 	wg.Add(*cnums)
 	num := 0
+	kvc.goodPut = 0
 	for i := 0; i < *cnums; i++ {
 		go func(i int) {
 			defer wg.Done()
@@ -82,7 +84,10 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 				//k := base*i + j
 				key := fmt.Sprintf("key_%d", k)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				kvc.PutInRaft(key, string(value), kvc.pools) // 先随机传入一个地址的连接池
+				_,result := kvc.PutInRaft(key, string(value), kvc.pools) // 先随机传入一个地址的连接池
+				if result == nil {
+					kvc.goodPut++
+				}
 				if num%50000 == 0 {                    // 加一是除去刚开始为0 的条件
 					fmt.Printf("Client %v put key num: %v\n", i+1, num)
 				}
@@ -162,7 +167,7 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kv
 		}
 		defer conn.Close()
 		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10) // 设置100秒定时往下传
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5) // 设置5秒定时往下传
 		defer cancel()
 
 		reply, err := client.PutInRaft(ctx, request)
@@ -212,6 +217,6 @@ func main() {
 	kvc.batchRawPut(value)
 
 	sum_Size_MB := float64(dataNum*valueSize) / 1000000
-	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, total %v, value %v, client %v, Size %vMB\n",
-		time.Since(startTime), float64(sum_Size_MB)/time.Since(startTime).Seconds(), *dnums, *vsize, *cnums, sum_Size_MB)
+	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, total %v, goodPut %v, value %v, client %v, Size %vMB\n",
+		time.Since(startTime), float64(sum_Size_MB)/time.Since(startTime).Seconds(), *dnums, kvc.goodPut, *vsize, *cnums, sum_Size_MB)
 }
