@@ -3,7 +3,8 @@ package raft
 import (
 	// "bytes"
 	"context"
-	"encoding/gob"
+	"encoding/binary"
+	// "encoding/gob"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -23,6 +24,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
+	// "google.golang.org/protobuf/proto"
 )
 
 // 服务端和Raft层面的数据传输通道
@@ -51,10 +53,12 @@ type DetailCod struct {
 	ClientId int64
 }
 
-type RaftState struct {
-	CurrentTerm int        // 见过的最大任期
-	VotedFor    int        // 记录在currentTerm任期投票给谁了
-	Log         []LogEntry // 操作日志
+type Entry struct {
+	Index       uint32
+	CurrentTerm uint32
+	VotedFor    uint32
+	Key         string
+	Value       string
 }
 
 // 当前角色
@@ -93,45 +97,130 @@ type Raft struct {
 	// kvrpc.UnimplementedKVServer
 	raftrpc.UnimplementedRaftServer
 	LastAppendTime time.Time
-	Gap int
+	Gap            int
+	Offsets        []int64
+}
+
+func (rf *Raft) GetOffsets() []int64 {
+	return rf.Offsets
+}
+
+// WriteEntryToFile 将条目写入指定的文件，并返回写入的起始偏移量。
+func (rf *Raft) WriteEntryToFile(e *Entry, filename string) (int64, error) {
+	// 打开文件，如果文件不存在则创建
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		fmt.Println("打开存储Raft日志的磁盘文件有问题")
+		return 0, err
+	}
+	defer file.Close()
+
+	// 获取当前写入位置，即为返回的偏移量
+	offset, err := file.Seek(0, os.SEEK_END)
+	if err != nil {
+		fmt.Println("定位存储Raft日志的磁盘文件有问题")
+		return 0, err
+	}
+
+	// 准备写入的数据
+	keySize := uint32(len(e.Key))
+	valueSize := uint32(len(e.Value))
+	data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value
+
+	// 将数据编码到byte slice中
+	binary.BigEndian.PutUint32(data[0:4], e.Index)
+	binary.BigEndian.PutUint32(data[4:8], e.CurrentTerm)
+	binary.BigEndian.PutUint32(data[8:12], e.VotedFor)
+	binary.BigEndian.PutUint32(data[12:16], keySize)
+	binary.BigEndian.PutUint32(data[16:20], valueSize)
+	copy(data[20:20+keySize], e.Key)
+	copy(data[20+keySize:], e.Value)
+
+	// 写入文件
+	_, err = file.Write(data)
+	if err != nil {
+		fmt.Println("写入存储Raft日志的磁盘文件有问题")
+		return 0, err
+	}
+
+	return offset, nil
+}
+
+// ReadValueFromFile 从指定的偏移量读取value
+func (rf *Raft)ReadValueFromFile(filename string, offset int64) (string, error) {
+    // 打开文件
+    file, err := os.Open(filename)
+    if err != nil {
+        return "", err
+    }
+    defer file.Close()
+
+    // 移动到指定偏移量
+    _, err = file.Seek(offset, os.SEEK_SET)
+    if err != nil {
+		fmt.Println("get时，seek文件的位置有问题")
+        return "", err
+    }
+
+    // 读取数据到buffer中，首先是固定长度的20字节
+    data := make([]byte, 20)
+    if _, err := file.Read(data); err != nil {
+		fmt.Println("get时，读取key和value的前20个固定字节时有问题")
+        return "", err
+    }
+
+    // 解析固定长度的字段
+    keySize := binary.BigEndian.Uint64(data[12:16])
+    valueSize := binary.BigEndian.Uint64(data[16:20])
+
+    // 读取Key和Value
+    keyValueBuffer := make([]byte, keySize+valueSize)
+    if _, err := file.Read(keyValueBuffer); err != nil {
+        return "", err
+    }
+
+    // Value是紧跟在Key后面的部分
+    value := string(keyValueBuffer[keySize:])
+
+    return value, nil
 }
 
 // save Raft's persistent state to stable storage
-func (rf *Raft) raftStateForPersist(filePath string, currentTerm int, votedFor int, log []LogEntry) {
-	state := RaftState{CurrentTerm: currentTerm, VotedFor: votedFor, Log: log}
-	file, err := os.Create(filePath) // 如果文件已存在，则会截断该文件，原文件中的所有数据都会丢失，即不断更新持久化的数据
-	if err != nil {
-		util.EPrintf("Failed to create file: %v", err)
-	}
-	defer file.Close()
+// func (rf *Raft) raftStateForPersist(filePath string, currentTerm int, votedFor int, log []LogEntry) {
+// 	state := RaftState{CurrentTerm: currentTerm, VotedFor: votedFor, Log: log}
+// 	file, err := os.Create(filePath) // 如果文件已存在，则会截断该文件，原文件中的所有数据都会丢失，即不断更新持久化的数据
+// 	if err != nil {
+// 		util.EPrintf("Failed to create file: %v", err)
+// 	}
+// 	defer file.Close()
 
-	encoder := gob.NewEncoder(file)
-	if err := encoder.Encode(state); err != nil {
-		util.EPrintf("Failed to encode data: %v", err)
-	}
-}
+// 	encoder := gob.NewEncoder(file)
+// 	if err := encoder.Encode(state); err != nil {
+// 		util.EPrintf("Failed to encode data: %v", err)
+// 	}
+// }
 
-// restore previously persisted state.
-func (rf *Raft) ReadPersist(filePath string) *RaftState {
-	file, err := os.Open(filePath)
-	if err != nil {
-		util.EPrintf("Failed to open file: %v", err)
-	}
-	defer file.Close()
-	// var err error
-	// file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
-	// if err != nil {
-	// 	fmt.Println("打开RaftState文件有问题")
-	// 	return nil
-	// }
+// // restore previously persisted state.
+// func (rf *Raft) ReadPersist(filePath string) *RaftState {
+// 	file, err := os.Open(filePath)
+// 	if err != nil {
+// 		util.EPrintf("Failed to open file: %v", err)
+// 	}
+// 	defer file.Close()
+// 	// var err error
+// 	// file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+// 	// if err != nil {
+// 	// 	fmt.Println("打开RaftState文件有问题")
+// 	// 	return nil
+// 	// }
 
-	var state RaftState
-	decoder := gob.NewDecoder(file)
-	if err := decoder.Decode(&state); err != nil {
-		util.EPrintf("Failed to decode data: %v", err)
-	}
-	return &state
-}
+// 	var state RaftState
+// 	decoder := gob.NewDecoder(file)
+// 	if err := decoder.Decode(&state); err != nil {
+// 		util.EPrintf("Failed to decode data: %v", err)
+// 	}
+// 	return &state
+// }
 
 func (rf *Raft) GetLeaderId() (leaderId int32) {
 	rf.mu.Lock()
@@ -253,6 +342,19 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				rf.log = append(rf.log, logEntry) // 把新log加入进来
 			} // term一样啥也不用做，继续向后比对Log
 		}
+		// 每追加一个日志就持久化，并将offset和index绑定，存储到内存中。后续可以考虑这里实现批量持久化
+		entry := Entry{
+			Index:       uint32(logEntry.Command.Index),
+			CurrentTerm: uint32(logEntry.Command.Term),
+			VotedFor:    uint32(rf.leaderId),
+			Key:         logEntry.Command.Key,
+			Value:       logEntry.Command.Value,
+		}
+		offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log")
+		if err != nil {
+			panic(err)
+		}
+		rf.Offsets = append(rf.Offsets, offset)
 	}
 	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
@@ -288,6 +390,18 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// fmt.Println("到这了嘛5")
 	index = rf.lastIndex()
 	term = rf.currentTerm
+	entry := Entry{
+		Index:       uint32(index),
+		CurrentTerm: uint32(term),
+		VotedFor:    uint32(rf.leaderId),
+		Key:         command.(DetailCod).Key,
+		Value:       command.(DetailCod).Value,
+	}
+	offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log")
+	if err != nil {
+		panic(err)
+	}
+	rf.Offsets = append(rf.Offsets, offset)
 	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
 	// util.DPrintf("RaftNode[%d] Add Command, logIndex[%d] currentTerm[%d]", rf.me, index, term)
@@ -645,7 +759,7 @@ func (rf *Raft) appendEntriesLoop() {
 
 			// 只有leader才向外广播心跳
 			if rf.role != ROLE_LEADER {
-				rf.mu.Unlock() 
+				rf.mu.Unlock()
 				return
 			}
 
@@ -655,14 +769,14 @@ func (rf *Raft) appendEntriesLoop() {
 			// 	return
 			// }
 			if rf.lastIndex() == 0 {
-				rf.mu.Unlock() 
+				rf.mu.Unlock()
 				return
 			}
 			// rf.lastBroadcastTime = time.Now() // 确定过了广播的时间间隔，才开始进行广播，并且设置新的广播时间
-			rf.mu.Unlock()               
+			rf.mu.Unlock()
 			// 向所有follower发送心跳
 			// for peerId := 0; peerId < len(rf.peers); peerId++ {
-			for peerId := 0; peerId < 3; peerId++ {		// 先固定，避免访问rf的属性，涉及到死锁问题
+			for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
 				if peerId == rf.me {
 					continue
 				}
@@ -699,8 +813,8 @@ func (rf *Raft) applyLogLoop() {
 				}
 
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
-				if rf.lastApplied % rf.Gap == 0 {
-					rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+				if rf.lastApplied%rf.Gap == 0 {
+					// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 				}
 				noMore = false
@@ -752,6 +866,7 @@ func Make(peers []string, me int,
 	rf.votedFor = -1
 	rf.lastActiveTime = time.Now()
 	rf.applyCh = applyCh
+	rf.Offsets = append(rf.Offsets, 0) // 初始化时添加一个0，使得后续对index的访问和raft的对其，从1开始
 
 	// 这就是自己修改grpc线程池option参数的做法
 	DesignOptions := pool.Options{

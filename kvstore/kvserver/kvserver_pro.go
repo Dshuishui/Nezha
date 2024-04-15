@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"sync/atomic"
-
 	// "math/rand"
 	"encoding/binary"
 	"net"
@@ -318,7 +317,7 @@ func (vl *ValueLog) Put_Pure(key []byte, value []byte) error {
 		return err
 	}
 
-	// Write <keysize, valuesize, key, value, currentTerm, votedFor, log[]> to the Value Log.
+	// Write <idnex, keysize, valuesize, key, value, currentTerm, votedFor, log[]> to the Value Log.
 	// 固定整数的长度，即四个字节
 	keySize := uint32(len(key))
 	valueSize := uint32(len(value))
@@ -467,27 +466,22 @@ func (kvs *KVServer) applyLoop() {
 					if op.OpType == OP_TYPE_PUT {
 						if !existSeq || op.SeqId > prevSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
 							// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
-
-							// leveldb存储key,value
-							// 先把log存到磁盘，在将key,value存到leveldb数据库文件
-							// kvs.valuelog.Put([]byte(op.Key), []byte(op.Value))
-							// kvs.persister.Put(op.Key,op.Value)
-
 							if op.SeqId%10000 == 0 {
 								fmt.Println("底层执行了Put请求，以及重置put操作时间")
 							}
 							kvs.lastPutTime = time.Now() // 更新put操作时间
 
-							// raftState := kvs.raft.ReadPersist("./raft/RaftState.log")
-							// entry := raftState.Log[op.Index]
-							// index := entry.Command.Index
-
 							// 将整数编码为字节流并存入 LevelDB
 							// indexKey := make([]byte, 4)                            // 假设整数是 int32 类型
 							// binary.BigEndian.PutUint32(indexKey, uint32(op.Index)) // 这里注意是把op.Index放进去还是对应日志的entry.Command.Index，两者应该都一样
 							// kvs.persister.Put(op.Key, indexKey)                    // <key,idnex>,其中index是string类型
+							addrs := kvs.raft.GetOffsets()		// 拿到raft层的offsets，这个可以优化用通道传输
+							addr := addrs[op.Index]
+							positionBytes := make([]byte, binary.MaxVarintLen64)		// 相当于把地址（指向keysize开始处）压缩一下
+							binary.PutVarint(positionBytes, addr)
+							kvs.persister.Put(op.Key,positionBytes)		
 
-							kvs.persister.Put(op.Key, []byte(op.Value))
+							// kvs.persister.Put(op.Key, []byte(op.Value))
 						} else if existOp { // 虽然该请求的处理还未超时，但是已经处理过了。
 							opCtx.ignored = true
 						}
@@ -497,17 +491,17 @@ func (kvs *KVServer) applyLoop() {
 							// value := kvs.persister.Get(op.Key)		leveldb拿取value
 
 							// 从 LevelDB 中获取键对应的值，并解码为整数
-							data := kvs.persister.Get(op.Key)
-
-							if data == nil {	//  说明没有该key
+							positionBytes := kvs.persister.Get(op.Key)
+							position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
+							if positionBytes == nil {	//  说明leveldb中没有该key
 								opCtx.keyExist = false
 								opCtx.value = ""
 							}else{
-								indexKey := binary.BigEndian.Uint32(data) // 将字节流解码为整数，拿到key对应的index
-								raftState := kvs.raft.ReadPersist("./raft/RaftState.log") // 读取持久化存储
-								entry := raftState.Log[indexKey]                          // 拿到index对应的日志
-								value := entry.Command.Value                              // 拿到日志中对应的value
-	
+								value, err := kvs.raft.ReadValueFromFile("data.log", position)
+								if err != nil {
+									fmt.Println("拿取value有问题")
+									panic(err)
+								}
 								opCtx.value = value
 							}
 						}
