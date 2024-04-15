@@ -1017,6 +1017,7 @@ func Make(peers []string, me int,
 					pool.Close()
 				}
 				util.DPrintf("The raft pool has been closed")
+				util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
 				break
 			}
 		}
