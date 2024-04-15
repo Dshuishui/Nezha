@@ -342,6 +342,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			if rf.log[logPos].Term != logEntry.Term {
 				rf.log = rf.log[:logPos]          // 删除当前以及后续所有log
 				rf.log = append(rf.log, logEntry) // 把新log加入进来
+				rf.Offsets = rf.Offsets[:logPos]		// 删除当前错误的offset，以及后续的所有
 			} // term一样啥也不用做，继续向后比对Log
 		}
 		// 每追加一个日志就持久化，并将offset和index绑定，存储到内存中。后续可以考虑这里实现批量持久化
@@ -749,7 +750,7 @@ func (rf *Raft) doAppendEntries(peerId int){
 
 func (rf *Raft) appendEntriesLoop() {
 	for !rf.killed() {
-		time.Sleep(30 * time.Millisecond) // 间隔10ms
+		time.Sleep(40 * time.Millisecond) // 间隔10ms
 
 		func() {
 			rf.mu.Lock()
