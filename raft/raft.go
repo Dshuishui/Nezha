@@ -108,7 +108,7 @@ func (rf *Raft) GetOffsets() []int64 {
 }
 
 // WriteEntryToFile 将条目写入指定的文件，并返回写入的起始偏移量。
-func (rf *Raft) WriteEntryToFile(e *Entry, filename string) (int64, error) {
+func (rf *Raft) WriteEntryToFile(e *Entry, filename string, startPos int64) (offset int64,err error) {
 	// 打开文件，如果文件不存在则创建
 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
@@ -118,10 +118,18 @@ func (rf *Raft) WriteEntryToFile(e *Entry, filename string) (int64, error) {
 	defer file.Close()
 
 	// 获取当前写入位置，即为返回的偏移量
-	offset, err := file.Seek(0, os.SEEK_END)
-	if err != nil {
-		fmt.Println("定位存储Raft日志的磁盘文件有问题")
-		return 0, err
+	if startPos==0 {
+		offset, err = file.Seek(0, os.SEEK_END)
+		if err != nil {
+			fmt.Println("定位存储Raft日志的磁盘文件有问题")
+			return 0, err
+		}
+	}else{		// 同步日志时，需要已有的日志与leader的冲突，需要覆盖之前的错误的
+		offset, err = file.Seek(startPos, os.SEEK_SET)
+		if err != nil {
+			fmt.Println("定位存储Raft日志的磁盘文件的起始位置有问题")
+			return 0, err
+		}
 	}
 
 	// 准备写入的数据
@@ -336,16 +344,6 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	for i, logEntry := range logEntrys {
 		index := int(args.PrevLogIndex) + 1 + i
 		logPos := rf.index2LogPos(index)
-		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
-			rf.log = append(rf.log, logEntry)
-		} else { // 重叠部分
-			if rf.log[logPos].Term != logEntry.Term {
-				rf.log = rf.log[:logPos]          // 删除当前以及后续所有log
-				rf.log = append(rf.log, logEntry) // 把新log加入进来
-				rf.Offsets = rf.Offsets[:logPos]		// 删除当前错误的offset，以及后续的所有
-			} // term一样啥也不用做，继续向后比对Log
-		}
-		// 每追加一个日志就持久化，并将offset和index绑定，存储到内存中。后续可以考虑这里实现批量持久化
 		entry := Entry{
 			Index:       uint32(logEntry.Command.Index),
 			CurrentTerm: uint32(logEntry.Command.Term),
@@ -353,11 +351,28 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			Key:         logEntry.Command.Key,
 			Value:       logEntry.Command.Value,
 		}
-		offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log")
-		if err != nil {
-			panic(err)
-		}
-		rf.Offsets = append(rf.Offsets, offset)
+		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
+			rf.log = append(rf.log, logEntry)
+
+			offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log",0)
+			rf.Offsets = append(rf.Offsets, offset)
+			if err != nil {
+				panic(err)
+			}
+		} else { // 重叠部分
+			if rf.log[logPos].Term != logEntry.Term {
+				rf.log = rf.log[:logPos]          // 删除当前以及后续所有log
+				rf.log = append(rf.log, logEntry) // 把新log加入进来
+
+				offset:=rf.Offsets[logEntry.Command.Index]		// 截取后面错误的offset
+				rf.Offsets = rf.Offsets[:logPos]		// 删除当前错误的offset，以及后续的所有
+				offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log",offset)
+				rf.Offsets = append(rf.Offsets, offset)
+				if err != nil {
+					panic(err)
+				}
+			} // term一样啥也不用做，继续向后比对Log
+		}	  // 每追加一个日志就持久化，并将offset和index绑定，存储到内存中。后续可以考虑这里实现批量持久化
 	}
 	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
@@ -400,7 +415,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Key:         command.(DetailCod).Key,
 		Value:       command.(DetailCod).Value,
 	}
-	offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log")
+	offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log",0)
 	if err != nil {
 		panic(err)
 	}
