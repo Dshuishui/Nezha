@@ -4,6 +4,7 @@ import (
 	// "bytes"
 	"context"
 	"encoding/binary"
+
 	// "encoding/gob"
 	"encoding/json"
 	"fmt"
@@ -147,42 +148,42 @@ func (rf *Raft) WriteEntryToFile(e *Entry, filename string) (int64, error) {
 }
 
 // ReadValueFromFile 从指定的偏移量读取value
-func (rf *Raft)ReadValueFromFile(filename string, offset int64) (string, error) {
-    // 打开文件
-    file, err := os.Open(filename)
-    if err != nil {
-        return "", err
-    }
-    defer file.Close()
+func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, error) {
+	// 打开文件
+	file, err := os.Open(filename)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
 
-    // 移动到指定偏移量
-    _, err = file.Seek(offset, os.SEEK_SET)
-    if err != nil {
+	// 移动到指定偏移量
+	_, err = file.Seek(offset, os.SEEK_SET)
+	if err != nil {
 		fmt.Println("get时，seek文件的位置有问题")
-        return "", err
-    }
+		return "", err
+	}
 
-    // 读取数据到buffer中，首先是固定长度的20字节
-    data := make([]byte, 20)
-    if _, err := file.Read(data); err != nil {
+	// 读取数据到buffer中，首先是固定长度的20字节
+	data := make([]byte, 20)
+	if _, err := file.Read(data); err != nil {
 		fmt.Println("get时，读取key和value的前20个固定字节时有问题")
-        return "", err
-    }
+		return "", err
+	}
 
-    // 解析固定长度的字段
-    keySize := binary.BigEndian.Uint64(data[12:16])
-    valueSize := binary.BigEndian.Uint64(data[16:20])
+	// 解析固定长度的字段
+	keySize := binary.BigEndian.Uint64(data[12:16])
+	valueSize := binary.BigEndian.Uint64(data[16:20])
 
-    // 读取Key和Value
-    keyValueBuffer := make([]byte, keySize+valueSize)
-    if _, err := file.Read(keyValueBuffer); err != nil {
-        return "", err
-    }
+	// 读取Key和Value
+	keyValueBuffer := make([]byte, keySize+valueSize)
+	if _, err := file.Read(keyValueBuffer); err != nil {
+		return "", err
+	}
 
-    // Value是紧跟在Key后面的部分
-    value := string(keyValueBuffer[keySize:])
+	// Value是紧跟在Key后面的部分
+	value := string(keyValueBuffer[keySize:])
 
-    return value, nil
+	return value, nil
 }
 
 // save Raft's persistent state to stable storage
@@ -660,131 +661,222 @@ func (rf *Raft) updateCommitIndex() {
 }
 
 // 已兼容snapshot
-func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
-	AppendOK = false
-	args := raftrpc.AppendEntriesInRaftRequest{}
-	args.Term = int32(rf.currentTerm)
-	args.LeaderId = int32(rf.me)
-	args.LeaderCommit = int32(rf.commitIndex)
-	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)
-	if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
-		args.PrevLogTerm = 0
-	} else {
-		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
-	}
-	appendLog := rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
-	// fmt.Printf("此时下标会不会有问题，log长度：%v，下标：%v", len(rf.log), args.PrevLogIndex+1)
-	data, _ := json.Marshal(appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
-	args.Entries = data
-	// args.Entries = append(args.Entries, rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]...)
-	// util.DPrintf("RaftNode[%d] appendEntries starts,  currentTerm[%d] peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] args.Entries[%d] commitIndex[%d]",
-	// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
+// func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
+// 	AppendOK = false
+// 	args := raftrpc.AppendEntriesInRaftRequest{}
+// 	args.Term = int32(rf.currentTerm)
+// 	args.LeaderId = int32(rf.me)
+// 	args.LeaderCommit = int32(rf.commitIndex)
+// 	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)
+// 	if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
+// 		args.PrevLogTerm = 0
+// 	} else {
+// 		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
+// 	}
+// 	appendLog := rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
+// 	// fmt.Printf("此时下标会不会有问题，log长度：%v，下标：%v", len(rf.log), args.PrevLogIndex+1)
+// 	data, _ := json.Marshal(appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
+// 	args.Entries = data
+// 	// args.Entries = append(args.Entries, rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]...)
+// 	// util.DPrintf("RaftNode[%d] appendEntries starts,  currentTerm[%d] peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] args.Entries[%d] commitIndex[%d]",
+// 	// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
 
-	// if len(appendLog) != 0 { // 除去普通的心跳
-	// 	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
-	// 	// fmt.Println("重置lastAppendTime")
-	// }
+// 	// if len(appendLog) != 0 { // 除去普通的心跳
+// 	// 	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
+// 	// 	// fmt.Println("重置lastAppendTime")
+// 	// }
 
-	go func() {
-		// util.DPrintf("RaftNode[%d] appendEntries starts, myTerm[%d] peerId[%d]", rf.me, args.Term, args.LeaderId)
-		if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			AppendOK = true
-			// defer func() {
-			// 	util.DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
-			// 		rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
-			// }()
+// 	go func() {
+// 		// util.DPrintf("RaftNode[%d] appendEntries starts, myTerm[%d] peerId[%d]", rf.me, args.Term, args.LeaderId)
+// 		if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
+// 			rf.mu.Lock()
+// 			defer rf.mu.Unlock()
+// 			AppendOK = true
+// 			// defer func() {
+// 			// 	util.DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
+// 			// 		rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
+// 			// }()
 
-			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
-			if rf.currentTerm != int(args.Term) {
-				return
-			}
-			if reply.Term > int32(rf.currentTerm) { // 变成follower
-				rf.role = ROLE_FOLLOWER
-				rf.leaderId = 0
-				rf.currentTerm = int(reply.Term)
-				rf.votedFor = -1
-				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-				return
-			}
-			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
-			// 因此这里得根据发出RPC请求时的状态做更新，而不要直接对nextIndex和matchIndex做相对加减
-			if reply.Success { // 同步日志成功
-				rf.nextIndex[peerId] = int(args.PrevLogIndex) + len(appendLog) + 1
-				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // 记录已经复制到其他server的日志的最后index的情况
-				rf.updateCommitIndex()                           // 更新commitIndex
-			} else {
-				// 回退优化，参考：https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations
-				// nextIndexBefore := rf.nextIndex[peerId] // 仅为打印log
+// 			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
+// 			if rf.currentTerm != int(args.Term) {
+// 				return
+// 			}
+// 			if reply.Term > int32(rf.currentTerm) { // 变成follower
+// 				rf.role = ROLE_FOLLOWER
+// 				rf.leaderId = 0
+// 				rf.currentTerm = int(reply.Term)
+// 				rf.votedFor = -1
+// 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+// 				return
+// 			}
+// 			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
+// 			// 因此这里得根据发出RPC请求时的状态做更新，而不要直接对nextIndex和matchIndex做相对加减
+// 			if reply.Success { // 同步日志成功
+// 				rf.nextIndex[peerId] = int(args.PrevLogIndex) + len(appendLog) + 1
+// 				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // 记录已经复制到其他server的日志的最后index的情况
+// 				rf.updateCommitIndex()                           // 更新commitIndex
+// 			} else {
+// 				// 回退优化，参考：https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations
+// 				// nextIndexBefore := rf.nextIndex[peerId] // 仅为打印log
 
-				if reply.ConflictTerm != -1 { // follower的prevLogIndex位置term冲突了
-					// 我们找leader log中conflictTerm最后出现位置，如果找到了就用它作为nextIndex，否则用follower的conflictIndex
-					conflictTermIndex := -1
-					for index := args.PrevLogIndex; index > 0; index-- {
-						// if rf.log[rf.index2LogPos(int(index))].Term == reply.ConflictTerm {
-						// 	conflictTermIndex = int(index)
-						// 	break
-						// }
-						// 我认为下方这个效果更好，这样PrevLogIndex的值就为 index
-						if rf.log[rf.index2LogPos(int(index))].Term != reply.ConflictTerm {
-							conflictTermIndex = int(index + 1)
-							break
-						}
-					}
-					if conflictTermIndex != -1 { // leader log出现了这个term，那么从这里prevLogIndex之前的最晚出现位置尝试同步
-						rf.nextIndex[peerId] = conflictTermIndex
-					} else {
-						rf.nextIndex[peerId] = int(reply.ConflictIndex) // 用follower首次出现term的index作为同步开始
-					}
-				} else {
-					// follower没有发现prevLogIndex term冲突, 可能是被snapshot了或者日志长度不够
-					// 这时候我们将返回的conflictIndex设置为nextIndex即可
-					rf.nextIndex[peerId] = int(reply.ConflictIndex)
-				}
-				// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
-			}
-		}
-	}()
-	return AppendOK
-}
+// 				if reply.ConflictTerm != -1 { // follower的prevLogIndex位置term冲突了
+// 					// 我们找leader log中conflictTerm最后出现位置，如果找到了就用它作为nextIndex，否则用follower的conflictIndex
+// 					conflictTermIndex := -1
+// 					for index := args.PrevLogIndex; index > 0; index-- {
+// 						// if rf.log[rf.index2LogPos(int(index))].Term == reply.ConflictTerm {
+// 						// 	conflictTermIndex = int(index)
+// 						// 	break
+// 						// }
+// 						// 我认为下方这个效果更好，这样PrevLogIndex的值就为 index
+// 						if rf.log[rf.index2LogPos(int(index))].Term != reply.ConflictTerm {
+// 							conflictTermIndex = int(index + 1)
+// 							break
+// 						}
+// 					}
+// 					if conflictTermIndex != -1 { // leader log出现了这个term，那么从这里prevLogIndex之前的最晚出现位置尝试同步
+// 						rf.nextIndex[peerId] = conflictTermIndex
+// 					} else {
+// 						rf.nextIndex[peerId] = int(reply.ConflictIndex) // 用follower首次出现term的index作为同步开始
+// 					}
+// 				} else {
+// 					// follower没有发现prevLogIndex term冲突, 可能是被snapshot了或者日志长度不够
+// 					// 这时候我们将返回的conflictIndex设置为nextIndex即可
+// 					rf.nextIndex[peerId] = int(reply.ConflictIndex)
+// 				}
+// 				// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
+// 			}
+// 		}
+// 	}()
+// 	return AppendOK
+// }
 
+// func (rf *Raft) appendEntriesLoop() {
+// 	for !rf.killed() {
+// 		time.Sleep(10 * time.Millisecond) // 间隔10ms
+
+// 		func() {
+// 			rf.mu.Lock()
+// 			// defer rf.mu.Unlock()
+
+// 			// 只有leader才向外广播心跳
+// 			if rf.role != ROLE_LEADER {
+// 				rf.mu.Unlock()
+// 				return
+// 			}
+
+//				// 100ms广播1次
+//				// now := time.Now()
+//				// if now.Sub(rf.lastBroadcastTime) < 11*time.Millisecond {
+//				// 	return
+//				// }
+//				if rf.lastIndex() == 0 {
+//					rf.mu.Unlock()
+//					return
+//				}
+//				// rf.lastBroadcastTime = time.Now() // 确定过了广播的时间间隔，才开始进行广播，并且设置新的广播时间
+//				rf.mu.Unlock()
+//				// 向所有follower发送心跳
+//				// for peerId := 0; peerId < len(rf.peers); peerId++ {
+//				for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
+//					if peerId == rf.me {
+//						continue
+//					}
+//					// util.DPrintf("发送同步日志给节点[%v]",peerId)
+//					rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
+//				}
+//				// rf.mu.Lock()
+//			}()
+//		}
+//	}
 func (rf *Raft) appendEntriesLoop() {
 	for !rf.killed() {
-		time.Sleep(10 * time.Millisecond) // 间隔10ms
-
-		func() {
-			rf.mu.Lock()
-			// defer rf.mu.Unlock()
-
-			// 只有leader才向外广播心跳
-			if rf.role != ROLE_LEADER {
-				rf.mu.Unlock()
-				return
+		time.Sleep(10 * time.Millisecond)       // 间隔10ms
+		for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
+			if peerId == rf.me {
+				continue
 			}
-
-			// 100ms广播1次
-			// now := time.Now()
-			// if now.Sub(rf.lastBroadcastTime) < 11*time.Millisecond {
-			// 	return
-			// }
-			if rf.lastIndex() == 0 {
-				rf.mu.Unlock()
-				return
-			}
-			// rf.lastBroadcastTime = time.Now() // 确定过了广播的时间间隔，才开始进行广播，并且设置新的广播时间
-			rf.mu.Unlock()
-			// 向所有follower发送心跳
-			// for peerId := 0; peerId < len(rf.peers); peerId++ {
-			for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
-				if peerId == rf.me {
-					continue
+			go func(peerId int) {
+				rf.mu.Lock()
+				// 只有leader才向外广播心跳
+				if rf.role != ROLE_LEADER {
+					rf.mu.Unlock()
+					return
 				}
-				// util.DPrintf("发送同步日志给节点[%v]",peerId)
-				rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
-			}
-			// rf.mu.Lock()
-		}()
+				if rf.lastIndex() == 0 {
+					rf.mu.Unlock()
+					return
+				}
+				args := raftrpc.AppendEntriesInRaftRequest{}
+				args.Term = int32(rf.currentTerm)
+				args.LeaderId = int32(rf.me)
+				args.LeaderCommit = int32(rf.commitIndex)
+				args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)
+				if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
+					args.PrevLogTerm = 0
+				} else {
+					args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
+				}
+				appendLog := rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
+				// fmt.Printf("此时下标会不会有问题，log长度：%v，下标：%v", len(rf.log), args.PrevLogIndex+1)
+				data, _ := json.Marshal(appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
+				args.Entries = data
+				rf.mu.Unlock()
+				if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
+					rf.mu.Lock()
+					// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
+					if rf.currentTerm != int(args.Term) {
+						rf.mu.Unlock()
+						return
+					}
+					if reply.Term > int32(rf.currentTerm) { // 变成follower
+						rf.role = ROLE_FOLLOWER
+						rf.leaderId = 0
+						rf.currentTerm = int(reply.Term)
+						rf.votedFor = -1
+						// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+						rf.mu.Unlock()
+						return
+					}
+					// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
+					// 因此这里得根据发出RPC请求时的状态做更新，而不要直接对nextIndex和matchIndex做相对加减
+					if reply.Success { // 同步日志成功
+						rf.nextIndex[peerId] = int(args.PrevLogIndex) + len(appendLog) + 1
+						rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // 记录已经复制到其他server的日志的最后index的情况
+						rf.updateCommitIndex()  			// 更新commitIndex
+					} else {
+						// 回退优化，参考：https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations
+						// nextIndexBefore := rf.nextIndex[peerId] // 仅为打印log
+
+						if reply.ConflictTerm != -1 { // follower的prevLogIndex位置term冲突了
+							// 我们找leader log中conflictTerm最后出现位置，如果找到了就用它作为nextIndex，否则用follower的conflictIndex
+							conflictTermIndex := -1
+							for index := args.PrevLogIndex; index > 0; index-- {
+								// if rf.log[rf.index2LogPos(int(index))].Term == reply.ConflictTerm {
+								// 	conflictTermIndex = int(index)
+								// 	break
+								// }
+								// 我认为下方这个效果更好，这样PrevLogIndex的值就为 index
+								if rf.log[rf.index2LogPos(int(index))].Term != reply.ConflictTerm {
+									conflictTermIndex = int(index + 1)
+									break
+								}
+							}
+							if conflictTermIndex != -1 { // leader log出现了这个term，那么从这里prevLogIndex之前的最晚出现位置尝试同步
+								rf.nextIndex[peerId] = conflictTermIndex
+							} else {
+								rf.nextIndex[peerId] = int(reply.ConflictIndex) // 用follower首次出现term的index作为同步开始
+							}
+						} else {
+							// follower没有发现prevLogIndex term冲突, 可能是被snapshot了或者日志长度不够
+							// 这时候我们将返回的conflictIndex设置为nextIndex即可
+							rf.nextIndex[peerId] = int(reply.ConflictIndex)
+						}
+						// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
+					}
+					rf.mu.Unlock()
+				}
+			}(peerId)
+		}
 	}
 }
 
