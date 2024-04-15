@@ -84,8 +84,8 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 				//k := base*i + j
 				key := fmt.Sprintf("key_%d", k)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				_,result := kvc.PutInRaft(key, string(value), kvc.pools) // 先随机传入一个地址的连接池
-				if result == nil {
+				_,err := kvc.PutInRaft(key, string(value), kvc.pools) // 先随机传入一个地址的连接池
+				if err == nil {
 					kvc.goodPut++
 				}
 				if num%50000 == 0 {                    // 加一是除去刚开始为0 的条件
