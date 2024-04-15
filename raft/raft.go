@@ -661,8 +661,7 @@ func (rf *Raft) updateCommitIndex() {
 }
 
 // 已兼容snapshot
-func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
-	AppendOK = false
+func (rf *Raft) doAppendEntries(peerId int){
 	args := raftrpc.AppendEntriesInRaftRequest{}
 	args.Term = int32(rf.currentTerm)
 	args.LeaderId = int32(rf.me)
@@ -686,12 +685,11 @@ func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
 	// 	// fmt.Println("重置lastAppendTime")
 	// }
 
-	go func() {
+	go func(peerId int) {
 		// util.DPrintf("RaftNode[%d] appendEntries starts, myTerm[%d] peerId[%d]", rf.me, args.Term, args.LeaderId)
 		if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
-			AppendOK = true
 			// defer func() {
 			// 	util.DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
 			// 		rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
@@ -746,13 +744,12 @@ func (rf *Raft) doAppendEntries(peerId int) (AppendOK bool) {
 				// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
 			}
 		}
-	}()
-	return AppendOK
+	}(peerId)
 }
 
 func (rf *Raft) appendEntriesLoop() {
 	for !rf.killed() {
-		time.Sleep(10 * time.Millisecond) // 间隔10ms
+		time.Sleep(30 * time.Millisecond) // 间隔10ms
 
 		func() {
 			rf.mu.Lock()
