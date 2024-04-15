@@ -181,7 +181,7 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 }
 
 func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) (*kvrpc.PutInRaftResponse, error) {
-	fmt.Println("走到了server端的put函数")
+	// fmt.Println("走到了server端的put函数")
 	reply := kvs.StartPut(in)
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
@@ -228,7 +228,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 		}
 	}()
 
-	timer := time.NewTimer(5000 * time.Millisecond)
+	timer := time.NewTimer(10000 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	// 通道关闭或者有数据传入都会执行以下的分支
@@ -442,7 +442,7 @@ func (kvs *KVServer) applyLoop() {
 					defer kvs.mu.Unlock()
 					// 更新已经应用到的日志
 					kvs.lastAppliedIndex = index
-					fmt.Println("进入到applyLoop")
+					// fmt.Println("进入到applyLoop")
 					// 操作日志
 					op := cmd.(raft.DetailCod) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
 
@@ -466,7 +466,7 @@ func (kvs *KVServer) applyLoop() {
 					if op.OpType == OP_TYPE_PUT {
 						if !existSeq || op.SeqId > prevSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
 							// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
-							if op.SeqId % 10 == 0 {
+							if op.SeqId % 10000 == 0 {
 								fmt.Println("底层执行了Put请求，以及重置put操作时间")
 							}
 							kvs.lastPutTime = time.Now() // 更新put操作时间
