@@ -953,7 +953,7 @@ func (rf *Raft) applyLogLoop() {
 	noMore := false
 	for !rf.killed() {
 		if noMore {
-			time.Sleep(20 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 			// fmt.Println("commitindex不够")
 		}
 		func() {
