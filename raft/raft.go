@@ -512,7 +512,7 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 	}
 	defer conn.Close()
 	client := raftrpc.NewRaftClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*200)
 	defer cancel()
 	reply, err := client.AppendEntriesInRaft(ctx, args)
 
@@ -784,12 +784,6 @@ func (rf *Raft) doHeartBeat(peerId int) {
 		if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
-			// defer func() {
-			// 	util.DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
-			// 		rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
-			// }()
-
-			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
 			if rf.currentTerm != int(args.Term) {
 				return
 			}
@@ -801,13 +795,6 @@ func (rf *Raft) doHeartBeat(peerId int) {
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				return
 			}
-			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
-			// 因此这里得根据发出RPC请求时的状态做更新，而不要直接对nextIndex和matchIndex做相对加减
-			// if reply.Success { // 同步日志成功
-			// 	// rf.nextIndex[peerId] = int(args.PrevLogIndex) + len(appendLog) + 1
-			// 	// rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // 记录已经复制到其他server的日志的最后index的情况
-			// 	// rf.updateCommitIndex()
-			// }
 		}
 	}(peerId)
 }
