@@ -810,7 +810,7 @@ func (rf *Raft) doHeartBeat(peerId int) {
 func (rf *Raft) appendEntriesLoop() {
 	Heartbeat := 0
 	for !rf.killed() {
-		time.Sleep(100 * time.Millisecond) // 间隔10ms
+		time.Sleep(300 * time.Millisecond) // 间隔10ms
 
 		func() {
 			Heartbeat++
@@ -840,7 +840,7 @@ func (rf *Raft) appendEntriesLoop() {
 				if peerId == rf.me {
 					continue
 				}
-				if Heartbeat%5 == 0 {
+				if Heartbeat%2 == 0 {
 					rf.doHeartBeat(peerId)
 				} else {
 					// util.DPrintf("发送同步日志给节点[%v]",peerId)
