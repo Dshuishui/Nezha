@@ -326,6 +326,12 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	rf.lastActiveTime = time.Now()
 	if len(logEntrys) == 0 {
 		reply.Success = true // 成功心跳
+		if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
+			rf.commitIndex = int(args.LeaderCommit)
+			if rf.lastIndex() < rf.commitIndex { // 感觉，不存在这种情况，走到这里基本都是日志与leader一样了，怎么还会索引比commitindex小
+				rf.commitIndex = rf.lastIndex()
+			}
+		}
 		return reply, nil
 	}
 
