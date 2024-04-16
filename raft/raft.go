@@ -297,10 +297,10 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	reply.ConflictTerm = -1
 	var logEntrys []LogEntry
 	json.Unmarshal(args.Entries, &logEntrys)
-	if len(logEntrys) != 0 { // 除去普通的心跳
+	// if len(logEntrys) != 0 { // 除去普通的心跳
 		rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
 		// fmt.Println("重置lastAppendTime")
-	}
+	// }
 
 	// defer func() {
 	// 	util.DPrintf("RaftNode[%d] Return AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] Success[%v] commitIndex[%d] log[%v] ConflictIndex[%d]",
@@ -523,7 +523,7 @@ func (rf *Raft) AppendMonitor() {
 	for {
 		time.Sleep(timeout)
 		if (time.Since(rf.LastAppendTime) > timeout) && rf.GetLeaderId() != int32(rf.me) {
-			fmt.Println("5秒没有收到来自leader，日志条目不为零的同步信息！")
+			fmt.Println("5秒没有收到来自leader的同步或者心跳信息！")
 			continue
 		}
 	}
@@ -765,7 +765,7 @@ func (rf *Raft) doAppendEntries(peerId int){
 
 func (rf *Raft) appendEntriesLoop() {
 	for !rf.killed() {
-		time.Sleep(8 * time.Millisecond) // 间隔10ms
+		time.Sleep(20 * time.Millisecond) // 间隔10ms
 
 		func() {
 			rf.mu.Lock()
@@ -897,7 +897,7 @@ func (rf *Raft) applyLogLoop() {
 	noMore := false
 	for !rf.killed() {
 		if noMore {
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(20 * time.Millisecond)
 			// fmt.Println("commitindex不够")
 		}
 		func() {
