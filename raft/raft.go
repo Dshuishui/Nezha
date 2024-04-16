@@ -36,7 +36,7 @@ type ApplyMsg struct {
 	Command      interface{}
 	CommandIndex int
 	CommandTerm  int
-	Offset int64
+	Offset       int64
 }
 
 // 日志项
@@ -89,9 +89,9 @@ type Raft struct {
 	matchIndex []int // 每个follower的log同步进度（初始为0），和nextIndex强关联
 
 	// 所有服务器，选举相关状态
-	role              string    // 身份
-	leaderId          int       // leader的id
-	lastActiveTime    time.Time // 上次活跃时间（刷新时机：收到leader心跳、给其他candidates投票、请求其他节点投票）
+	role           string    // 身份
+	leaderId       int       // leader的id
+	lastActiveTime time.Time // 上次活跃时间（刷新时机：收到leader心跳、给其他candidates投票、请求其他节点投票）
 	// lastBroadcastTime time.Time // 作为leader，上次的广播时间
 
 	applyCh chan ApplyMsg // 应用层的提交队列
@@ -101,6 +101,7 @@ type Raft struct {
 	LastAppendTime time.Time
 	Gap            int
 	Offsets        []int64
+	shotOffset     int
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -108,7 +109,7 @@ func (rf *Raft) GetOffsets() []int64 {
 }
 
 // WriteEntryToFile 将条目写入指定的文件，并返回写入的起始偏移量。
-func (rf *Raft) WriteEntryToFile(e *Entry, filename string, startPos int64) (offset int64,err error) {
+func (rf *Raft) WriteEntryToFile(e *Entry, filename string, startPos int64) (offset int64, err error) {
 	// 打开文件，如果文件不存在则创建
 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
@@ -118,13 +119,13 @@ func (rf *Raft) WriteEntryToFile(e *Entry, filename string, startPos int64) (off
 	defer file.Close()
 
 	// 获取当前写入位置，即为返回的偏移量
-	if startPos==0 {
+	if startPos == 0 {
 		offset, err = file.Seek(0, os.SEEK_END)
 		if err != nil {
 			fmt.Println("定位存储Raft日志的磁盘文件有问题")
 			return 0, err
 		}
-	}else{		// 同步日志时，需要已有的日志与leader的冲突，需要覆盖之前的错误的
+	} else { // 同步日志时，需要已有的日志与leader的冲突，需要覆盖之前的错误的
 		offset, err = file.Seek(startPos, os.SEEK_SET)
 		if err != nil {
 			fmt.Println("定位存储Raft日志的磁盘文件的起始位置有问题")
@@ -298,8 +299,8 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	var logEntrys []LogEntry
 	json.Unmarshal(args.Entries, &logEntrys)
 	// if len(logEntrys) != 0 { // 除去普通的心跳
-		rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
-		// fmt.Println("重置lastAppendTime")
+	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
+	// fmt.Println("重置lastAppendTime")
 	// }
 
 	// defer func() {
@@ -323,6 +324,10 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	rf.leaderId = int(args.LeaderId)
 	// 刷新活跃时间
 	rf.lastActiveTime = time.Now()
+	if len(logEntrys) == 0 {
+		reply.Success = true // 成功心跳
+		return reply, nil
+	}
 
 	if args.PrevLogIndex > int32(rf.lastIndex()) { // prevLogIndex位置没有日志的情况
 		reply.ConflictIndex = int32(rf.lastIndex() + 1)
@@ -354,7 +359,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
 			rf.log = append(rf.log, logEntry)
 
-			offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log",0)
+			offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log", 0)
 			rf.Offsets = append(rf.Offsets, offset)
 			if err != nil {
 				panic(err)
@@ -364,15 +369,15 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				rf.log = rf.log[:logPos]          // 删除当前以及后续所有log
 				rf.log = append(rf.log, logEntry) // 把新log加入进来
 
-				offset:=rf.Offsets[index]		// 截取后面错误的offset
-				rf.Offsets = rf.Offsets[:logPos]		// 删除当前错误的offset，以及后续的所有
-				offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log",offset)
+				offset := rf.Offsets[index]      // 截取后面错误的offset
+				rf.Offsets = rf.Offsets[:logPos] // 删除当前错误的offset，以及后续的所有
+				offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log", offset)
 				rf.Offsets = append(rf.Offsets, offset)
 				if err != nil {
 					panic(err)
 				}
 			} // term一样啥也不用做，继续向后比对Log
-		}	  // 每追加一个日志就持久化，并将offset和index绑定，存储到内存中。后续可以考虑这里实现批量持久化
+		} // 每追加一个日志就持久化，并将offset和index绑定，存储到内存中。后续可以考虑这里实现批量持久化
 	}
 	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
@@ -415,7 +420,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Key:         command.(DetailCod).Key,
 		Value:       command.(DetailCod).Value,
 	}
-	offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log",0)
+	offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log", 0)
 	if err != nil {
 		panic(err)
 	}
@@ -677,7 +682,7 @@ func (rf *Raft) updateCommitIndex() {
 }
 
 // 已兼容snapshot
-func (rf *Raft) doAppendEntries(peerId int){
+func (rf *Raft) doAppendEntries(peerId int) {
 	args := raftrpc.AppendEntriesInRaftRequest{}
 	args.Term = int32(rf.currentTerm)
 	args.LeaderId = int32(rf.me)
@@ -763,11 +768,57 @@ func (rf *Raft) doAppendEntries(peerId int){
 	}(peerId)
 }
 
+func (rf *Raft) doHeartBeat(peerId int) {
+	args := raftrpc.AppendEntriesInRaftRequest{}
+	args.Term = int32(rf.currentTerm)
+	args.LeaderId = int32(rf.me)
+	args.LeaderCommit = int32(rf.commitIndex)
+	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)
+	if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
+		args.PrevLogTerm = 0
+	} else {
+		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
+	}
+	args.Entries = nil
+	go func(peerId int) {
+		if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			// defer func() {
+			// 	util.DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
+			// 		rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
+			// }()
+
+			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
+			if rf.currentTerm != int(args.Term) {
+				return
+			}
+			if reply.Term > int32(rf.currentTerm) { // 变成follower
+				rf.role = ROLE_FOLLOWER
+				rf.leaderId = 0
+				rf.currentTerm = int(reply.Term)
+				rf.votedFor = -1
+				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+				return
+			}
+			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
+			// 因此这里得根据发出RPC请求时的状态做更新，而不要直接对nextIndex和matchIndex做相对加减
+			// if reply.Success { // 同步日志成功
+			// 	// rf.nextIndex[peerId] = int(args.PrevLogIndex) + len(appendLog) + 1
+			// 	// rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // 记录已经复制到其他server的日志的最后index的情况
+			// 	// rf.updateCommitIndex()
+			// }
+		}
+	}(peerId)
+}
+
 func (rf *Raft) appendEntriesLoop() {
+	Heartbeat := 0
 	for !rf.killed() {
-		time.Sleep(20 * time.Millisecond) // 间隔10ms
+		time.Sleep(30 * time.Millisecond) // 间隔10ms
 
 		func() {
+			Heartbeat++
 			rf.mu.Lock()
 			// defer rf.mu.Unlock()
 
@@ -794,13 +845,18 @@ func (rf *Raft) appendEntriesLoop() {
 				if peerId == rf.me {
 					continue
 				}
-				// util.DPrintf("发送同步日志给节点[%v]",peerId)
-				rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
+				if (Heartbeat+1)%10 == 0 {
+					rf.doHeartBeat(peerId)
+				} else {
+					// util.DPrintf("发送同步日志给节点[%v]",peerId)
+					rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
+				}
 			}
 			// rf.mu.Lock()
 		}()
 	}
 }
+
 // func (rf *Raft) appendEntriesLoop() {
 // 	for !rf.killed() {
 // 		time.Sleep(10 * time.Millisecond)       // 间隔10ms
@@ -910,15 +966,17 @@ func (rf *Raft) applyLogLoop() {
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				rf.lastApplied += 1
 				appliedIndex := rf.index2LogPos(rf.lastApplied)
+				realIndex := rf.lastApplied - rf.shotOffset // 截断前1个数据,后续可以优化，考虑批量删除
 				appliedMsg := ApplyMsg{
 					CommandValid: true,
 					Command:      rf.log[appliedIndex].Command,
 					CommandIndex: rf.lastApplied,
 					CommandTerm:  int(rf.log[appliedIndex].Term),
-					Offset:       rf.Offsets[rf.lastApplied],		// 将偏移量传进通道
+					Offset:       rf.Offsets[realIndex-1], // 将偏移量传进通道
 				}
-
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
+				rf.Offsets = rf.Offsets[rf.shotOffset+1:]
+				rf.shotOffset++
 				if rf.lastApplied%rf.Gap == 0 {
 					// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, len(rf.Offsets))
