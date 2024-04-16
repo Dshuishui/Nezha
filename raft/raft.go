@@ -645,15 +645,6 @@ func (rf *Raft) electionLoop() {
 					rf.role = ROLE_LEADER
 					util.DPrintf("RaftNode[%d] Candidate -> Leader", rf.me)
 
-					op := DetailCod{
-						OpType: "TermLog",
-					}
-					rf.mu.Unlock()
-					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令
-					rf.mu.Lock()
-					util.DPrintf("成为leader后发送第一个空指令给Raft层")
-					// fmt.Printf("此时log的长度%v\n", len(rf.log))
-
 					rf.leaderId = rf.me
 					rf.nextIndex = make([]int, len(rf.peers))
 					for i := 0; i < len(rf.peers); i++ {
@@ -663,6 +654,14 @@ func (rf *Raft) electionLoop() {
 					for i := 0; i < len(rf.peers); i++ {
 						rf.matchIndex[i] = 0
 					}
+
+					op := DetailCod{
+						OpType: "TermLog",
+					}
+					rf.mu.Unlock()
+					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令，需要在初始化nextindex之后，提交空指令
+					rf.mu.Lock()
+					util.DPrintf("成为leader后发送第一个空指令给Raft层")
 					// rf.lastBroadcastTime = time.Unix(0, 0) // 令appendEntries广播立即执行，因为leader的term开始时，需要提交一条空的无操作记录。
 					return
 				}
@@ -841,7 +840,7 @@ func (rf *Raft) appendEntriesLoop() {
 				if peerId == rf.me {
 					continue
 				}
-				if (Heartbeat+1)%10 == 0 {
+				if Heartbeat%10 == 0 {
 					rf.doHeartBeat(peerId)
 				} else {
 					// util.DPrintf("发送同步日志给节点[%v]",peerId)
@@ -953,8 +952,8 @@ func (rf *Raft) applyLogLoop() {
 			// fmt.Println("commitindex不够")
 		}
 		func() {
-			// rf.mu.Lock()
-			// defer rf.mu.Unlock()
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
 
 			noMore = true
 			// fmt.Printf("此时的commitIndex是多少：%v",rf.commitIndex)
