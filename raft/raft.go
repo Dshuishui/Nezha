@@ -512,7 +512,7 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 	}
 	defer conn.Close()
 	client := raftrpc.NewRaftClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*200)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
 	defer cancel()
 	reply, err := client.AppendEntriesInRaft(ctx, args)
 
@@ -1022,9 +1022,9 @@ func Make(peers []string, me int,
 	// 这就是自己修改grpc线程池option参数的做法
 	DesignOptions := pool.Options{
 		Dial:                 pool.Dial,
-		MaxIdle:              128,
-		MaxActive:            200,
-		MaxConcurrentStreams: 86,
+		MaxIdle:              330,
+		MaxActive:            500,
+		MaxConcurrentStreams: 100,
 		Reuse:                true,
 	}
 	// 根据servers的地址，创建了一一对应server地址的grpc连接池
