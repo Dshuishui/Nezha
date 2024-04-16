@@ -36,6 +36,7 @@ var (
 	address_arg         = flag.String("address", "", "Input Your address")
 	peers_arg           = flag.String("peers", "", "Input Your Peers")
 	gap_arg 			= flag.String("gap", "", "Input Your gap")
+	// gap_arg 			= flag.String("gap", "", "Input Your gap")
 )
 
 const (
