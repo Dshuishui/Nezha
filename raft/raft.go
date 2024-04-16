@@ -975,7 +975,7 @@ func (rf *Raft) applyLogLoop() {
 					Offset:       rf.Offsets[realIndex-1], // 将偏移量传进通道
 				}
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
-				rf.Offsets = rf.Offsets[rf.shotOffset+1:]
+				rf.Offsets = rf.Offsets[1:]
 				rf.shotOffset++
 				if rf.lastApplied%rf.Gap == 0 {
 					// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
