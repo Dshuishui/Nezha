@@ -350,7 +350,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		}
 		return reply, nil
 	}
-	fmt.Printf("此时同步的日志为%v\n",len(logEntrys))
+	// fmt.Printf("此时同步的日志为%v\n",len(logEntrys))
 	// 找到了第一个不同的index，开始同步日志
 	for i, logEntry := range logEntrys {
 		index := int(args.PrevLogIndex) + 1 + i
@@ -810,7 +810,7 @@ func (rf *Raft) doHeartBeat(peerId int) {
 func (rf *Raft) appendEntriesLoop() {
 	Heartbeat := 0
 	for !rf.killed() {
-		time.Sleep(30 * time.Millisecond) // 间隔10ms
+		time.Sleep(100 * time.Millisecond) // 间隔10ms
 
 		func() {
 			Heartbeat++
@@ -840,7 +840,7 @@ func (rf *Raft) appendEntriesLoop() {
 				if peerId == rf.me {
 					continue
 				}
-				if Heartbeat%10 == 0 {
+				if Heartbeat%5 == 0 {
 					rf.doHeartBeat(peerId)
 				} else {
 					// util.DPrintf("发送同步日志给节点[%v]",peerId)
