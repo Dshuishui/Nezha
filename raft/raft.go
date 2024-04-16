@@ -350,7 +350,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		}
 		return reply, nil
 	}
-
+	fmt.Printf("此时同步的日志为%v\n",len(logEntrys))
 	// 找到了第一个不同的index，开始同步日志
 	for i, logEntry := range logEntrys {
 		index := int(args.PrevLogIndex) + 1 + i
