@@ -174,6 +174,7 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kv
 		if err != nil {
 			// fmt.Println("客户端调用PutInRaft有问题")
 			// util.EPrintf("err in PutInRaft-调用了服务器的put方法: %v", err)
+			// 这里防止服务器是宕机了，所以要change leader
 			return nil, err
 		}
 		if reply.Err == raft.OK {
