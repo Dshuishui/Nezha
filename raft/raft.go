@@ -521,7 +521,7 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 	}
 	defer conn.Close()
 	client := raftrpc.NewRaftClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*500000)
 	defer cancel()
 	reply, err := client.AppendEntriesInRaft(ctx, args)
 
@@ -841,7 +841,7 @@ func (rf *Raft) appendEntriesLoop() {
 				if peerId == rf.me {
 					continue
 				}
-				if Heartbeat%6 == 0 {
+				if Heartbeat%2 == 0 {
 					rf.doHeartBeat(peerId)
 				} else {
 					// util.DPrintf("发送同步日志给节点[%v]",peerId)
