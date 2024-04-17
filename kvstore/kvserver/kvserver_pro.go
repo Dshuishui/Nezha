@@ -36,7 +36,7 @@ var (
 	address_arg         = flag.String("address", "", "Input Your address")
 	peers_arg           = flag.String("peers", "", "Input Your Peers")
 	gap_arg 			= flag.String("gap", "", "Input Your gap")
-	// gap_arg 			= flag.String("gap", "", "Input Your gap")
+	syncTime_arg 			= flag.String("syncTime", "", "Input Your syncTime")
 )
 
 const (
@@ -522,6 +522,7 @@ func (kvs *KVServer) applyLoop() {
 func main() {
 	// peers inputed by command line
 	flag.Parse()
+	syncTime,_ := strconv.Atoi(*syncTime_arg)
 	gap,_ := strconv.Atoi(*gap_arg)
 	internalAddress := *internalAddress_arg // 取出指针所指向的值，存入internalAddress变量
 	address := *address_arg
@@ -558,6 +559,7 @@ func main() {
 	wg.Add(1 + 1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
 	kvs.raft.Gap = gap
+	kvs.raft.SyncTime = syncTime
 
 	wg.Wait()
 }
