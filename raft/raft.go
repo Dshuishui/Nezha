@@ -521,12 +521,12 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 	}
 	defer conn.Close()
 	client := raftrpc.NewRaftClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
 	defer cancel()
 	reply, err := client.AppendEntriesInRaft(ctx, args)
 
 	if err != nil {
-		util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ", err, address)
+		// util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ", err, address)
 		return reply, false
 	}
 	return reply, true
