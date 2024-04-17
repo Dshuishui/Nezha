@@ -526,7 +526,7 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 	reply, err := client.AppendEntriesInRaft(ctx, args)
 
 	if err != nil {
-		// util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ", err, address)
+		util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ", err, address)
 		return reply, false
 	}
 	return reply, true
