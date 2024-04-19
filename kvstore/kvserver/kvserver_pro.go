@@ -437,7 +437,7 @@ func (kvs *KVServer) applyLoop() {
 				cmd := msg.Command
 				index := msg.CommandIndex
 				cmdTerm := msg.CommandTerm
-				// offset  := msg.Offset
+				offset  := msg.Offset
 
 				func() {
 					kvs.mu.Lock()
@@ -479,11 +479,11 @@ func (kvs *KVServer) applyLoop() {
 							// kvs.persister.Put(op.Key, indexKey)                    // <key,idnex>,其中index是string类型
 							// addrs := kvs.raft.GetOffsets()		// 拿到raft层的offsets，这个可以优化用通道传输
 							// addr := addrs[op.Index]
-							// positionBytes := make([]byte, binary.MaxVarintLen64)		// 相当于把地址（指向keysize开始处）压缩一下
-							// binary.PutVarint(positionBytes, offset)
-							// kvs.persister.Put(op.Key,positionBytes)		
+							positionBytes := make([]byte, binary.MaxVarintLen64)		// 相当于把地址（指向keysize开始处）压缩一下
+							binary.PutVarint(positionBytes, offset)
+							kvs.persister.Put(op.Key,positionBytes)		
 
-							kvs.persister.Put(op.Key, []byte(op.Value))
+							// kvs.persister.Put(op.Key, []byte(op.Value))
 						} else if existOp { // 虽然该请求的处理还未超时，但是已经处理过了。
 							opCtx.ignored = true
 						}
