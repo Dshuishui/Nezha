@@ -815,7 +815,7 @@ func (rf *Raft) appendEntriesLoop() {
 
 		func() {
 			Heartbeat++
-			rf.mu.Lock()
+			rf.mu.Lock()			// 这里可以用读锁
 			// defer rf.mu.Unlock()
 
 			// 只有leader才向外广播心跳
