@@ -70,7 +70,7 @@ const ROLE_CANDIDATES = "Candidates"
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.RWMutex // Lock to protect shared access to this peer's state
+	mu        sync.Mutex // Lock to protect shared access to this peer's state
 	peers     []string   // RPC end points of all peers
 	persister *Persister // Object to hold this peer's persisted state
 	me        int        // this peer's index into peers[]
@@ -815,12 +815,12 @@ func (rf *Raft) appendEntriesLoop() {
 
 		func() {
 			Heartbeat++
-			rf.mu.RLock()			// 这里可以用读锁
+			rf.mu.Lock()			// 这里可以用读锁
 			// defer rf.mu.Unlock()
 
 			// 只有leader才向外广播心跳
 			if rf.role != ROLE_LEADER {
-				rf.mu.RUnlock()
+				rf.mu.Unlock()
 				return
 			}
 
@@ -830,11 +830,11 @@ func (rf *Raft) appendEntriesLoop() {
 			// 	return
 			// }
 			if rf.lastIndex() == 0 {
-				rf.mu.RUnlock()
+				rf.mu.Unlock()
 				return
 			}
 			// rf.lastBroadcastTime = time.Now() // 确定过了广播的时间间隔，才开始进行广播，并且设置新的广播时间
-			rf.mu.RUnlock()
+			rf.mu.Unlock()
 			// 向所有follower发送心跳
 			// for peerId := 0; peerId < len(rf.peers); peerId++ {
 			for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
