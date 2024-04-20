@@ -167,7 +167,7 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kv
 		}
 		defer conn.Close()
 		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5) // 设置5秒定时往下传
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*7) // 设置5秒定时往下传
 		defer cancel()
 
 		reply, err := client.PutInRaft(ctx, request)
