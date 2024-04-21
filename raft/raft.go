@@ -369,6 +369,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log", 0)
 			rf.Offsets = append(rf.Offsets, offset)
 			if err != nil {
+				fmt.Println("这里有问题嘛")
 				panic(err)
 			}
 			// util.DPrintf("追加RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] Index[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, index, rf.Offsets)
