@@ -2,6 +2,7 @@ package raft
 
 import (
 	// "bytes"
+	// "bufio"
 	"context"
 	"encoding/binary"
 
@@ -154,6 +155,13 @@ func (rf *Raft) WriteEntryToFile(e *Entry, filename string, startPos int64) (off
 		fmt.Println("写入存储Raft日志的磁盘文件有问题")
 		return 0, err
 	}
+	// writer := bufio.NewWriter(file)
+	// u,err := writer.Write(data)
+	// if err != nil || u<len(data) {
+	// 	fmt.Println("写入存储Raft日志的磁盘文件有问题")
+	// 	return 0, err
+	// }
+	// writer.Flush()		// 刷新缓冲区数据到文件中
 
 	return offset, nil
 }
