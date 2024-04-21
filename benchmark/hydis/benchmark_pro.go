@@ -42,8 +42,8 @@ type KVClient struct {
 	seqId     int64 // 该客户端单调递增的请求id
 	leaderId  int
 
-	pools []pool.Pool
-	goodPut int 	// 有效吞吐量
+	pools   []pool.Pool
+	goodPut int // 有效吞吐量
 }
 
 // batchRawPut blinds put bench.
@@ -84,11 +84,11 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 				//k := base*i + j
 				key := fmt.Sprintf("key_%d", k)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				reply,err := kvc.PutInRaft(key, string(value), kvc.pools) // 先随机传入一个地址的连接池
-				if err == nil || reply.Err != "defeat" {
+				reply, err := kvc.PutInRaft(key, string(value), kvc.pools) // 先随机传入一个地址的连接池
+				if err == nil && reply != nil && reply.Err != "defeat" {
 					kvc.goodPut++
 				}
-				if num%50000 == 0 {                    // 加一是除去刚开始为0 的条件
+				if num%50000 == 0 { // 加一是除去刚开始为0 的条件
 					fmt.Printf("Client %v put key num: %v\n", i+1, num)
 				}
 			}
