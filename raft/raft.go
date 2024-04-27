@@ -547,7 +547,7 @@ func (rf *Raft) AppendMonitor() {
 	for {
 		time.Sleep(timeout)
 		if (time.Since(rf.LastAppendTime) > timeout) && rf.GetLeaderId() != int32(rf.me) {
-			fmt.Println("5秒没有收到来自leader的同步或者心跳信息！")
+			fmt.Println("3秒没有收到来自leader的同步或者心跳信息！")
 			continue
 		}
 		fmt.Printf("当前的log大小%v\n", rf.lastIndex())
