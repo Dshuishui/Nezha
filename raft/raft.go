@@ -335,7 +335,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	// 刷新活跃时间
 	rf.lastActiveTime = time.Now()
 	if len(logEntrys) == 0 {
-		reply.Success = true // 成功心跳
+		reply.Success = true                           // 成功心跳
 		if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
 			rf.commitIndex = int(args.LeaderCommit)
 			if rf.lastIndex() < rf.commitIndex { // 感觉，不存在这种情况，走到这里基本都是日志与leader一样了，怎么还会索引比commitindex小
@@ -550,7 +550,7 @@ func (rf *Raft) AppendMonitor() {
 			fmt.Println("5秒没有收到来自leader的同步或者心跳信息！")
 			continue
 		}
-		fmt.Printf("当前的log大小%v\n",rf.lastIndex())
+		fmt.Printf("当前的log大小%v\n", rf.lastIndex())
 	}
 }
 
@@ -826,7 +826,7 @@ func (rf *Raft) appendEntriesLoop() {
 
 		func() {
 			Heartbeat++
-			rf.mu.Lock()			// 这里可以用读锁
+			rf.mu.Lock() // 这里可以用读锁
 			// defer rf.mu.Unlock()
 
 			// 只有leader才向外广播心跳
@@ -860,8 +860,18 @@ func (rf *Raft) appendEntriesLoop() {
 			// 	}
 			// }
 			// rf.mu.Lock()
-			select {
-			case value := <- rf.SyncChan:
+			now := time.Now() // 心跳
+			if now.Sub(rf.LastAppendTime) > 200*time.Millisecond {
+				for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
+					if peerId == rf.me {
+						continue
+					}
+					rf.doHeartBeat(peerId)
+				}
+			}
+
+			select { //   日志同步由对方服务器发来的反馈触发，避免过于重复的日志同步
+			case value := <-rf.SyncChan:
 				switch value {
 				case rf.peers[0]:
 					rf.doAppendEntries(0)
@@ -870,7 +880,7 @@ func (rf *Raft) appendEntriesLoop() {
 				case rf.peers[2]:
 					rf.doAppendEntries(2)
 				default:
-					fmt.Println("未知的来自同步日志发来的地址：",value)
+					fmt.Println("未知的来自同步日志发来的地址：", value)
 				}
 			}
 		}()
