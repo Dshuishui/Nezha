@@ -334,6 +334,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	rf.leaderId = int(args.LeaderId)
 	// 刷新活跃时间
 	rf.lastActiveTime = time.Now()
+	fmt.Println("重置选举时间")
 	if len(logEntrys) == 0 {
 		reply.Success = true                           // 成功心跳
 		if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
@@ -545,7 +546,7 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 func (rf *Raft) AppendMonitor() {
 	timeout := 3 * time.Second
 	for {
-		time.Sleep(timeout)
+		time.Sleep(2*time.Second)
 		if (time.Since(rf.LastAppendTime) > timeout) && rf.GetLeaderId() != int32(rf.me) {
 			fmt.Println("3秒没有收到来自leader的同步或者心跳信息！")
 			continue
