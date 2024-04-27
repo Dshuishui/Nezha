@@ -861,12 +861,13 @@ func (rf *Raft) appendEntriesLoop() {
 			// }
 			// rf.mu.Lock()
 			now := time.Now() // 心跳
-			if now.Sub(rf.LastAppendTime) > 200*time.Millisecond {
+			if now.Sub(rf.LastAppendTime) > 300*time.Millisecond {
 				for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
 					if peerId == rf.me {
 						continue
 					}
-					rf.doHeartBeat(peerId)
+					// rf.doHeartBeat(peerId)
+					rf.doAppendEntries(peerId)
 				}
 			}
 
