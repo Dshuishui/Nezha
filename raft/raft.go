@@ -1056,6 +1056,7 @@ func Make(peers []string, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.SyncChan = make(chan string)
 
 	rf.role = ROLE_FOLLOWER
 	rf.leaderId = 0
