@@ -543,7 +543,7 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 }
 
 func (rf *Raft) AppendMonitor() {
-	timeout := 5 * time.Second
+	timeout := 3 * time.Second
 	for {
 		time.Sleep(timeout)
 		if (time.Since(rf.LastAppendTime) > timeout) && rf.GetLeaderId() != int32(rf.me) {
@@ -564,7 +564,7 @@ func (rf *Raft) electionLoop() {
 			defer rf.mu.Unlock()
 			// fmt.Println("释放electionLoop的锁1或者")
 			now := time.Now()
-			timeout := time.Duration(10000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
+			timeout := time.Duration(15000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
 			elapses := now.Sub(rf.lastActiveTime)
 			// follower -> candidates
 			if rf.role == ROLE_FOLLOWER {
