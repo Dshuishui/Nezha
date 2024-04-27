@@ -334,7 +334,6 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	rf.leaderId = int(args.LeaderId)
 	// 刷新活跃时间
 	rf.lastActiveTime = time.Now()
-	fmt.Println("重置选举时间")
 	if len(logEntrys) == 0 {
 		reply.Success = true                           // 成功心跳
 		if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
@@ -722,7 +721,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
 
 	// if len(appendLog) != 0 { // 除去普通的心跳
-		rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
+		// rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
 	// 	// fmt.Println("重置lastAppendTime")
 	// }
 
