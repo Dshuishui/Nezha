@@ -104,6 +104,7 @@ type Raft struct {
 	Offsets        []int64
 	shotOffset     int
 	SyncTime       int
+	SyncChan       chan string
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -782,6 +783,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				}
 				// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
 			}
+			rf.SyncChan <- rf.peers[rf.me]
 		}
 	}(peerId)
 }
@@ -820,7 +822,7 @@ func (rf *Raft) doHeartBeat(peerId int) {
 func (rf *Raft) appendEntriesLoop() {
 	Heartbeat := 0
 	for !rf.killed() {
-		time.Sleep(time.Duration(rf.SyncTime) * time.Millisecond) // 间隔10ms
+		// time.Sleep(time.Duration(rf.SyncTime) * time.Millisecond) // 间隔10ms
 
 		func() {
 			Heartbeat++
@@ -846,18 +848,31 @@ func (rf *Raft) appendEntriesLoop() {
 			rf.mu.Unlock()
 			// 向所有follower发送心跳
 			// for peerId := 0; peerId < len(rf.peers); peerId++ {
-			for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
-				if peerId == rf.me {
-					continue
-				}
-				if Heartbeat%2 == 0 {
-					rf.doHeartBeat(peerId)
-				} else {
-					// util.DPrintf("发送同步日志给节点[%v]",peerId)
-					rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
+			// for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
+			// 	if peerId == rf.me {
+			// 		continue
+			// 	}
+			// 	if Heartbeat%2 == 0 {
+			// 		rf.doHeartBeat(peerId)
+			// 	} else {
+			// 		// util.DPrintf("发送同步日志给节点[%v]",peerId)
+			// 		rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
+			// 	}
+			// }
+			// rf.mu.Lock()
+			select {
+			case value := <- rf.SyncChan:
+				switch value {
+				case rf.peers[0]:
+					rf.doAppendEntries(0)
+				case rf.peers[1]:
+					rf.doAppendEntries(1)
+				case rf.peers[2]:
+					rf.doAppendEntries(2)
+				default:
+					fmt.Println("未知的来自同步日志发来的地址：",value)
 				}
 			}
-			// rf.mu.Lock()
 		}()
 	}
 }
