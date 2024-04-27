@@ -737,6 +737,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 
 			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
 			if rf.currentTerm != int(args.Term) {
+				fmt.Println("111")
 				return
 			}
 			if reply.Term > int32(rf.currentTerm) { // 变成follower
@@ -745,6 +746,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				rf.currentTerm = int(reply.Term)
 				rf.votedFor = -1
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+				fmt.Println("222")
 				return
 			}
 			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
@@ -783,7 +785,9 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				}
 				// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
 			}
+			fmt.Println("333")
 			rf.SyncChan <- rf.peers[rf.me]
+			fmt.Println("444")
 		}
 	}(peerId)
 }
@@ -880,7 +884,7 @@ func (rf *Raft) appendEntriesLoop() {
 					rf.doAppendEntries(1)
 				case rf.peers[2]:
 					rf.doAppendEntries(2)
-				default:
+				default:		// 如果不是leader了就退出，后续设置一下
 					fmt.Println("未知的来自同步日志发来的地址：", value)
 				}
 			}
