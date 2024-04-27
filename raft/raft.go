@@ -720,10 +720,10 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// util.DPrintf("RaftNode[%d] appendEntries starts,  currentTerm[%d] peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] args.Entries[%d] commitIndex[%d]",
 	// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
 
-	// if len(appendLog) != 0 { // 除去普通的心跳
-	// 	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
+	if len(appendLog) != 0 { // 除去普通的心跳
+		rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
 	// 	// fmt.Println("重置lastAppendTime")
-	// }
+	}
 
 	go func(peerId int) {
 		// util.DPrintf("RaftNode[%d] appendEntries starts, myTerm[%d] peerId[%d]", rf.me, args.Term, args.LeaderId)
