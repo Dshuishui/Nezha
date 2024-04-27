@@ -786,7 +786,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
 			}
 			fmt.Println("333")
-			rf.SyncChan <- rf.peers[rf.me]
+			rf.SyncChan <- rf.peers[peerId]
 			fmt.Println("444")
 		}
 	}(peerId)
@@ -874,9 +874,10 @@ func (rf *Raft) appendEntriesLoop() {
 					rf.doAppendEntries(peerId)
 				}
 			}
-
+			fmt.Println("333",<-rf.SyncChan)
 			select { //   日志同步由对方服务器发来的反馈触发，避免过于重复的日志同步
 			case value := <-rf.SyncChan:
+				fmt.Println("333")
 				switch value {
 				case rf.peers[0]:
 					rf.doAppendEntries(0)
