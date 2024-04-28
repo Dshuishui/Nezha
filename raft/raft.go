@@ -431,7 +431,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	}
 	// fmt.Println("到这了嘛4")
 	rf.log = append(rf.log, logEntry)
-	// fmt.Println("到这了嘛5")
+	fmt.Println("到这了嘛5，此时log长度为：",len(rf.log))
 	index = rf.lastIndex()
 	term = rf.currentTerm
 	entry := Entry{
@@ -722,7 +722,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// if (rf.index2LogPos(int(args.PrevLogIndex)+1) + 100)<len(rf.log)  {
 	// 	appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):rf.index2LogPos(int(args.PrevLogIndex)+1) + 3]
 	// }else{
-		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
+		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):rf.index2LogPos(int(args.PrevLogIndex)+1)+1] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
 	// }
 
 	// 设置日志同步的阈值
@@ -910,20 +910,20 @@ func (rf *Raft) appendEntriesLoop() {
 			// case value := <-rf.SyncChan:
 				// fmt.Println("value",value)
 				// switch value {
-				case value := <- rf.SyncChans[0]:
-					if value == "NotLeader" {
+				case value1 := <- rf.SyncChans[0]:
+					if value1 == "NotLeader" {
 						fmt.Println("被告知不是NotLeader，退出")
 						return
 					}
 					rf.doAppendEntries(0)
-				case value :=<- rf.SyncChans[1]:
-					if value == "NotLeader" {
+				case value2 :=<- rf.SyncChans[1]:
+					if value2 == "NotLeader" {
 						fmt.Println("被告知不是NotLeader，退出")
 						return
 					}
 					rf.doAppendEntries(1)
-				case value := <- rf.SyncChans[2]:
-					if value == "NotLeader" {
+				case value3 := <- rf.SyncChans[2]:
+					if value3 == "NotLeader" {
 						fmt.Println("被告知不是NotLeader，退出")
 						return
 					}
