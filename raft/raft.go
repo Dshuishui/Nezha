@@ -719,8 +719,8 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	} else {
 		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
 	}
-	if (rf.index2LogPos(int(args.PrevLogIndex)+1) + 10)<len(rf.log)  {
-		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):rf.index2LogPos(int(args.PrevLogIndex)+1) + 10]
+	if (rf.index2LogPos(int(args.PrevLogIndex)+1) + 3)<len(rf.log)  {
+		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):rf.index2LogPos(int(args.PrevLogIndex)+1) + 3]
 	}else{
 		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
 	}
