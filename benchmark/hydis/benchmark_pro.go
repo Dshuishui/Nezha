@@ -184,6 +184,8 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kv
 			kvc.changeToLeader(int(reply.LeaderId))
 			// fmt.Printf("等待leader的出现,更改后的leaderid是%v\n",kvc.leaderId)
 			// time.Sleep(6 * time.Millisecond)
+		}else if reply.Err == "defeat"{
+			return reply,nil
 		}
 	}
 }
