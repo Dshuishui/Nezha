@@ -902,7 +902,7 @@ func (rf *Raft) appendEntriesLoop() {
 			}
 			select { //   日志同步由对方服务器发来的反馈触发，避免过于重复的日志同步
 			case value := <-rf.SyncChan:
-				fmt.Println("value",value)
+				// fmt.Println("value",value)
 				switch value {
 				case rf.peers[0]:
 					rf.doAppendEntries(0)
