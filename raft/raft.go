@@ -545,7 +545,7 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 func (rf *Raft) AppendMonitor() {
 	timeout := 3 * time.Second
 	for {
-		time.Sleep(2*time.Second)
+		time.Sleep(2 * time.Second)
 		if (time.Since(rf.LastAppendTime) > timeout) && rf.GetLeaderId() != int32(rf.me) {
 			fmt.Println("3秒没有收到来自leader的同步或者心跳信息！")
 			continue
@@ -721,7 +721,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
 
 	// if len(appendLog) != 0 { // 除去普通的心跳
-		// rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
+	// rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
 	// 	// fmt.Println("重置lastAppendTime")
 	// }
 
@@ -737,7 +737,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 
 			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
 			if rf.currentTerm != int(args.Term) {
-				fmt.Println("111")
+				rf.SyncChan <- "NotLeader"
 				return
 			}
 			if reply.Term > int32(rf.currentTerm) { // 变成follower
@@ -746,7 +746,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				rf.currentTerm = int(reply.Term)
 				rf.votedFor = -1
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-				fmt.Println("222")
+				rf.SyncChan <- "NotLeader"
 				return
 			}
 			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
@@ -785,9 +785,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				}
 				// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
 			}
-			fmt.Println("333")
 			rf.SyncChan <- rf.peers[peerId]
-			fmt.Println("444")
 		}
 	}(peerId)
 }
@@ -825,6 +823,7 @@ func (rf *Raft) doHeartBeat(peerId int) {
 
 func (rf *Raft) appendEntriesLoop() {
 	Heartbeat := 0
+	First := true
 	for !rf.killed() {
 		// time.Sleep(time.Duration(rf.SyncTime) * time.Millisecond) // 间隔10ms
 
@@ -864,8 +863,9 @@ func (rf *Raft) appendEntriesLoop() {
 			// 	}
 			// }
 			// rf.mu.Lock()
-			now := time.Now() // 心跳
-			if now.Sub(rf.LastAppendTime) > 300*time.Millisecond {
+			// now := time.Now() // 心跳
+			// if (now.Sub(rf.LastAppendTime) > 300*time.Millisecond) && Heartbeat == 1 {
+			if  First {
 				for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
 					if peerId == rf.me {
 						continue
@@ -873,11 +873,10 @@ func (rf *Raft) appendEntriesLoop() {
 					// rf.doHeartBeat(peerId)
 					rf.doAppendEntries(peerId)
 				}
+				First = false
 			}
-			fmt.Println("333",<-rf.SyncChan)
 			select { //   日志同步由对方服务器发来的反馈触发，避免过于重复的日志同步
 			case value := <-rf.SyncChan:
-				fmt.Println("333")
 				switch value {
 				case rf.peers[0]:
 					rf.doAppendEntries(0)
@@ -885,8 +884,9 @@ func (rf *Raft) appendEntriesLoop() {
 					rf.doAppendEntries(1)
 				case rf.peers[2]:
 					rf.doAppendEntries(2)
-				default:		// 如果不是leader了就退出，后续设置一下
-					fmt.Println("未知的来自同步日志发来的地址：", value)
+				default: // 如果不是leader了就退出，后续设置一下
+					fmt.Println("被告知不是NotLeader，退出")
+					return
 				}
 			}
 		}()
@@ -1061,7 +1061,7 @@ func Make(peers []string, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	rf.SyncChan = make(chan string)
+	rf.SyncChan = make(chan string, 200)
 
 	rf.role = ROLE_FOLLOWER
 	rf.leaderId = 0
