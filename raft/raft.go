@@ -3,10 +3,10 @@ package raft
 import (
 	// "bytes"
 	// "bufio"
-	"bytes"
+	// "bytes"
 	"context"
 	"encoding/binary"
-	"encoding/gob"
+	// "encoding/gob"
 
 	// "encoding/gob"
 	"encoding/json"
@@ -704,11 +704,11 @@ func (rf *Raft) updateCommitIndex() {
 
 // 已兼容snapshot
 func (rf *Raft) doAppendEntries(peerId int) {
-	var buffer bytes.Buffer
-	enc := gob.NewEncoder(&buffer)
-	var totalSize int64
+	// var buffer bytes.Buffer
+	// enc := gob.NewEncoder(&buffer)
+	// var totalSize int64
 	var appendLog []LogEntry
-	
+
 	args := raftrpc.AppendEntriesInRaftRequest{}
 	args.Term = int32(rf.currentTerm)
 	args.LeaderId = int32(rf.me)
@@ -722,21 +722,21 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// appendLog := rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
 
 	// 设置日志同步的阈值
-	for i := rf.index2LogPos(int(args.PrevLogIndex)+1); i < len(rf.log); i++ {
-		if err := enc.Encode(rf.log[i]) ; err!=nil{
-			util.EPrintf("Encode error：",err)
-		}
-		totalSize += int64(buffer.Len())
-		// 如果总大小超过30MB，截取日志数组并退出循环
-		if totalSize >= 30*1024*1024 {
-			appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i]
-			break
-		}
-	}
-	if totalSize< 30*1024*1024{
-		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
-	}
-	buffer.Reset()
+	// for i := rf.index2LogPos(int(args.PrevLogIndex)+1); i < len(rf.log); i++ {
+	// 	if err := enc.Encode(rf.log[i]) ; err!=nil{
+	// 		util.EPrintf("Encode error：",err)
+	// 	}
+	// 	totalSize += int64(buffer.Len())
+	// 	// 如果总大小超过30MB，截取日志数组并退出循环
+	// 	if totalSize >= 30*1024*1024 {
+	// 		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i]
+	// 		break
+	// 	}
+	// }
+	// if totalSize< 30*1024*1024{
+	// 	appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
+	// }
+	// buffer.Reset()
 
 	// fmt.Printf("此时下标会不会有问题，log长度：%v，下标：%v", len(rf.log), args.PrevLogIndex+1)
 	data, _ := json.Marshal(appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
