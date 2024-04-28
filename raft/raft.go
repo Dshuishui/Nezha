@@ -718,8 +718,9 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	} else {
 		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
 	}
-	if (rf.index2LogPos(int(args.PrevLogIndex)+1) + 1)<len(rf.log)  {
-		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):rf.index2LogPos(int(args.PrevLogIndex)+1) + 1]
+	start := rf.index2LogPos(int(args.PrevLogIndex)+1)
+	if (start + 1)<len(rf.log)  {
+		appendLog = rf.log[start:start + 2]
 	}else{
 		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
 	}
@@ -1059,7 +1060,7 @@ func (rf *Raft) applyLogLoop() {
 				rf.shotOffset++
 				if rf.lastApplied%rf.Gap == 0 {
 					// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
+					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, len(rf.Offsets))
 				}
 				noMore = false
 			}
