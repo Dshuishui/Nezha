@@ -106,7 +106,7 @@ type Raft struct {
 	Offsets        []int64
 	shotOffset     int
 	SyncTime       int
-	SyncChan       chan string
+	SyncChans      []chan string
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -766,7 +766,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 
 			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
 			if rf.currentTerm != int(args.Term) {
-				rf.SyncChan <- "NotLeader"
+				rf.SyncChans[peerId] <- "NotLeader"
 				return
 			}
 			if reply.Term > int32(rf.currentTerm) { // 变成follower
@@ -775,7 +775,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				rf.currentTerm = int(reply.Term)
 				rf.votedFor = -1
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-				rf.SyncChan <- "NotLeader"
+				rf.SyncChans[peerId] <- "NotLeader"
 				return
 			}
 			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
@@ -814,9 +814,9 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				}
 				// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
 			}
-			rf.SyncChan <- rf.peers[peerId]
+			rf.SyncChans[peerId] <- rf.peers[peerId]
 		}else {
-			rf.SyncChan <- rf.peers[peerId]
+			rf.SyncChans[peerId] <- rf.peers[peerId]
 		}
 	}(peerId)
 }
@@ -907,19 +907,19 @@ func (rf *Raft) appendEntriesLoop() {
 				First = false
 			}
 			select { //   日志同步由对方服务器发来的反馈触发，避免过于重复的日志同步
-			case value := <-rf.SyncChan:
+			// case value := <-rf.SyncChan:
 				// fmt.Println("value",value)
-				switch value {
-				case rf.peers[0]:
+				// switch value {
+				case <- rf.SyncChans[0]:
 					rf.doAppendEntries(0)
-				case rf.peers[1]:
+				case <- rf.SyncChans[1]:
 					rf.doAppendEntries(1)
-				case rf.peers[2]:
+				case <- rf.SyncChans[2]:
 					rf.doAppendEntries(2)
 				default: // 如果不是leader了就退出，后续设置一下
 					fmt.Println("被告知不是NotLeader，退出")
 					return
-				}
+				// }
 			}
 		}()
 	}
@@ -1093,7 +1093,9 @@ func Make(peers []string, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	rf.SyncChan = make(chan string, 200)
+    for i := 0; i < 3; i++ {
+        rf.SyncChans = append(rf.SyncChans, make(chan string,100))
+    }
 
 	rf.role = ROLE_FOLLOWER
 	rf.leaderId = 0
