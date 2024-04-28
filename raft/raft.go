@@ -431,7 +431,6 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	}
 	// fmt.Println("到这了嘛4")
 	rf.log = append(rf.log, logEntry)
-	fmt.Println("到这了嘛5，此时log长度为：",len(rf.log))
 	index = rf.lastIndex()
 	term = rf.currentTerm
 	entry := Entry{
@@ -1060,7 +1059,7 @@ func (rf *Raft) applyLogLoop() {
 				rf.shotOffset++
 				if rf.lastApplied%rf.Gap == 0 {
 					// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, len(rf.Offsets))
+					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
 				}
 				noMore = false
 			}
