@@ -910,15 +910,27 @@ func (rf *Raft) appendEntriesLoop() {
 			// case value := <-rf.SyncChan:
 				// fmt.Println("value",value)
 				// switch value {
-				case <- rf.SyncChans[0]:
+				case value := <- rf.SyncChans[0]:
+					if value == "NotLeader" {
+						fmt.Println("被告知不是NotLeader，退出")
+						return
+					}
 					rf.doAppendEntries(0)
-				case <- rf.SyncChans[1]:
+				case value :=<- rf.SyncChans[1]:
+					if value == "NotLeader" {
+						fmt.Println("被告知不是NotLeader，退出")
+						return
+					}
 					rf.doAppendEntries(1)
-				case <- rf.SyncChans[2]:
+				case value := <- rf.SyncChans[2]:
+					if value == "NotLeader" {
+						fmt.Println("被告知不是NotLeader，退出")
+						return
+					}
 					rf.doAppendEntries(2)
-				default: // 如果不是leader了就退出，后续设置一下
-					fmt.Println("被告知不是NotLeader，退出")
-					return
+				// default: // 如果不是leader了就退出，后续设置一下
+				// 	fmt.Println("被告知不是NotLeader，退出")
+				// 	return
 				// }
 			}
 		}()
