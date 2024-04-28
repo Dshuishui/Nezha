@@ -818,7 +818,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 			}
 			rf.SyncChan <- rf.peers[peerId]
 		}
-		rf.SyncChan <- rf.peers[peerId]
+		// rf.SyncChan <- rf.peers[peerId]
 	}(peerId)
 }
 
