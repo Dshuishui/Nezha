@@ -1,12 +1,11 @@
 package raft
 
 import (
-	// "bytes"
 	// "bufio"
-	// "bytes"
+	"bytes"
 	"context"
 	"encoding/binary"
-	// "encoding/gob"
+	"encoding/gob"
 
 	// "encoding/gob"
 	"encoding/json"
@@ -703,10 +702,11 @@ func (rf *Raft) updateCommitIndex() {
 
 // 已兼容snapshot
 func (rf *Raft) doAppendEntries(peerId int) {
-	// var buffer bytes.Buffer
-	// enc := gob.NewEncoder(&buffer)
-	// var totalSize int64
+	var buffer bytes.Buffer
+	enc := gob.NewEncoder(&buffer)
+	var totalSize int64
 	var appendLog []LogEntry
+	var threshold int64 = 30 * 1024 * 1024
 
 	args := raftrpc.AppendEntriesInRaftRequest{}
 	args.Term = int32(rf.currentTerm)
@@ -718,29 +718,29 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	} else {
 		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
 	}
-	start := rf.index2LogPos(int(args.PrevLogIndex)+1)
-	if (start + 1)<len(rf.log)  {
-		appendLog = rf.log[start:start + 2]
-	}else{
-		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
-	}
+	// start := rf.index2LogPos(int(args.PrevLogIndex)+1)
+	// if (start + 0)<len(rf.log)  {
+	// 	appendLog = rf.log[start:start + 100]
+	// }else{
+	// 	appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
+	// }
 
 	// 设置日志同步的阈值
-	// for i := rf.index2LogPos(int(args.PrevLogIndex)+1); i < len(rf.log); i++ {
-	// 	if err := enc.Encode(rf.log[i]) ; err!=nil{
-	// 		util.EPrintf("Encode error：",err)
-	// 	}
-	// 	totalSize += int64(buffer.Len())
-	// 	// 如果总大小超过30MB，截取日志数组并退出循环
-	// 	if totalSize >= 30*1024*1024 {
-	// 		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i]
-	// 		break
-	// 	}
-	// }
-	// if totalSize< 30*1024*1024{
-	// 	appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
-	// }
-	// buffer.Reset()
+	for i := rf.index2LogPos(int(args.PrevLogIndex) + 1); i < len(rf.log); i++ {
+		if err := enc.Encode(rf.log[i]); err != nil {	// 将 rf.log[i] 日志项编码后的字节序列写入到 buffer 缓冲区中
+			util.EPrintf("Encode error：", err)
+		}
+		totalSize += int64(buffer.Len())
+		// 如果总大小超过3MB，截取日志数组并退出循环
+		if totalSize >= threshold {
+			appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i]
+			break
+		}
+	}
+	if totalSize < threshold {
+		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
+	}
+	buffer.Reset()
 
 	// fmt.Printf("此时下标会不会有问题，log长度：%v，下标：%v", len(rf.log), args.PrevLogIndex+1)
 	data, _ := json.Marshal(appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
@@ -815,7 +815,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
 			}
 			rf.SyncChans[peerId] <- rf.peers[peerId]
-		}else {
+		} else {
 			rf.SyncChans[peerId] <- rf.peers[peerId]
 		}
 	}(peerId)
@@ -896,7 +896,7 @@ func (rf *Raft) appendEntriesLoop() {
 			// rf.mu.Lock()
 			// now := time.Now() // 心跳
 			// if (now.Sub(rf.LastAppendTime) > 300*time.Millisecond) && Heartbeat == 1 {
-			if  First {
+			if First {
 				for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
 					if peerId == rf.me {
 						continue
@@ -906,33 +906,64 @@ func (rf *Raft) appendEntriesLoop() {
 				}
 				First = false
 			}
-			select { //   日志同步由对方服务器发来的反馈触发，避免过于重复的日志同步
-			// case value := <-rf.SyncChan:
-				// fmt.Println("value",value)
-				// switch value {
-				case value1 := <- rf.SyncChans[0]:
-					if value1 == "NotLeader" {
-						fmt.Println("被告知不是NotLeader，退出")
-						return
-					}
-					rf.doAppendEntries(0)
-				case value2 :=<- rf.SyncChans[1]:
-					if value2 == "NotLeader" {
-						fmt.Println("被告知不是NotLeader，退出")
-						return
-					}
-					rf.doAppendEntries(1)
-				case value3 := <- rf.SyncChans[2]:
-					if value3 == "NotLeader" {
-						fmt.Println("被告知不是NotLeader，退出")
-						return
-					}
-					rf.doAppendEntries(2)
+
+			select {
+			case value1 := <-rf.SyncChans[0]:
+				if value1 == "NotLeader" {
+					fmt.Println("被告知不是NotLeader，退出")
+					return
+				}
+				rf.doAppendEntries(0)
+			default:
+			}
+
+			select {
+			case value2 := <-rf.SyncChans[1]:
+				if value2 == "NotLeader" {
+					fmt.Println("被告知不是NotLeader，退出")
+					return
+				}
+				rf.doAppendEntries(1)
+			default:
+			}
+			
+			select {
+			case value3 := <-rf.SyncChans[2]:
+				if value3 == "NotLeader" {
+					fmt.Println("被告知不是NotLeader，退出")
+					return
+				}
+				rf.doAppendEntries(2)
+			default:
+			}
+
+			// select { //   日志同步由对方服务器发来的反馈触发，避免过于重复的日志同步
+			// // case value := <-rf.SyncChan:
+			// // fmt.Println("value",value)
+			// // switch value {
+			// case value1 := <-rf.SyncChans[0]:
+			// 	if value1 == "NotLeader" {
+			// 		fmt.Println("被告知不是NotLeader，退出")
+			// 		return
+			// 	}
+			// 	rf.doAppendEntries(0)
+			// case value2 := <-rf.SyncChans[1]:
+			// 	if value2 == "NotLeader" {
+			// 		fmt.Println("被告知不是NotLeader，退出")
+			// 		return
+			// 	}
+			// 	rf.doAppendEntries(1)
+			// case value3 := <-rf.SyncChans[2]:
+			// 	if value3 == "NotLeader" {
+			// 		fmt.Println("被告知不是NotLeader，退出")
+			// 		return
+			// 	}
+			// 	rf.doAppendEntries(2)
 				// default: // 如果不是leader了就退出，后续设置一下
 				// 	fmt.Println("被告知不是NotLeader，退出")
 				// 	return
 				// }
-			}
+			// }
 		}()
 	}
 }
@@ -1105,9 +1136,9 @@ func Make(peers []string, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-    for i := 0; i < 3; i++ {
-        rf.SyncChans = append(rf.SyncChans, make(chan string,100))
-    }
+	for i := 0; i < 3; i++ {
+		rf.SyncChans = append(rf.SyncChans, make(chan string, 100))
+	}
 
 	rf.role = ROLE_FOLLOWER
 	rf.leaderId = 0
