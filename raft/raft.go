@@ -1,7 +1,7 @@
 package raft
 
 import (
-	// "bufio"
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -113,50 +113,51 @@ func (rf *Raft) GetOffsets() []int64 {
 }
 
 // WriteEntryToFile 将条目写入指定的文件，并返回写入的起始偏移量。
-func (rf *Raft) WriteEntryToFile(e *Entry, filename string, startPos int64) (offset int64, err error) {
+func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) (offsets []int64, err error) {
 	// 打开文件，如果文件不存在则创建
 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
-		fmt.Println("打开存储Raft日志的磁盘文件有问题")
-		return 0, err
+		return nil, fmt.Errorf("打开存储Raft日志的磁盘文件失败：%v", err)
 	}
 	defer file.Close()
 
+	// 包装文件对象以进行缓冲写入
+	writer := bufio.NewWriter(file)
+
 	// 获取当前写入位置，即为返回的偏移量
+	var offset int64
 	if startPos == 0 {
 		offset, err = file.Seek(0, os.SEEK_END)
 		if err != nil {
-			fmt.Println("定位存储Raft日志的磁盘文件有问题")
-			return 0, err
+			return nil, fmt.Errorf("定位存储Raft日志的磁盘文件失败：%v", err)
 		}
 	} else { // 同步日志时，需要已有的日志与leader的冲突，需要覆盖之前的错误的
 		offset, err = file.Seek(startPos, os.SEEK_SET)
 		if err != nil {
-			fmt.Println("定位存储Raft日志的磁盘文件的起始位置有问题")
-			return 0, err
+			return nil, fmt.Errorf("定位存储Raft日志的磁盘文件的起始位置失败：%v", err)
 		}
 	}
 
 	// 准备写入的数据
-	keySize := uint32(len(e.Key))
-	valueSize := uint32(len(e.Value))
-	data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value
+	// keySize := uint32(len(e.Key))
+	// valueSize := uint32(len(e.Value))
+	// data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value
 
-	// 将数据编码到byte slice中
-	binary.BigEndian.PutUint32(data[0:4], e.Index)
-	binary.BigEndian.PutUint32(data[4:8], e.CurrentTerm)
-	binary.BigEndian.PutUint32(data[8:12], e.VotedFor)
-	binary.BigEndian.PutUint32(data[12:16], keySize)
-	binary.BigEndian.PutUint32(data[16:20], valueSize)
-	copy(data[20:20+keySize], e.Key)
-	copy(data[20+keySize:], e.Value)
+	// // 将数据编码到byte slice中
+	// binary.BigEndian.PutUint32(data[0:4], e.Index)
+	// binary.BigEndian.PutUint32(data[4:8], e.CurrentTerm)
+	// binary.BigEndian.PutUint32(data[8:12], e.VotedFor)
+	// binary.BigEndian.PutUint32(data[12:16], keySize)
+	// binary.BigEndian.PutUint32(data[16:20], valueSize)
+	// copy(data[20:20+keySize], e.Key)
+	// copy(data[20+keySize:], e.Value)
 
-	// 写入文件
-	_, err = file.Write(data)
-	if err != nil {
-		fmt.Println("写入存储Raft日志的磁盘文件有问题")
-		return 0, err
-	}
+	// // 写入文件
+	// _, err = file.Write(data)
+	// if err != nil {
+	// 	fmt.Println("写入存储Raft日志的磁盘文件有问题")
+	// 	return 0, err
+	// }
 	// writer := bufio.NewWriter(file)
 	// u,err := writer.Write(data)
 	// if err != nil || u<len(data) {
@@ -165,7 +166,38 @@ func (rf *Raft) WriteEntryToFile(e *Entry, filename string, startPos int64) (off
 	// }
 	// writer.Flush()		// 刷新缓冲区数据到文件中
 
-	return offset, nil
+	for _, entry := range e {
+		keySize := uint32(len(entry.Key))
+		valueSize := uint32(len(entry.Value))
+		data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value
+
+		// 将数据编码到byte slice中
+		binary.BigEndian.PutUint32(data[0:4], entry.Index)
+		binary.BigEndian.PutUint32(data[4:8], entry.CurrentTerm)
+		binary.BigEndian.PutUint32(data[8:12], entry.VotedFor)
+		binary.BigEndian.PutUint32(data[12:16], keySize)
+		binary.BigEndian.PutUint32(data[16:20], valueSize)
+		copy(data[20:20+keySize], entry.Key)
+		copy(data[20+keySize:], entry.Value)
+
+		// 写入文件
+		_, err := writer.Write(data)
+		if err != nil {
+			return nil, fmt.Errorf("写入存储Raft日志的磁盘文件失败：%v", err)
+		}
+
+		// 刷新缓冲区以确保数据被写入文件
+		err = writer.Flush()
+		if err != nil {
+			return nil, fmt.Errorf("刷新缓冲区失败：%v", err)
+		}
+
+		// 添加偏移量到数组中
+		offsets = append(offsets, offset)
+		offset += int64(len(data))
+	}
+	return offsets, nil
+
 }
 
 // ReadValueFromFile 从指定的偏移量读取value
@@ -363,6 +395,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	}
 	// fmt.Printf("此时同步的日志为%v\n",len(logEntrys))
 	// 找到了第一个不同的index，开始同步日志
+	var tempLogs []*Entry
 	for i, logEntry := range logEntrys {
 		index := int(args.PrevLogIndex) + 1 + i
 		logPos := rf.index2LogPos(index)
@@ -375,12 +408,15 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		}
 		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
 			rf.log = append(rf.log, logEntry)
+			tempLogs = append(tempLogs, &entry)		// 将要写入磁盘文件的结构体暂存，批量存储。
 
-			offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log", 0)
-			rf.Offsets = append(rf.Offsets, offset)
-			if err != nil {
-				fmt.Println("这里有问题嘛")
-				panic(err)
+			if index == rf.lastIndex() {			// 已经将日志补足后，开始批量写入
+				offsets1, err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
+				rf.Offsets = append(rf.Offsets, offsets1...)
+				if err != nil {
+					fmt.Println("这里有问题嘛")
+					panic(err)
+				}
 			}
 			// util.DPrintf("追加RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] Index[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, index, rf.Offsets)
 		} else { // 重叠部分
@@ -390,8 +426,9 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 
 				offset := rf.Offsets[index]      // 截取后面错误的offset
 				rf.Offsets = rf.Offsets[:logPos] // 删除当前错误的offset，以及后续的所有
-				offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log", offset)
-				rf.Offsets = append(rf.Offsets, offset)
+				arrEntry := []*Entry{&entry}     // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
+				offsets2, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
+				rf.Offsets = append(rf.Offsets, offsets2[0])
 				if err != nil {
 					panic(err)
 				}
@@ -439,11 +476,12 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Key:         command.(DetailCod).Key,
 		Value:       command.(DetailCod).Value,
 	}
-	offset, err := rf.WriteEntryToFile(&entry, "./raft/RaftState.log", 0)
+	arrEntry := []*Entry{&entry}
+	offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	if err != nil {
 		panic(err)
 	}
-	rf.Offsets = append(rf.Offsets, offset)
+	rf.Offsets = append(rf.Offsets, offsets...)
 	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
 	// util.DPrintf("RaftNode[%d] Add Command, logIndex[%d] currentTerm[%d]", rf.me, index, term)
@@ -727,7 +765,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 
 	// 设置日志同步的阈值
 	for i := rf.index2LogPos(int(args.PrevLogIndex) + 1); i < len(rf.log); i++ {
-		if err := enc.Encode(rf.log[i]); err != nil {	// 将 rf.log[i] 日志项编码后的字节序列写入到 buffer 缓冲区中
+		if err := enc.Encode(rf.log[i]); err != nil { // 将 rf.log[i] 日志项编码后的字节序列写入到 buffer 缓冲区中
 			util.EPrintf("Encode error：", err)
 		}
 		totalSize += int64(buffer.Len())
@@ -926,7 +964,7 @@ func (rf *Raft) appendEntriesLoop() {
 				rf.doAppendEntries(1)
 			default:
 			}
-			
+
 			select {
 			case value3 := <-rf.SyncChans[2]:
 				if value3 == "NotLeader" {
@@ -959,10 +997,10 @@ func (rf *Raft) appendEntriesLoop() {
 			// 		return
 			// 	}
 			// 	rf.doAppendEntries(2)
-				// default: // 如果不是leader了就退出，后续设置一下
-				// 	fmt.Println("被告知不是NotLeader，退出")
-				// 	return
-				// }
+			// default: // 如果不是leader了就退出，后续设置一下
+			// 	fmt.Println("被告知不是NotLeader，退出")
+			// 	return
+			// }
 			// }
 		}()
 	}
