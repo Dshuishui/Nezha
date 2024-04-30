@@ -106,6 +106,8 @@ type Raft struct {
 	shotOffset     int
 	SyncTime       int
 	SyncChans      []chan string
+	batchLog       []*Entry
+	batchLogSize   int64
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -113,7 +115,7 @@ func (rf *Raft) GetOffsets() []int64 {
 }
 
 // WriteEntryToFile 将条目写入指定的文件，并返回写入的起始偏移量。
-func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64)  {
+func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	// 打开文件，如果文件不存在则创建
@@ -157,7 +159,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64)  {
 
 		// 写入文件
 		u, err := writer.Write(data)
-		if err != nil || u < len(data){
+		if err != nil || u < len(data) {
 			fmt.Errorf("写入存储Raft日志的磁盘文件失败：%v", err)
 		}
 
@@ -174,6 +176,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64)  {
 	rf.Offsets = append(rf.Offsets, offsets...)
 	// return offsets, nil
 }
+
 // func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) (offsets []int64, err error) {
 // 	rf.mu.Lock()
 // 	defer rf.mu.Unlock()
@@ -458,7 +461,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	}
 	// fmt.Printf("此时同步的日志为%v\n",len(logEntrys))
 	// 找到了第一个不同的index，开始同步日志
-	var tempLogs []*Entry
+	var tempLogs []*Entry // 自动会在写入磁盘文件后进行清零的操作
 	for i, logEntry := range logEntrys {
 		index := int(args.PrevLogIndex) + 1 + i
 		logPos := rf.index2LogPos(index)
@@ -471,9 +474,9 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		}
 		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
 			rf.log = append(rf.log, logEntry)
-			tempLogs = append(tempLogs, &entry)		// 将要写入磁盘文件的结构体暂存，批量存储。
+			tempLogs = append(tempLogs, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
 
-			if index == rf.lastIndex() {			// 已经将日志补足后，开始批量写入
+			if index == rf.lastIndex() { // 已经将日志补足后，开始批量写入
 				// offsets1, err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
 				go rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
 				// rf.Offsets = append(rf.Offsets, offsets1...)
@@ -519,6 +522,9 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	index := -1
 	term := -1
 	isLeader := true
+	var buffer bytes.Buffer
+	enc := gob.NewEncoder(&buffer)
+	var fileSizeLimit int64 = 3 * 1024 * 1024 // 3MB
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	// 只有leader才能写入
@@ -541,9 +547,20 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Key:         command.(DetailCod).Key,
 		Value:       command.(DetailCod).Value,
 	}
-	arrEntry := []*Entry{&entry}
+	// arrEntry := []*Entry{&entry}
+	rf.batchLog = append(rf.batchLog, &entry)
+	if err := enc.Encode(entry); err != nil {
+		util.EPrintf("Encode error in Start()：%v", err)
+	}
+	rf.batchLogSize += int64(buffer.Len())
+	// 如果总大小超过3MB，截取日志数组并退出循环
+	if rf.batchLogSize >= fileSizeLimit {
+		go rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
+		buffer.Reset()
+		rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
+	}
+
 	// offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
-	go rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// if err != nil {
 	// 	panic(err)
 	// }
