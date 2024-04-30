@@ -116,8 +116,8 @@ func (rf *Raft) GetOffsets() []int64 {
 
 // WriteEntryToFile 将条目写入指定的文件，并返回写入的起始偏移量。
 func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
 	// 打开文件，如果文件不存在则创建
 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
