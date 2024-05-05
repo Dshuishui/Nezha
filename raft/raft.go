@@ -173,7 +173,9 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 		offsets = append(offsets, offset)
 		offset += int64(len(data))
 	}
+	rf.mu.Lock()
 	rf.Offsets = append(rf.Offsets, offsets...)
+	rf.mu.Unlock()
 	// return offsets, nil
 }
 
@@ -526,9 +528,9 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	index := -1
 	term := -1
 	isLeader := true
-	var buffer bytes.Buffer
-	enc := gob.NewEncoder(&buffer)
-	var fileSizeLimit int64 = 1 * 1024 *1024// 1MB
+	// var buffer bytes.Buffer
+	// enc := gob.NewEncoder(&buffer)
+	// var fileSizeLimit int64 = 1 *1024// 1MB
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	
@@ -552,21 +554,23 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Key:         command.(DetailCod).Key,
 		Value:       command.(DetailCod).Value,
 	}
-	// arrEntry := []*Entry{&entry}
-	rf.batchLog = append(rf.batchLog, &entry)
-	if err := enc.Encode(entry); err != nil {
-		util.EPrintf("Encode error in Start()：%v", err)
-	}
-	rf.batchLogSize += int64(buffer.Len())
+	arrEntry := []*Entry{&entry}
+	// rf.batchLog = append(rf.batchLog, &entry)
+	// if err := enc.Encode(entry); err != nil {
+	// 	util.EPrintf("Encode error in Start()：%v", err)
+	// }
+	// rf.batchLogSize += int64(buffer.Len())
 	// 如果总大小超过3MB，截取日志数组并退出循环
-	if rf.batchLogSize >= fileSizeLimit {
-		rf.mu.Unlock()
-		go rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
-		rf.mu.Lock()
-		buffer.Reset()
-		rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
-	}
-	// go rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
+	// if rf.batchLogSize >= fileSizeLimit {
+	// 	rf.mu.Unlock()
+	// 	go rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
+	// 	rf.mu.Lock()
+	// 	buffer.Reset()
+	// 	rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
+	// }
+	rf.mu.Unlock()
+	go rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
+	rf.mu.Lock()
 	// offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// if err != nil {
 	// 	panic(err)
@@ -834,7 +838,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	enc := gob.NewEncoder(&buffer)
 	var totalSize int64
 	var appendLog []LogEntry
-	var threshold int64 = 30 * 1024 * 1024
+	var threshold int64 = 10 * 1024 * 1024
 
 	args := raftrpc.AppendEntriesInRaftRequest{}
 	args.Term = int32(rf.currentTerm)
