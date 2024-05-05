@@ -478,7 +478,9 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 
 			if index == rf.lastIndex() { // 已经将日志补足后，开始批量写入
 				// offsets1, err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
+				rf.mu.Unlock()
 				go rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
+				rf.mu.Lock()
 				// rf.Offsets = append(rf.Offsets, offsets1...)
 				// if err != nil {
 				// 	fmt.Println("这里有问题嘛")
@@ -495,7 +497,9 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				rf.Offsets = rf.Offsets[:logPos] // 删除当前错误的offset，以及后续的所有
 				arrEntry := []*Entry{&entry}     // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
 				// offsets2, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
+				rf.mu.Unlock()
 				go rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
+				rf.mu.Lock()
 				// rf.Offsets = append(rf.Offsets, offsets2[0])
 				// if err != nil {
 				// 	panic(err)
@@ -522,11 +526,12 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	index := -1
 	term := -1
 	isLeader := true
-	// var buffer bytes.Buffer
-	// enc := gob.NewEncoder(&buffer)
-	// var fileSizeLimit int64 = 1 * 1024 // 3MB
+	var buffer bytes.Buffer
+	enc := gob.NewEncoder(&buffer)
+	var fileSizeLimit int64 = 1 * 1024 *1024// 1MB
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	
 	// 只有leader才能写入
 	if rf.role != ROLE_LEADER {
 		// fmt.Println("到这了嘛3")
@@ -547,19 +552,21 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Key:         command.(DetailCod).Key,
 		Value:       command.(DetailCod).Value,
 	}
-	arrEntry := []*Entry{&entry}
-	// rf.batchLog = append(rf.batchLog, &entry)
-	// if err := enc.Encode(entry); err != nil {
-	// 	util.EPrintf("Encode error in Start()：%v", err)
-	// }
-	// rf.batchLogSize += int64(buffer.Len())
+	// arrEntry := []*Entry{&entry}
+	rf.batchLog = append(rf.batchLog, &entry)
+	if err := enc.Encode(entry); err != nil {
+		util.EPrintf("Encode error in Start()：%v", err)
+	}
+	rf.batchLogSize += int64(buffer.Len())
 	// 如果总大小超过3MB，截取日志数组并退出循环
-	// if rf.batchLogSize >= fileSizeLimit {
-		// go rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
-		// buffer.Reset()
-		// rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
-	// }
-	go rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
+	if rf.batchLogSize >= fileSizeLimit {
+		rf.mu.Unlock()
+		go rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
+		rf.mu.Lock()
+		buffer.Reset()
+		rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
+	}
+	// go rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// if err != nil {
 	// 	panic(err)
@@ -1194,9 +1201,9 @@ func (rf *Raft) applyLogLoop() {
 
 			noMore = true
 			// fmt.Printf("此时的commitIndex是多少：%v",rf.commitIndex)
-			// if (rf.commitIndex > rf.lastApplied) && ((rf.lastApplied - rf.shotOffset) <
-			//  len(rf.Offsets)) {
-			if rf.commitIndex > rf.lastApplied {
+			if (rf.commitIndex > rf.lastApplied) && ((rf.lastApplied - rf.shotOffset) <
+			 len(rf.Offsets)) {
+			// if rf.commitIndex > rf.lastApplied {
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				rf.lastApplied += 1
 				// util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
