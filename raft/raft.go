@@ -1194,7 +1194,7 @@ func (rf *Raft) applyLogLoop() {
 
 			noMore = true
 			// fmt.Printf("此时的commitIndex是多少：%v",rf.commitIndex)
-			if (rf.commitIndex > rf.lastApplied) && ((rf.lastApplied - rf.shotOffset - 1) <
+			if (rf.commitIndex > rf.lastApplied) && ((rf.lastApplied - rf.shotOffset) <
 			 len(rf.Offsets)) {
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				rf.lastApplied += 1
