@@ -532,11 +532,11 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// enc := gob.NewEncoder(&buffer)
 	// var fileSizeLimit int64 = 1 *1024// 1MB
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	
 	// 只有leader才能写入
 	if rf.role != ROLE_LEADER {
 		// fmt.Println("到这了嘛3")
+		rf.mu.Unlock()
 		return -1, -1, false
 	}
 	logEntry := LogEntry{
@@ -570,7 +570,6 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// }
 	rf.mu.Unlock()
 	go rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
-	rf.mu.Lock()
 	// offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// if err != nil {
 	// 	panic(err)
@@ -1271,7 +1270,7 @@ func Make(peers []string, me int,
 	rf.persister = persister
 	rf.me = me
 	for i := 0; i < 3; i++ {
-		rf.SyncChans = append(rf.SyncChans, make(chan string, 100))
+		rf.SyncChans = append(rf.SyncChans, make(chan string, 1000))
 	}
 
 	rf.role = ROLE_FOLLOWER
