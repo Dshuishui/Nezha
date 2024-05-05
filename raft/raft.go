@@ -838,7 +838,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	enc := gob.NewEncoder(&buffer)
 	var totalSize int64
 	var appendLog []LogEntry
-	var threshold int64 = 10 * 1024 * 1024
+	var threshold int64 = 30 * 1024 * 1024
 
 	args := raftrpc.AppendEntriesInRaftRequest{}
 	args.Term = int32(rf.currentTerm)
@@ -1205,9 +1205,9 @@ func (rf *Raft) applyLogLoop() {
 
 			noMore = true
 			// fmt.Printf("此时的commitIndex是多少：%v",rf.commitIndex)
-			if (rf.commitIndex > rf.lastApplied) && ((rf.lastApplied - rf.shotOffset) <
-			 len(rf.Offsets)) {
-			// if rf.commitIndex > rf.lastApplied {
+			// if (rf.commitIndex > rf.lastApplied) && ((rf.lastApplied - rf.shotOffset) <
+			//  len(rf.Offsets)) {
+			if rf.commitIndex > rf.lastApplied {
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				rf.lastApplied += 1
 				// util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
