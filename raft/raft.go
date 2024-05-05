@@ -524,7 +524,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	isLeader := true
 	var buffer bytes.Buffer
 	enc := gob.NewEncoder(&buffer)
-	var fileSizeLimit int64 = 3 * 1024 * 1024 // 3MB
+	var fileSizeLimit int64 = 1 * 1024 * 1024 // 3MB
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	// 只有leader才能写入
