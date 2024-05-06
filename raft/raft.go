@@ -173,9 +173,9 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64)err
 		offsets = append(offsets, offset)
 		offset += int64(len(data))
 	}
-	rf.mu.Lock()
+	// rf.mu.Lock()
 	rf.Offsets = append(rf.Offsets, offsets...)
-	rf.mu.Unlock()
+	// rf.mu.Unlock()
 	// return offsets, nil
 	return nil
 }
