@@ -115,13 +115,13 @@ func (rf *Raft) GetOffsets() []int64 {
 }
 
 // WriteEntryToFile 将条目写入指定的文件，并返回写入的起始偏移量。
-func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64)error {
+func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64)  {
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
 	// 打开文件，如果文件不存在则创建
 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
-		return fmt.Errorf("打开存储Raft日志的磁盘文件失败：%v", err)
+		 fmt.Errorf("打开存储Raft日志的磁盘文件失败：%v", err)
 	}
 	defer file.Close()
 
@@ -134,12 +134,12 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64)err
 	if startPos == 0 {
 		offset, err = file.Seek(0, os.SEEK_END)
 		if err != nil {
-			return fmt.Errorf("定位存储Raft日志的磁盘文件失败：%v", err)
+			 fmt.Errorf("定位存储Raft日志的磁盘文件失败：%v", err)
 		}
 	} else { // 同步日志时，需要已有的日志与leader的冲突，需要覆盖之前的错误的
 		offset, err = file.Seek(startPos, os.SEEK_SET)
 		if err != nil {
-			return fmt.Errorf("定位存储Raft日志的磁盘文件的起始位置失败：%v", err)
+			 fmt.Errorf("定位存储Raft日志的磁盘文件的起始位置失败：%v", err)
 		}
 	}
 
@@ -160,13 +160,13 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64)err
 		// 写入文件
 		u, err := writer.Write(data)
 		if err != nil || u < len(data) {
-			return fmt.Errorf("写入存储Raft日志的磁盘文件失败：%v", err)
+			 fmt.Errorf("写入存储Raft日志的磁盘文件失败：%v", err)
 		}
 
 		// 刷新缓冲区以确保数据被写入文件
 		err = writer.Flush()
 		if err != nil {
-			return fmt.Errorf("刷新缓冲区失败：%v", err)
+			 fmt.Errorf("刷新缓冲区失败：%v", err)
 		}
 
 		// 添加偏移量到数组中
@@ -177,7 +177,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64)err
 	rf.Offsets = append(rf.Offsets, offsets...)
 	// rf.mu.Unlock()
 	// return offsets, nil
-	return nil
+	// return nil
 }
 
 // func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) (offsets []int64, err error) {
@@ -482,13 +482,13 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			if index == rf.lastIndex() { // 已经将日志补足后，开始批量写入
 				// offsets1, err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
 				rf.mu.Unlock()
-				// go rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
-				go func() {
-					err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
-					if err != nil {
-						fmt.Println("Error in WriteEntryToFile:", err)
-					}
-				}()
+				go rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
+				// go func() {
+				// 	err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
+				// 	if err != nil {
+				// 		fmt.Println("Error in WriteEntryToFile:", err)
+				// 	}
+				// }()
 				rf.mu.Lock()
 				// rf.Offsets = append(rf.Offsets, offsets1...)
 				// if err != nil {
@@ -507,13 +507,13 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				arrEntry := []*Entry{&entry}     // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
 				// offsets2, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
 				rf.mu.Unlock()
-				// go rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
-				go func() {
-					err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
-					if err != nil {
-						fmt.Println("Error in WriteEntryToFile:", err)
-					}
-				}()
+				go rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
+				// go func() {
+				// 	err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
+				// 	if err != nil {
+				// 		fmt.Println("Error in WriteEntryToFile:", err)
+				// 	}
+				// }()
 				rf.mu.Lock()
 				// rf.Offsets = append(rf.Offsets, offsets2[0])
 				// if err != nil {
@@ -576,13 +576,13 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// 如果总大小超过3MB，截取日志数组并退出循环
 	if rf.batchLogSize >= fileSizeLimit {
 		rf.mu.Unlock()
-		// go rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
-		go func() {
-			err := rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
-			if err != nil {
-				fmt.Println("Error in WriteEntryToFile:", err)
-			}
-		}()
+		go rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
+		// go func() {
+		// 	err := rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
+		// 	if err != nil {
+		// 		fmt.Println("Error in WriteEntryToFile:", err)
+		// 	}
+		// }()
 		buffer.Reset()
 		rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
 		return int32(index), int32(term), isLeader
