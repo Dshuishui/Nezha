@@ -541,9 +541,9 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	index := -1
 	term := -1
 	isLeader := true
-	var buffer bytes.Buffer
-	enc := gob.NewEncoder(&buffer)
-	var fileSizeLimit int64 = 6 * 1024 * 1024 // 6MB
+	// var buffer bytes.Buffer
+	// enc := gob.NewEncoder(&buffer)
+	// var fileSizeLimit int64 = 1 * 1024 * 1024 // 6MB
 	rf.mu.Lock()
 
 	// 只有leader才能写入
@@ -567,28 +567,28 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Key:         command.(DetailCod).Key,
 		Value:       command.(DetailCod).Value,
 	}
-	// arrEntry := []*Entry{&entry}
-	rf.batchLog = append(rf.batchLog, &entry)
-	if err := enc.Encode(entry); err != nil {
-		util.EPrintf("Encode error in Start()：%v", err)
-	}
-	rf.batchLogSize += int64(buffer.Len())
+	arrEntry := []*Entry{&entry}
+	// rf.batchLog = append(rf.batchLog, &entry)
+	// if err := enc.Encode(entry); err != nil {
+	// 	util.EPrintf("Encode error in Start()：%v", err)
+	// }
+	// rf.batchLogSize += int64(buffer.Len())
 	// 如果总大小超过3MB，截取日志数组并退出循环
-	if rf.batchLogSize >= fileSizeLimit {
-		rf.mu.Unlock()
-		go rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
-		// go func() {
-		// 	err := rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
-		// 	if err != nil {
-		// 		fmt.Println("Error in WriteEntryToFile:", err)
-		// 	}
-		// }()
-		buffer.Reset()
-		rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
-		return int32(index), int32(term), isLeader
-	}
+	// if rf.batchLogSize >= fileSizeLimit {
+	// 	rf.mu.Unlock()
+	// go rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
+	// go func() {
+	// 	err := rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
+	// 	if err != nil {
+	// 		fmt.Println("Error in WriteEntryToFile:", err)
+	// 	}
+	// }()
+	// buffer.Reset()
+	// rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
+	// return int32(index), int32(term), isLeader
+	// }
 	rf.mu.Unlock()
-	// go rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
+	go rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// if err != nil {
 	// 	panic(err)
