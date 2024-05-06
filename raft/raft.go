@@ -115,13 +115,13 @@ func (rf *Raft) GetOffsets() []int64 {
 }
 
 // WriteEntryToFile 将条目写入指定的文件，并返回写入的起始偏移量。
-func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64)  {
+func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
 	// 打开文件，如果文件不存在则创建
 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
-		 fmt.Errorf("打开存储Raft日志的磁盘文件失败：%v", err)
+		fmt.Errorf("打开存储Raft日志的磁盘文件失败：%v", err)
 	}
 	defer file.Close()
 
@@ -134,12 +134,12 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64)  {
 	if startPos == 0 {
 		offset, err = file.Seek(0, os.SEEK_END)
 		if err != nil {
-			 fmt.Errorf("定位存储Raft日志的磁盘文件失败：%v", err)
+			fmt.Errorf("定位存储Raft日志的磁盘文件失败：%v", err)
 		}
 	} else { // 同步日志时，需要已有的日志与leader的冲突，需要覆盖之前的错误的
 		offset, err = file.Seek(startPos, os.SEEK_SET)
 		if err != nil {
-			 fmt.Errorf("定位存储Raft日志的磁盘文件的起始位置失败：%v", err)
+			fmt.Errorf("定位存储Raft日志的磁盘文件的起始位置失败：%v", err)
 		}
 	}
 
@@ -160,13 +160,13 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64)  {
 		// 写入文件
 		u, err := writer.Write(data)
 		if err != nil || u < len(data) {
-			 fmt.Errorf("写入存储Raft日志的磁盘文件失败：%v", err)
+			fmt.Errorf("写入存储Raft日志的磁盘文件失败：%v", err)
 		}
 
 		// 刷新缓冲区以确保数据被写入文件
 		err = writer.Flush()
 		if err != nil {
-			 fmt.Errorf("刷新缓冲区失败：%v", err)
+			fmt.Errorf("刷新缓冲区失败：%v", err)
 		}
 
 		// 添加偏移量到数组中
@@ -543,9 +543,9 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	isLeader := true
 	var buffer bytes.Buffer
 	enc := gob.NewEncoder(&buffer)
-	var fileSizeLimit int64 = 6 *1024*1024// 6MB
+	var fileSizeLimit int64 = 6 * 1024 * 1024 // 6MB
 	rf.mu.Lock()
-	
+
 	// 只有leader才能写入
 	if rf.role != ROLE_LEADER {
 		// fmt.Println("到这了嘛3")
@@ -1224,8 +1224,8 @@ func (rf *Raft) applyLogLoop() {
 			noMore = true
 			// fmt.Printf("此时的commitIndex是多少：%v",rf.commitIndex)
 			if (rf.commitIndex > rf.lastApplied) && ((rf.lastApplied - rf.shotOffset) <
-			 len(rf.Offsets)) {
-			// if rf.commitIndex > rf.lastApplied {
+				len(rf.Offsets)) {
+				// if rf.commitIndex > rf.lastApplied {
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				rf.lastApplied += 1
 				// util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
