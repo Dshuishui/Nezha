@@ -173,9 +173,9 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 		offsets = append(offsets, offset)
 		offset += int64(len(data))
 	}
-	// rf.mu.Lock()
+	rf.mu.Lock()
 	rf.Offsets = append(rf.Offsets, offsets...)
-	// rf.mu.Unlock()
+	rf.mu.Unlock()
 	// return offsets, nil
 }
 
@@ -530,7 +530,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	isLeader := true
 	var buffer bytes.Buffer
 	enc := gob.NewEncoder(&buffer)
-	var fileSizeLimit int64 = 6 *1024*1024// 6MB
+	var fileSizeLimit int64 = 6 *1024// 6MB
 	rf.mu.Lock()
 	
 	// 只有leader才能写入
