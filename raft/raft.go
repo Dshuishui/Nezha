@@ -173,9 +173,9 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64)err
 		offsets = append(offsets, offset)
 		offset += int64(len(data))
 	}
-	// rf.mu.Lock()
+	rf.mu.Lock()
 	rf.Offsets = append(rf.Offsets, offsets...)
-	// rf.mu.Unlock()
+	rf.mu.Unlock()
 	// return offsets, nil
 	return nil
 }
@@ -583,9 +583,9 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 				fmt.Println("Error in WriteEntryToFile:", err)
 			}
 		}()
-		rf.mu.Lock()
 		buffer.Reset()
 		rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
+		return int32(index), int32(term), isLeader
 	}
 	rf.mu.Unlock()
 	// go rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
