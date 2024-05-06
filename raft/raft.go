@@ -1,7 +1,7 @@
 package raft
 
 import (
-	"bufio"
+	// "bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -126,7 +126,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 	defer file.Close()
 
 	// 包装文件对象以进行缓冲写入
-	writer := bufio.NewWriter(file)
+	// writer := bufio.NewWriter(file)
 
 	// 获取当前写入位置，即为返回的偏移量
 	var offset int64
@@ -158,17 +158,20 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 		copy(data[20+keySize:], entry.Value)
 
 		// 写入文件
-		u, err := writer.Write(data)
-		if err != nil || u < len(data) {
-			fmt.Errorf("写入存储Raft日志的磁盘文件失败：%v", err)
-		}
+		// u, err := writer.Write(data)
+		// if err != nil || u < len(data) {
+		// 	fmt.Errorf("写入存储Raft日志的磁盘文件失败：%v", err)
+		// }
 
 		// 刷新缓冲区以确保数据被写入文件
-		err = writer.Flush()
+		// err = writer.Flush()
+		// if err != nil {
+		// 	fmt.Errorf("刷新缓冲区失败：%v", err)
+		// }
+		_, err = file.Write(data)
 		if err != nil {
-			fmt.Errorf("刷新缓冲区失败：%v", err)
+			fmt.Println("写入存储Raft日志的磁盘文件有问题")
 		}
-
 		// 添加偏移量到数组中
 		offsets = append(offsets, offset)
 		offset += int64(len(data))
