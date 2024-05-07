@@ -471,10 +471,11 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	// fmt.Printf("此时同步的日志为%v\n",len(logEntrys))
 	// 找到了第一个不同的index，开始同步日志
 	// var tempLogs []*Entry // 自动会在写入磁盘文件后进行清零的操作
+	var entry Entry
 	for i, logEntry := range logEntrys {
 		index := int(args.PrevLogIndex) + 1 + i
 		logPos := rf.index2LogPos(index)
-		entry := Entry{
+		entry = Entry{
 			Index:       uint32(logEntry.Command.Index),
 			CurrentTerm: uint32(logEntry.Command.Term),
 			VotedFor:    uint32(rf.leaderId),
