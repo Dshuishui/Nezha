@@ -1293,7 +1293,7 @@ func Make(peers []string, me int,
 	rf.persister = persister
 	rf.me = me
 	for i := 0; i < 3; i++ {
-		rf.SyncChans = append(rf.SyncChans, make(chan string, 600))
+		rf.SyncChans = append(rf.SyncChans, make(chan string, 100))
 	}
 
 	rf.role = ROLE_FOLLOWER
