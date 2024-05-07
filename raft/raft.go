@@ -858,7 +858,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	enc := gob.NewEncoder(&buffer)
 	var totalSize int64
 	var appendLog []LogEntry
-	var threshold int64 = 10 * 1024 * 1024
+	var threshold int64 = 20 * 1024 * 1024
 
 	args := raftrpc.AppendEntriesInRaftRequest{}
 	args.Term = int32(rf.currentTerm)
@@ -1279,7 +1279,7 @@ func Make(peers []string, me int,
 	rf.persister = persister
 	rf.me = me
 	for i := 0; i < 3; i++ {
-		rf.SyncChans = append(rf.SyncChans, make(chan string, 1000))
+		rf.SyncChans = append(rf.SyncChans, make(chan string, 10))
 	}
 
 	rf.role = ROLE_FOLLOWER
