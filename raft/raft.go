@@ -75,6 +75,7 @@ var threshold int64 = 30 * 1024 * 1024
 var buffer bytes.Buffer
 var entry Entry
 var arrEntry []*Entry
+var enc = gob.NewEncoder(&buffer)
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
@@ -113,7 +114,7 @@ type Raft struct {
 	SyncTime       int
 	SyncChans      []chan string
 	batchLog       []*Entry
-	batchLogSize   int64
+	// batchLogSize   int64
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -474,9 +475,11 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	// fmt.Printf("此时同步的日志为%v\n",len(logEntrys))
 	// 找到了第一个不同的index，开始同步日志
 	// var tempLogs []*Entry // 自动会在写入磁盘文件后进行清零的操作
+	var index int 
+	var logPos int 
 	for i, logEntry := range logEntrys {
-		index := int(args.PrevLogIndex) + 1 + i
-		logPos := rf.index2LogPos(index)
+		index = int(args.PrevLogIndex) + 1 + i
+		logPos = rf.index2LogPos(index)
 		entry = Entry{
 			Index:       uint32(logEntry.Command.Index),
 			CurrentTerm: uint32(logEntry.Command.Term),
@@ -860,8 +863,8 @@ func (rf *Raft) updateCommitIndex() {
 
 // 已兼容snapshot
 func (rf *Raft) doAppendEntries(peerId int) {
-	enc := gob.NewEncoder(&buffer)
-	rf.batchLogSize = 0
+	// enc := gob.NewEncoder(&buffer)
+	// rf.batchLogSize = 0
 	var appendLog []LogEntry
 
 	args := raftrpc.AppendEntriesInRaftRequest{}
@@ -880,20 +883,20 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// }else{
 	// 	appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
 	// }
-
+	var batchLogSize int64
 	// 设置日志同步的阈值
 	for i := rf.index2LogPos(int(args.PrevLogIndex) + 1); i < len(rf.log); i++ {
 		if err := enc.Encode(rf.log[i]); err != nil { // 将 rf.log[i] 日志项编码后的字节序列写入到 buffer 缓冲区中
 			util.EPrintf("Encode error：%v", err)
 		}
-		rf.batchLogSize += int64(buffer.Len())
+		batchLogSize = int64(buffer.Len())
 		// 如果总大小超过3MB，截取日志数组并退出循环
-		if rf.batchLogSize >= threshold {
+		if batchLogSize >= threshold {
 			appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i]
 			break
 		}
 	}
-	if rf.batchLogSize < threshold {
+	if batchLogSize < threshold {
 		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
 	}
 	buffer.Reset()
