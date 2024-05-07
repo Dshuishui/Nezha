@@ -544,9 +544,9 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	index := -1
 	term := -1
 	isLeader := true
-	var buffer bytes.Buffer
-	enc := gob.NewEncoder(&buffer)
-	var fileSizeLimit int64 = 10 * 1024 * 1024 // 6MB
+	// var buffer bytes.Buffer
+	// enc := gob.NewEncoder(&buffer)
+	// var fileSizeLimit int64 = 10 * 1024 * 1024 // 6MB
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -570,26 +570,26 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Key:         command.(DetailCod).Key,
 		Value:       command.(DetailCod).Value,
 	}
-	// arrEntry := []*Entry{&entry}
-	rf.batchLog = append(rf.batchLog, &entry)
-	if err := enc.Encode(entry); err != nil {
-		util.EPrintf("Encode error in Start()：%v", err)
-	}
-	rf.batchLogSize += int64(buffer.Len())
-	// 如果总大小超过3MB，截取日志数组并退出循环
-	if rf.batchLogSize >= fileSizeLimit {
-		rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
+	arrEntry := []*Entry{&entry}
+	// rf.batchLog = append(rf.batchLog, &entry)
+	// if err := enc.Encode(entry); err != nil {
+	// 	util.EPrintf("Encode error in Start()：%v", err)
+	// }
+	// rf.batchLogSize += int64(buffer.Len())
+	// // 如果总大小超过3MB，截取日志数组并退出循环
+	// if rf.batchLogSize >= fileSizeLimit {
+	// 	rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
 		// go func() {
 		// 	err := rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
 		// 	if err != nil {
 		// 		fmt.Println("Error in WriteEntryToFile:", err)
 		// 	}
 		// }()
-		buffer.Reset()
-		rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
-	}
+	// 	buffer.Reset()
+	// 	rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
+	// }
 	// rf.mu.Unlock()
-	// rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
+	rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// if err != nil {
 	// 	panic(err)
@@ -1305,7 +1305,7 @@ func Make(peers []string, me int,
 		Dial:                 pool.Dial,
 		MaxIdle:              150,
 		MaxActive:            300,
-		MaxConcurrentStreams: 1000,
+		MaxConcurrentStreams: 800,
 		Reuse:                true,
 	}
 	// 根据servers的地址，创建了一一对应server地址的grpc连接池
