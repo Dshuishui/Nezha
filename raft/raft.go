@@ -485,7 +485,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			if index == rf.lastIndex() { // 已经将日志补足后，开始批量写入
 				// offsets1, err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
 				rf.mu.Unlock()
-				go rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
+				rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
 				// go func() {
 				// 	err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
 				// 	if err != nil {
@@ -510,7 +510,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				arrEntry := []*Entry{&entry}     // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
 				// offsets2, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
 				rf.mu.Unlock()
-				go rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
+				rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
 				// go func() {
 				// 	err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
 				// 	if err != nil {
@@ -591,7 +591,8 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// return int32(index), int32(term), isLeader
 	// }
 	rf.mu.Unlock()
-	go rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
+	// go rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
+	rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// if err != nil {
 	// 	panic(err)
@@ -859,7 +860,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	enc := gob.NewEncoder(&buffer)
 	var totalSize int64
 	var appendLog []LogEntry
-	var threshold int64 = 12 * 1024 * 1024
+	var threshold int64 = 15 * 1024 * 1024
 
 	args := raftrpc.AppendEntriesInRaftRequest{}
 	args.Term = int32(rf.currentTerm)
