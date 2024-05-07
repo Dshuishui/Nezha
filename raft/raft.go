@@ -72,8 +72,6 @@ const ROLE_FOLLOWER = "Follower"
 const ROLE_CANDIDATES = "Candidates"
 
 var threshold int64 = 30 * 1024 * 1024
-var buffer bytes.Buffer
-var entry Entry
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
@@ -569,7 +567,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	rf.log = append(rf.log, logEntry)
 	index = rf.lastIndex()
 	term = rf.currentTerm
-	entry = Entry{
+	entry := Entry{
 		Index:       uint32(index),
 		CurrentTerm: uint32(term),
 		VotedFor:    uint32(rf.leaderId),
@@ -859,7 +857,9 @@ func (rf *Raft) updateCommitIndex() {
 
 // 已兼容snapshot
 func (rf *Raft) doAppendEntries(peerId int) {
+	var buffer bytes.Buffer
 	enc := gob.NewEncoder(&buffer)
+	var totalSize int64
 	var appendLog []LogEntry
 
 	args := raftrpc.AppendEntriesInRaftRequest{}
@@ -878,20 +878,20 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// }else{
 	// 	appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
 	// }
-	var batchLogSize int64
+
 	// 设置日志同步的阈值
 	for i := rf.index2LogPos(int(args.PrevLogIndex) + 1); i < len(rf.log); i++ {
 		if err := enc.Encode(rf.log[i]); err != nil { // 将 rf.log[i] 日志项编码后的字节序列写入到 buffer 缓冲区中
-			util.EPrintf("Encode error：%v", err)
+			util.EPrintf("Encode error：", err)
 		}
-		batchLogSize = int64(buffer.Len())
+		totalSize += int64(buffer.Len())
 		// 如果总大小超过3MB，截取日志数组并退出循环
-		if batchLogSize >= threshold {
+		if totalSize >= threshold {
 			appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i]
 			break
 		}
 	}
-	if batchLogSize < threshold {
+	if totalSize < threshold {
 		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
 	}
 	buffer.Reset()
