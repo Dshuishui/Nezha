@@ -74,8 +74,6 @@ const ROLE_CANDIDATES = "Candidates"
 var threshold int64 = 30 * 1024 * 1024
 var buffer bytes.Buffer
 var entry Entry
-var arrEntry []*Entry
-var enc = gob.NewEncoder(&buffer)
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
@@ -114,7 +112,7 @@ type Raft struct {
 	SyncTime       int
 	SyncChans      []chan string
 	batchLog       []*Entry
-	// batchLogSize   int64
+	batchLogSize   int64
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -475,12 +473,10 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	// fmt.Printf("此时同步的日志为%v\n",len(logEntrys))
 	// 找到了第一个不同的index，开始同步日志
 	// var tempLogs []*Entry // 自动会在写入磁盘文件后进行清零的操作
-	var index int 
-	var logPos int 
 	for i, logEntry := range logEntrys {
-		index = int(args.PrevLogIndex) + 1 + i
-		logPos = rf.index2LogPos(index)
-		entry = Entry{
+		index := int(args.PrevLogIndex) + 1 + i
+		logPos := rf.index2LogPos(index)
+		entry := Entry{
 			Index:       uint32(logEntry.Command.Index),
 			CurrentTerm: uint32(logEntry.Command.Term),
 			VotedFor:    uint32(rf.leaderId),
@@ -580,7 +576,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Key:         command.(DetailCod).Key,
 		Value:       command.(DetailCod).Value,
 	}
-	arrEntry = []*Entry{&entry}
+	arrEntry := []*Entry{&entry}
 	// rf.batchLog = append(rf.batchLog, &entry)
 	// if err := enc.Encode(entry); err != nil {
 	// 	util.EPrintf("Encode error in Start()：%v", err)
@@ -863,8 +859,7 @@ func (rf *Raft) updateCommitIndex() {
 
 // 已兼容snapshot
 func (rf *Raft) doAppendEntries(peerId int) {
-	// enc := gob.NewEncoder(&buffer)
-	// rf.batchLogSize = 0
+	enc := gob.NewEncoder(&buffer)
 	var appendLog []LogEntry
 
 	args := raftrpc.AppendEntriesInRaftRequest{}
