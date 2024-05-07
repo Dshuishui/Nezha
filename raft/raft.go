@@ -72,8 +72,9 @@ const ROLE_FOLLOWER = "Follower"
 const ROLE_CANDIDATES = "Candidates"
 
 var threshold int64 = 30 * 1024 * 1024
-var entry Entry
 var buffer bytes.Buffer
+var entry Entry
+var arrEntry []*Entry
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
@@ -476,7 +477,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	for i, logEntry := range logEntrys {
 		index := int(args.PrevLogIndex) + 1 + i
 		logPos := rf.index2LogPos(index)
-		entry := Entry{
+		entry = Entry{
 			Index:       uint32(logEntry.Command.Index),
 			CurrentTerm: uint32(logEntry.Command.Term),
 			VotedFor:    uint32(rf.leaderId),
@@ -576,7 +577,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Key:         command.(DetailCod).Key,
 		Value:       command.(DetailCod).Value,
 	}
-	arrEntry := []*Entry{&entry}
+	arrEntry = []*Entry{&entry}
 	// rf.batchLog = append(rf.batchLog, &entry)
 	// if err := enc.Encode(entry); err != nil {
 	// 	util.EPrintf("Encode error in Start()：%v", err)
