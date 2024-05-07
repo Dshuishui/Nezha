@@ -578,7 +578,6 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	rf.batchLogSize += int64(buffer.Len())
 	// 如果总大小超过3MB，截取日志数组并退出循环
 	if rf.batchLogSize >= fileSizeLimit {
-		rf.mu.Unlock()
 		rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
 		// go func() {
 		// 	err := rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
@@ -1304,9 +1303,9 @@ func Make(peers []string, me int,
 	// 这就是自己修改grpc线程池option参数的做法
 	DesignOptions := pool.Options{
 		Dial:                 pool.Dial,
-		MaxIdle:              330,
-		MaxActive:            500,
-		MaxConcurrentStreams: 100,
+		MaxIdle:              150,
+		MaxActive:            300,
+		MaxConcurrentStreams: 1000,
 		Reuse:                true,
 	}
 	// 根据servers的地址，创建了一一对应server地址的grpc连接池
