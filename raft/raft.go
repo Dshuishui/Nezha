@@ -965,9 +965,9 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				}
 				// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
 			}
-			rf.SyncChans[peerId] <- rf.peers[peerId]
+			// rf.SyncChans[peerId] <- rf.peers[peerId]
 		} else {
-			rf.SyncChans[peerId] <- rf.peers[peerId]
+			// rf.SyncChans[peerId] <- rf.peers[peerId]
 		}
 	}(peerId)
 }
@@ -1033,17 +1033,17 @@ func (rf *Raft) appendEntriesLoop() {
 			rf.mu.Unlock()
 			// 向所有follower发送心跳
 			// for peerId := 0; peerId < len(rf.peers); peerId++ {
-			// for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
-			// 	if peerId == rf.me {
-			// 		continue
-			// 	}
-			// 	if Heartbeat%2 == 0 {
-			// 		rf.doHeartBeat(peerId)
-			// 	} else {
-			// 		// util.DPrintf("发送同步日志给节点[%v]",peerId)
-			// 		rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
-			// 	}
-			// }
+			for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
+				if peerId == rf.me {
+					continue
+				}
+				if Heartbeat%2 == 0 {
+					rf.doHeartBeat(peerId)
+				} else {
+					// util.DPrintf("发送同步日志给节点[%v]",peerId)
+					rf.doAppendEntries(peerId) // 还要考虑append日志失败的情况
+				}
+			}
 			// rf.mu.Lock()
 			// now := time.Now() // 心跳
 			// if (now.Sub(rf.LastAppendTime) > 300*time.Millisecond) && Heartbeat == 1 {
@@ -1058,35 +1058,35 @@ func (rf *Raft) appendEntriesLoop() {
 				First = false
 			}
 
-			select {
-			case value1 := <-rf.SyncChans[0]:
-				if value1 == "NotLeader" {
-					fmt.Println("被告知不是NotLeader，退出")
-					return
-				}
-				rf.doAppendEntries(0)
-			default:
-			}
+			// select {
+			// case value1 := <-rf.SyncChans[0]:
+			// 	if value1 == "NotLeader" {
+			// 		fmt.Println("被告知不是NotLeader，退出")
+			// 		return
+			// 	}
+			// 	rf.doAppendEntries(0)
+			// default:
+			// }
 
-			select {
-			case value2 := <-rf.SyncChans[1]:
-				if value2 == "NotLeader" {
-					fmt.Println("被告知不是NotLeader，退出")
-					return
-				}
-				rf.doAppendEntries(1)
-			default:
-			}
+			// select {
+			// case value2 := <-rf.SyncChans[1]:
+			// 	if value2 == "NotLeader" {
+			// 		fmt.Println("被告知不是NotLeader，退出")
+			// 		return
+			// 	}
+			// 	rf.doAppendEntries(1)
+			// default:
+			// }
 
-			select {
-			case value3 := <-rf.SyncChans[2]:
-				if value3 == "NotLeader" {
-					fmt.Println("被告知不是NotLeader，退出")
-					return
-				}
-				rf.doAppendEntries(2)
-			default:
-			}
+			// select {
+			// case value3 := <-rf.SyncChans[2]:
+			// 	if value3 == "NotLeader" {
+			// 		fmt.Println("被告知不是NotLeader，退出")
+			// 		return
+			// 	}
+			// 	rf.doAppendEntries(2)
+			// default:
+			// }
 
 			// select { //   日志同步由对方服务器发来的反馈触发，避免过于重复的日志同步
 			// // case value := <-rf.SyncChan:
