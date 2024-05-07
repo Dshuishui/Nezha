@@ -468,7 +468,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	}
 	// fmt.Printf("此时同步的日志为%v\n",len(logEntrys))
 	// 找到了第一个不同的index，开始同步日志
-	var tempLogs []*Entry // 自动会在写入磁盘文件后进行清零的操作
+	// var tempLogs []*Entry // 自动会在写入磁盘文件后进行清零的操作
 	for i, logEntry := range logEntrys {
 		index := int(args.PrevLogIndex) + 1 + i
 		logPos := rf.index2LogPos(index)
@@ -481,12 +481,13 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		}
 		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
 			rf.log = append(rf.log, logEntry)
-			tempLogs = append(tempLogs, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
+			rf.batchLog= append(rf.batchLog, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
 
 			if index == rf.lastIndex() { // 已经将日志补足后，开始批量写入
 				// offsets1, err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
 				// rf.mu.Unlock()
-				rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
+				rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
+				rf.batchLog = rf.batchLog[:0]		// 清空暂存日志的数组
 				// go func() {
 				// 	err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
 				// 	if err != nil {
@@ -858,7 +859,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	enc := gob.NewEncoder(&buffer)
 	var totalSize int64
 	var appendLog []LogEntry
-	var threshold int64 = 20 * 1024 * 1024
+	var threshold int64 = 30 * 1024 * 1024
 
 	args := raftrpc.AppendEntriesInRaftRequest{}
 	args.Term = int32(rf.currentTerm)
