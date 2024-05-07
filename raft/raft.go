@@ -1,11 +1,12 @@
 package raft
 
 import (
-	"bufio"
+	// "bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/gob"
+	"log"
 	"strconv"
 
 	// "encoding/gob"
@@ -118,74 +119,110 @@ func (rf *Raft) GetOffsets() []int64 {
 	return rf.Offsets
 }
 
-// WriteEntryToFile 将条目写入指定的文件，并返回写入的起始偏移量。
 func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
-	// 打开文件，如果文件不存在则创建
 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
-		fmt.Errorf("打开存储Raft日志的磁盘文件失败：%v", err)
+		log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
 	}
 	defer file.Close()
-
-	// 包装文件对象以进行缓冲写入
-	writer := bufio.NewWriter(file)
-
 	// 获取当前写入位置，即为返回的偏移量
 	var offset int64
 	var offsets []int64
+	// 预分配足够大的偏移量切片，避免了在循环中动态扩容偏移量切片的操作
+	offsets = make([]int64, len(e))
 	if startPos == 0 {
 		offset, err = file.Seek(0, os.SEEK_END)
 		if err != nil {
-			fmt.Errorf("定位存储Raft日志的磁盘文件失败：%v", err)
+			log.Fatalf("定位存储Raft日志的磁盘文件失败：%v", err)
 		}
 	} else { // 同步日志时，需要已有的日志与leader的冲突，需要覆盖之前的错误的
 		offset, err = file.Seek(startPos, os.SEEK_SET)
 		if err != nil {
-			fmt.Errorf("定位存储Raft日志的磁盘文件的起始位置失败：%v", err)
+			log.Fatalf("定位存储Raft日志的磁盘文件的起始位置失败：%v", err)
 		}
 	}
-
-	for _, entry := range e {
-		keySize := uint32(len(entry.Key))
-		valueSize := uint32(len(entry.Value))
-		data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value
-
-		// 将数据编码到byte slice中
-		binary.BigEndian.PutUint32(data[0:4], entry.Index)
-		binary.BigEndian.PutUint32(data[4:8], entry.CurrentTerm)
-		binary.BigEndian.PutUint32(data[8:12], entry.VotedFor)
-		binary.BigEndian.PutUint32(data[12:16], keySize)
-		binary.BigEndian.PutUint32(data[16:20], valueSize)
-		copy(data[20:20+keySize], entry.Key)
-		copy(data[20+keySize:], entry.Value)
-
-		// 写入文件
-		u, err := writer.Write(data)
-		if err != nil || u < len(data) {
-			fmt.Errorf("写入存储Raft日志的磁盘文件失败：%v", err)
-		}
-
-		// 刷新缓冲区以确保数据被写入文件
-		err = writer.Flush()
+	for i, entry := range e {
+		// 将数据编码并直接写入文件
+		err := binary.Write(file, binary.BigEndian, entry)
 		if err != nil {
-			fmt.Errorf("刷新缓冲区失败：%v", err)
+			log.Fatalf("写入存储Raft日志的磁盘文件失败：%v", err)
 		}
-		// _, err = file.Write(data)
-		// if err != nil {
-		// 	fmt.Println("写入存储Raft日志的磁盘文件有问题")
-		// }
-		// 添加偏移量到数组中
-		offsets = append(offsets, offset)
-		offset += int64(len(data))
+		offsets[i] = offset
+		offset += int64(binary.Size(entry))
 	}
-	// rf.mu.Lock()
 	rf.Offsets = append(rf.Offsets, offsets...)
-	// rf.mu.Unlock()
-	// return offsets, nil
-	// return nil
 }
+
+// WriteEntryToFile 将条目写入指定的文件，并返回写入的起始偏移量。
+// func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
+// 	// rf.mu.Lock()
+// 	// defer rf.mu.Unlock()
+// 	// 打开文件，如果文件不存在则创建
+// 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+// 	if err != nil {
+// 		log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
+// 	}
+// 	defer file.Close()
+
+// 	// 包装文件对象以进行缓冲写入
+// 	writer := bufio.NewWriter(file)
+
+// 	// 获取当前写入位置，即为返回的偏移量
+// 	var offset int64
+// 	var offsets []int64
+
+// 	// 预分配足够大的偏移量切片，避免了在循环中动态扩容偏移量切片的操作
+// 	offsets = make([]int64, len(e))
+
+// 	if startPos == 0 {
+// 		offset, err = file.Seek(0, os.SEEK_END)
+// 		if err != nil {
+// 			log.Fatalf("定位存储Raft日志的磁盘文件失败：%v", err)
+// 		}
+// 	} else { // 同步日志时，需要已有的日志与leader的冲突，需要覆盖之前的错误的
+// 		offset, err = file.Seek(startPos, os.SEEK_SET)
+// 		if err != nil {
+// 			log.Fatalf("定位存储Raft日志的磁盘文件的起始位置失败：%v", err)
+// 		}
+// 	}
+
+// 	for i, entry := range e {
+// 		keySize := uint32(len(entry.Key))
+// 		valueSize := uint32(len(entry.Value))
+// 		data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value
+
+// 		// 将数据编码到byte slice中
+// 		binary.BigEndian.PutUint32(data[0:4], entry.Index)
+// 		binary.BigEndian.PutUint32(data[4:8], entry.CurrentTerm)
+// 		binary.BigEndian.PutUint32(data[8:12], entry.VotedFor)
+// 		binary.BigEndian.PutUint32(data[12:16], keySize)
+// 		binary.BigEndian.PutUint32(data[16:20], valueSize)
+// 		copy(data[20:20+keySize], entry.Key)
+// 		copy(data[20+keySize:], entry.Value)
+
+// 		// 写入文件
+// 		u, err := writer.Write(data)
+// 		if err != nil || u < len(data) {
+// 			log.Fatalf("写入存储Raft日志的磁盘文件失败：%v", err)
+// 		}
+
+// 		// _, err = file.Write(data)
+// 		// if err != nil {
+// 		// 	fmt.Println("写入存储Raft日志的磁盘文件有问题")
+// 		// }
+// 		// 添加偏移量到数组中
+// 		// offsets = append(offsets, offset)
+// 		offsets[i] = offset
+// 		offset += int64(len(data))
+// 	}
+// 	// 刷新缓冲区以确保数据被写入文件
+// 	err = writer.Flush()
+// 	if err != nil {
+// 		log.Fatalf("刷新缓冲区失败：%v", err)
+// 	}	
+
+// 	rf.Offsets = append(rf.Offsets, offsets...)
+// }
 
 // func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) (offsets []int64, err error) {
 // 	rf.mu.Lock()
@@ -276,7 +313,6 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 // 	return offsets, nil
 // }
 
-// ReadValueFromFile 从指定的偏移量读取value
 func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, error) {
 	// 打开文件
 	file, err := os.Open(filename)
@@ -284,36 +320,59 @@ func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, error)
 		return "", err
 	}
 	defer file.Close()
-
 	// 移动到指定偏移量
 	_, err = file.Seek(offset, os.SEEK_SET)
 	if err != nil {
 		fmt.Println("get时，seek文件的位置有问题")
 		return "", err
 	}
-
-	// 读取数据到buffer中，首先是固定长度的20字节
-	data := make([]byte, 20)
-	if _, err := file.Read(data); err != nil {
-		fmt.Println("get时，读取key和value的前20个固定字节时有问题")
-		return "", err
-	}
-
-	// 解析固定长度的字段
-	keySize := binary.BigEndian.Uint64(data[12:16])
-	valueSize := binary.BigEndian.Uint64(data[16:20])
-
-	// 读取Key和Value
-	keyValueBuffer := make([]byte, keySize+valueSize)
-	if _, err := file.Read(keyValueBuffer); err != nil {
-		return "", err
-	}
-
-	// Value是紧跟在Key后面的部分
-	value := string(keyValueBuffer[keySize:])
-
-	return value, nil
+	 // 从文件中读取数据并解码到 entry 结构体中
+	 var entry Entry
+	 err = binary.Read(file, binary.BigEndian, &entry)
+	 if err != nil {
+		 return "", err
+	 }
+	return entry.Value, nil
 }
+
+// ReadValueFromFile 从指定的偏移量读取value
+// func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, error) {
+// 	// 打开文件
+// 	file, err := os.Open(filename)
+// 	if err != nil {
+// 		return "", err
+// 	}
+// 	defer file.Close()
+
+// 	// 移动到指定偏移量
+// 	_, err = file.Seek(offset, os.SEEK_SET)
+// 	if err != nil {
+// 		fmt.Println("get时，seek文件的位置有问题")
+// 		return "", err
+// 	}
+
+// 	// 读取数据到buffer中，首先是固定长度的20字节
+// 	data := make([]byte, 20)
+// 	if _, err := file.Read(data); err != nil {
+// 		fmt.Println("get时，读取key和value的前20个固定字节时有问题")
+// 		return "", err
+// 	}
+
+// 	// 解析固定长度的字段
+// 	keySize := binary.BigEndian.Uint64(data[12:16])
+// 	valueSize := binary.BigEndian.Uint64(data[16:20])
+
+// 	// 读取Key和Value
+// 	keyValueBuffer := make([]byte, keySize+valueSize)
+// 	if _, err := file.Read(keyValueBuffer); err != nil {
+// 		return "", err
+// 	}
+
+// 	// Value是紧跟在Key后面的部分
+// 	value := string(keyValueBuffer[keySize:])
+
+// 	return value, nil
+// }
 
 // save Raft's persistent state to stable storage
 // func (rf *Raft) raftStateForPersist(filePath string, currentTerm int, votedFor int, log []LogEntry) {
