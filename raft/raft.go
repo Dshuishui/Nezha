@@ -72,6 +72,7 @@ const ROLE_FOLLOWER = "Follower"
 const ROLE_CANDIDATES = "Candidates"
 
 var threshold int64 = 30 * 1024 * 1024
+var entry_global Entry
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
@@ -472,9 +473,11 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	// 找到了第一个不同的index，开始同步日志
 	// var tempLogs []*Entry // 自动会在写入磁盘文件后进行清零的操作
 	var entry Entry
+	var index int
+	var logPos int
 	for i, logEntry := range logEntrys {
-		index := int(args.PrevLogIndex) + 1 + i
-		logPos := rf.index2LogPos(index)
+		index = int(args.PrevLogIndex) + 1 + i
+		logPos = rf.index2LogPos(index)
 		entry = Entry{
 			Index:       uint32(logEntry.Command.Index),
 			CurrentTerm: uint32(logEntry.Command.Term),
@@ -568,14 +571,14 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	rf.log = append(rf.log, logEntry)
 	index = rf.lastIndex()
 	term = rf.currentTerm
-	entry := Entry{
+	entry_global = Entry{
 		Index:       uint32(index),
 		CurrentTerm: uint32(term),
 		VotedFor:    uint32(rf.leaderId),
 		Key:         command.(DetailCod).Key,
 		Value:       command.(DetailCod).Value,
 	}
-	arrEntry := []*Entry{&entry}
+	arrEntry := []*Entry{&entry_global}
 	// rf.batchLog = append(rf.batchLog, &entry)
 	// if err := enc.Encode(entry); err != nil {
 	// 	util.EPrintf("Encode error in Start()：%v", err)
