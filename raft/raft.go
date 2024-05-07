@@ -71,12 +71,9 @@ const ROLE_LEADER = "Leader"
 const ROLE_FOLLOWER = "Follower"
 const ROLE_CANDIDATES = "Candidates"
 
-// doappendentries函数内
 var threshold int64 = 30 * 1024 * 1024
-var buffer bytes.Buffer
-// start函数内
 var entry Entry
-var arrEntry []*Entry
+var buffer bytes.Buffer
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
@@ -115,8 +112,7 @@ type Raft struct {
 	SyncTime       int
 	SyncChans      []chan string
 	batchLog       []*Entry
-	appendLog      []LogEntry
-	appendLogSize   int64
+	batchLogSize   int64
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -580,7 +576,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Key:         command.(DetailCod).Key,
 		Value:       command.(DetailCod).Value,
 	}
-	arrEntry = []*Entry{&entry}
+	arrEntry := []*Entry{&entry}
 	// rf.batchLog = append(rf.batchLog, &entry)
 	// if err := enc.Encode(entry); err != nil {
 	// 	util.EPrintf("Encode error in Start()：%v", err)
@@ -864,6 +860,8 @@ func (rf *Raft) updateCommitIndex() {
 // 已兼容snapshot
 func (rf *Raft) doAppendEntries(peerId int) {
 	enc := gob.NewEncoder(&buffer)
+	rf.batchLogSize = 0
+	var appendLog []LogEntry
 
 	args := raftrpc.AppendEntriesInRaftRequest{}
 	args.Term = int32(rf.currentTerm)
@@ -887,20 +885,20 @@ func (rf *Raft) doAppendEntries(peerId int) {
 		if err := enc.Encode(rf.log[i]); err != nil { // 将 rf.log[i] 日志项编码后的字节序列写入到 buffer 缓冲区中
 			util.EPrintf("Encode error：%v", err)
 		}
-		rf.appendLogSize += int64(buffer.Len())
+		rf.batchLogSize += int64(buffer.Len())
 		// 如果总大小超过3MB，截取日志数组并退出循环
-		if rf.appendLogSize >= threshold {
-			rf.appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i]
+		if rf.batchLogSize >= threshold {
+			appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i]
 			break
 		}
 	}
-	if rf.appendLogSize < threshold {
-		rf.appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
+	if rf.batchLogSize < threshold {
+		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
 	}
 	buffer.Reset()
 
 	// fmt.Printf("此时下标会不会有问题，log长度：%v，下标：%v", len(rf.log), args.PrevLogIndex+1)
-	data, _ := json.Marshal(rf.appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
+	data, _ := json.Marshal(appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
 	args.Entries = data
 	// args.Entries = append(args.Entries, rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]...)
 	// util.DPrintf("RaftNode[%d] appendEntries starts,  currentTerm[%d] peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] args.Entries[%d] commitIndex[%d]",
@@ -938,7 +936,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
 			// 因此这里得根据发出RPC请求时的状态做更新，而不要直接对nextIndex和matchIndex做相对加减
 			if reply.Success { // 同步日志成功
-				rf.nextIndex[peerId] = int(args.PrevLogIndex) + len(rf.appendLog) + 1
+				rf.nextIndex[peerId] = int(args.PrevLogIndex) + len(appendLog) + 1
 				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // 记录已经复制到其他server的日志的最后index的情况
 				rf.updateCommitIndex()                           // 更新commitIndex
 			} else {
