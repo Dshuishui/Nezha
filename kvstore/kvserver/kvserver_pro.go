@@ -438,7 +438,7 @@ func (kvs *KVServer) applyLoop() {
 				cmd := msg.Command
 				index := msg.CommandIndex
 				cmdTerm := msg.CommandTerm
-				// offset  := msg.Offset
+				offset  := msg.Offset
 
 				func() {
 					kvs.mu.Lock()
@@ -481,11 +481,11 @@ func (kvs *KVServer) applyLoop() {
 							// kvs.persister.Put(op.Key, indexKey)                    // <key,idnex>,其中index是string类型
 							// addrs := kvs.raft.GetOffsets()		// 拿到raft层的offsets，这个可以优化用通道传输
 							// addr := addrs[op.Index]
-							// positionBytes := make([]byte, binary.MaxVarintLen64)		// 相当于把地址（指向keysize开始处）压缩一下
-							// binary.PutVarint(positionBytes, offset)
-							// kvs.persister.Put(op.Key,positionBytes)		
+							positionBytes := make([]byte, binary.MaxVarintLen64)		// 相当于把地址（指向keysize开始处）压缩一下
+							binary.PutVarint(positionBytes, offset)
+							kvs.persister.Put(op.Key,positionBytes)		
 
-							kvs.persister.Put(op.Key, []byte(op.Value))
+							// kvs.persister.Put(op.Key, op.Value)
 						} else if existOp { // 虽然该请求的处理还未超时，但是已经处理过了。
 							opCtx.ignored = true
 						}
@@ -495,7 +495,7 @@ func (kvs *KVServer) applyLoop() {
 							// value := kvs.persister.Get(op.Key)		leveldb拿取value
 
 							// 从 LevelDB 中获取键对应的值，并解码为整数
-							positionBytes := kvs.persister.Get(op.Key)
+							positionBytes,_ := kvs.persister.Get(op.Key)
 							position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
 							if positionBytes == nil {	//  说明leveldb中没有该key
 								opCtx.keyExist = false
