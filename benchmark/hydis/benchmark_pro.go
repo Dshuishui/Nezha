@@ -206,7 +206,7 @@ func nrand() int64 { //随机生成clientId
 
 func main() {
 	flag.Parse()
-	dataNum := *dnums
+	// dataNum := *dnums
 	valueSize := *vsize
 	servers := strings.Split(*ser, ",")
 	// fmt.Printf("servers:%v\n",servers)
@@ -219,7 +219,7 @@ func main() {
 	// 开始发送请求
 	kvc.batchRawPut(value)
 
-	sum_Size_MB := float64(dataNum*valueSize) / 1000000
+	sum_Size_MB := float64(kvc.goodPut*valueSize) / 1000000
 	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, total %v, goodPut %v, value %v, client %v, Size %vMB\n",
 		time.Since(startTime), float64(sum_Size_MB)/time.Since(startTime).Seconds(), *dnums, kvc.goodPut, *vsize, *cnums, sum_Size_MB)
 }
