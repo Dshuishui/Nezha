@@ -475,8 +475,8 @@ func (kvs *KVServer) applyLoop() {
 							kvs.lastPutTime = time.Now() // 更新put操作时间
 
 							// 将整数编码为字节流并存入 LevelDB
-							indexKey := make([]byte, 4)                            // 假设整数是 int32 类型
-							kvs.persister.Put(op.Key,indexKey)		
+							// indexKey := make([]byte, 4)                            // 假设整数是 int32 类型
+							// kvs.persister.Put(op.Key,indexKey)		
 							// binary.BigEndian.PutUint32(indexKey, uint32(op.Index)) // 这里注意是把op.Index放进去还是对应日志的entry.Command.Index，两者应该都一样
 							// kvs.persister.Put(op.Key, indexKey)                    // <key,idnex>,其中index是string类型
 							// addrs := kvs.raft.GetOffsets()		// 拿到raft层的offsets，这个可以优化用通道传输
@@ -485,7 +485,7 @@ func (kvs *KVServer) applyLoop() {
 							// binary.PutVarint(positionBytes, offset)
 							// kvs.persister.Put(op.Key,positionBytes)		
 
-							// kvs.persister.Put(op.Key, []byte(op.Value))
+							kvs.persister.Put(op.Key, []byte(op.Value))
 						} else if existOp { // 虽然该请求的处理还未超时，但是已经处理过了。
 							opCtx.ignored = true
 						}

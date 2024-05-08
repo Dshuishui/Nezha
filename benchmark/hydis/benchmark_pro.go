@@ -214,7 +214,7 @@ func main() {
 	kvc.Kvservers = servers
 	kvc.clientId = nrand()
 
-	value := make([]byte, *vsize)
+	value := make([]byte, valueSize)
 	startTime := time.Now()
 	// 开始发送请求
 	kvc.batchRawPut(value)
