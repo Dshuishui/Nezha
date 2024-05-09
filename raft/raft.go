@@ -615,11 +615,11 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// enc := gob.NewEncoder(&buffer)
 	// var fileSizeLimit int64 = 10 * 1024 * 1024 // 6MB
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
 	// 只有leader才能写入
 	if rf.role != ROLE_LEADER {
 		// fmt.Println("到这了嘛3")
+		rf.mu.Unlock()
 		return -1, -1, false
 	}
 	logEntry := LogEntry{
@@ -655,7 +655,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// 	buffer.Reset()
 	// 	rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
 	// }
-	// rf.mu.Unlock()
+	rf.mu.Unlock()
 	rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// if err != nil {
@@ -967,7 +967,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
 
 	// if len(appendLog) != 0 { // 除去普通的心跳
-	// rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
+	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
 	// 	// fmt.Println("重置lastAppendTime")
 	// }
 
@@ -1099,7 +1099,6 @@ func (rf *Raft) appendEntriesLoop() {
 			// 	if peerId == rf.me {
 			// 		continue
 			// 	}
-			// now := time.Now() // 心跳
 			// if (now.Sub(rf.LastAppendTime) > 300*time.Millisecond) && Heartbeat == 1 {
 			if First {
 				for peerId := 0; peerId < len(rf.peers); peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
@@ -1110,6 +1109,16 @@ func (rf *Raft) appendEntriesLoop() {
 					rf.doAppendEntries(peerId)
 				}
 				First = false
+			}
+			now := time.Now() // 心跳
+			if (now.Sub(rf.LastAppendTime) > 500*time.Millisecond)  {
+				for peerId := 0; peerId < len(rf.peers); peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
+					if peerId == rf.me {
+						continue
+					}
+					rf.doHeartBeat(peerId)
+				}
+				rf.LastAppendTime = time.Now()
 			}
 
 			select {
