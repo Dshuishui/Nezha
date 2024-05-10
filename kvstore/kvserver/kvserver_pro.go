@@ -447,7 +447,7 @@ func (kvs *KVServer) applyLoop() {
 					kvs.lastAppliedIndex = index
 					// fmt.Println("进入到applyLoop")
 					// 操作日志
-					op := cmd.(raft.DetailCod) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
+					op := cmd.(*raft.DetailCod) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
 
 					if op.OpType == "TermLog" { // 需要进行类型断言才能访问结构体的字段，如果是leader开始第一个Term时发起的空指令，则不用执行。
 						return
