@@ -72,7 +72,7 @@ const ROLE_LEADER = "Leader"
 const ROLE_FOLLOWER = "Follower"
 const ROLE_CANDIDATES = "Candidates"
 
-var threshold int64 = 30 * 1024 * 1024
+var threshold int64 = 10 * 1024 * 1024
 var entry_global Entry
 
 // A Go object implementing a single Raft peer.
@@ -948,6 +948,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// }
 
 	// 设置日志同步的阈值
+	// fmt.Println("The length of appendlog:",len(rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]))
 	for i := rf.index2LogPos(int(args.PrevLogIndex) + 1); i < len(rf.log); i++ {
 		if err := enc.Encode(rf.log[i]); err != nil { // 将 rf.log[i] 日志项编码后的字节序列写入到 buffer 缓冲区中
 			util.EPrintf("Encode error：", err)
