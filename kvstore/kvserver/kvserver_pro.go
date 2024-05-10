@@ -87,7 +87,7 @@ type Op struct {
 
 // 等待Raft提交期间的Op上下文, 用于唤醒阻塞的RPC
 type OpContext struct {
-	op        raft.DetailCod
+	op        *raftrpc.DetailCod
 	committed chan byte
 
 	wrongLeader bool // 因为index位置log的term不一致, 说明leader换过了
@@ -100,7 +100,7 @@ type OpContext struct {
 
 var wg = sync.WaitGroup{}
 
-func newOpContext(op raft.DetailCod) (opCtx *OpContext) {
+func newOpContext(op *raftrpc.DetailCod) (opCtx *OpContext) {
 	opCtx = &OpContext{
 		op:        op,
 		committed: make(chan byte),
@@ -121,7 +121,7 @@ func (kv *KVServer) killed() bool {
 func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInRaftResponse) {
 	reply.Err = raft.OK
 
-	op := raft.DetailCod{
+	op := raftrpc.DetailCod{
 		OpType:   OP_TYPE_GET,
 		Key:      args.Key,
 		ClientId: args.ClientId,
@@ -130,13 +130,13 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInR
 
 	// 写入raft层
 	var isLeader bool
-	op.Index, op.Term, isLeader = kvs.raft.Start(op) // 读操作不需要写入raft日志，即不需要作为日志追加进去
+	op.Index, op.Term, isLeader = kvs.raft.Start(&op) // 读操作不需要写入raft日志，即不需要作为日志追加进去
 	if !isLeader {
 		reply.Err = raft.ErrWrongLeader
 		return reply
 	}
 
-	opCtx := newOpContext(op)
+	opCtx := newOpContext(&op)
 
 	func() {
 		kvs.mu.Lock()
@@ -195,7 +195,7 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 
 func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResponse {
 	reply := &kvrpc.PutInRaftResponse{Err: raft.OK, LeaderId: 0}
-	op := raft.DetailCod{
+	op := raftrpc.DetailCod{
 		OpType:   args.Op,
 		Key:      args.Key,
 		Value:    args.Value,
@@ -205,14 +205,14 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 
 	// 写入raft层
 	var isLeader bool
-	op.Index, op.Term, isLeader = kvs.raft.Start(op)
+	op.Index, op.Term, isLeader = kvs.raft.Start(&op)
 	if !isLeader {
 		// fmt.Println("不是leader，返回")
 		reply.Err = raft.ErrWrongLeader
 		return reply // 如果收到客户端put请求的不是leader，需要将leader的id返回给客户端的reply中
 	}
 
-	opCtx := newOpContext(op)
+	opCtx := newOpContext(&op)
 
 	func() {
 		kvs.mu.Lock()
