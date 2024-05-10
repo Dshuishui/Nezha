@@ -72,7 +72,7 @@ const ROLE_LEADER = "Leader"
 const ROLE_FOLLOWER = "Follower"
 const ROLE_CANDIDATES = "Candidates"
 
-var threshold int64 = 10 * 1024 * 1024
+var threshold int64 = 30 * 1024 * 1024
 var entry_global Entry
 
 // A Go object implementing a single Raft peer.
@@ -642,6 +642,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Key:         command.(*raftrpc.DetailCod).Key,
 		Value:       command.(*raftrpc.DetailCod).Value,
 	}
+	rf.mu.Unlock()
 	arrEntry := []*Entry{&entry_global}
 	// rf.batchLog = append(rf.batchLog, &entry)
 	// if err := enc.Encode(entry); err != nil {
@@ -660,7 +661,6 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// 	buffer.Reset()
 	// 	rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
 	// }
-	rf.mu.Unlock()
 	rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// if err != nil {
