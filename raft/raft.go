@@ -639,8 +639,8 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Index:       uint32(index),
 		CurrentTerm: uint32(term),
 		VotedFor:    uint32(rf.leaderId),
-		Key:         command.(DetailCod).Key,
-		Value:       command.(DetailCod).Value,
+		Key:         command.(*raftrpc.DetailCod).Key,
+		Value:       command.(*raftrpc.DetailCod).Value,
 	}
 	arrEntry := []*Entry{&entry_global}
 	// rf.batchLog = append(rf.batchLog, &entry)
