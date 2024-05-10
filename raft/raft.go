@@ -889,11 +889,11 @@ func (rf *Raft) electionLoop() {
 						rf.matchIndex[i] = 0
 					}
 
-					op := DetailCod{
+					op := raftrpc.DetailCod{
 						OpType: "TermLog",
 					}
 					rf.mu.Unlock()
-					op.Index, op.Term, _ = rf.Start(op) // 需要提交一个空的指令，需要在初始化nextindex之后，提交空指令
+					op.Index, op.Term, _ = rf.Start(&op) // 需要提交一个空的指令，需要在初始化nextindex之后，提交空指令
 					rf.mu.Lock()
 					util.DPrintf("成为leader后发送第一个空指令给Raft层")
 					// rf.lastBroadcastTime = time.Unix(0, 0) // 令appendEntries广播立即执行，因为leader的term开始时，需要提交一条空的无操作记录。
