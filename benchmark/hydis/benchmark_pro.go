@@ -74,6 +74,16 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 	wg.Add(*cnums)
 	num := 0
 	kvc.goodPut = 0
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	go func() {
+		for range ticker.C {
+			fmt.Printf("PutInRaft called %d times in the last 2 seconds\n", num)
+			num = 0
+		}
+	}()
+
 	for i := 0; i < *cnums; i++ {
 		go func(i int) {
 			defer wg.Done()
@@ -173,7 +183,7 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kv
 		reply, err := client.PutInRaft(ctx, request)
 		if err != nil {
 			// fmt.Println("客户端调用PutInRaft有问题")
-			// util.EPrintf("err in PutInRaft-调用了服务器的put方法: %v", err)
+			util.EPrintf("err in PutInRaft-调用了服务器的put方法: %v", err)
 			// 这里防止服务器是宕机了，所以要change leader
 			return nil, err
 		}
