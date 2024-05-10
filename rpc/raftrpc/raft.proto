@@ -16,8 +16,23 @@ message AppendEntriesInRaftRequest{
   int32 LeaderId = 2; 
   int32 PrevLogIndex = 3;
   int32 PrevLogTerm = 4;
-  bytes Entries = 5;
+  repeated LogEntry Entries = 5;
   int32 LeaderCommit = 6;
+}
+
+message LogEntry{
+  DetailCod Command = 1;
+  int32 Term = 2;
+}
+
+message DetailCod{
+  int32 Index = 1;
+  int32 Term = 2;
+  string OpType = 3;
+  string Key = 4;
+  string Value = 5;
+  int64 SeqId = 6;
+  int64 ClientId = 7;
 }
 
 message AppendEntriesInRaftResponse{

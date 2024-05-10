@@ -10,7 +10,7 @@ import (
 	"strconv"
 
 	// "encoding/gob"
-	"encoding/json"
+	// "encoding/json"
 	"fmt"
 	"math/rand"
 	"net"
@@ -85,7 +85,7 @@ type Raft struct {
 
 	currentTerm int        // 见过的最大任期
 	votedFor    int        // 记录在currentTerm任期投票给谁了
-	log         []LogEntry // 操作日志
+	log         []*raftrpc.LogEntry // 操作日志
 
 	// 所有服务器，易失状态
 	commitIndex int // 已知的最大已提交索引
@@ -474,8 +474,9 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	reply.Success = false
 	reply.ConflictIndex = -1
 	reply.ConflictTerm = -1
-	var logEntrys []LogEntry
-	json.Unmarshal(args.Entries, &logEntrys)
+	// var logEntrys []*raftrpc.LogEntry
+	// json.Unmarshal(args.Entries, &logEntrys)
+	logEntrys := args.Entries
 	// if len(logEntrys) != 0 { // 除去普通的心跳
 	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
 	// fmt.Println("重置lastAppendTime")
@@ -622,12 +623,16 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		rf.mu.Unlock()
 		return -1, -1, false
 	}
-	logEntry := LogEntry{
-		Command: command.(DetailCod),
+	// logEntry := LogEntry{
+	// 	Command: command.(DetailCod),
+	// 	Term:    int32(rf.currentTerm),
+	// }
+	logEntry := raftrpc.LogEntry{
+		Command: command.(*raftrpc.DetailCod),
 		Term:    int32(rf.currentTerm),
 	}
 	// fmt.Println("到这了嘛4")
-	rf.log = append(rf.log, logEntry)
+	rf.log = append(rf.log, &logEntry)
 	index = rf.lastIndex()
 	term = rf.currentTerm
 	entry_global = Entry{
@@ -923,7 +928,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	var buffer bytes.Buffer
 	enc := gob.NewEncoder(&buffer)
 	var totalSize int64
-	var appendLog []LogEntry
+	var appendLog []*raftrpc.LogEntry
 
 	args := raftrpc.AppendEntriesInRaftRequest{}
 	args.Term = int32(rf.currentTerm)
@@ -958,10 +963,11 @@ func (rf *Raft) doAppendEntries(peerId int) {
 		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
 	}
 	buffer.Reset()
+	args.Entries = appendLog
 
 	// fmt.Printf("此时下标会不会有问题，log长度：%v，下标：%v", len(rf.log), args.PrevLogIndex+1)
-	data, _ := json.Marshal(appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
-	args.Entries = data
+	// data, _ := json.Marshal(appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
+	// args.Entries = data
 	// args.Entries = append(args.Entries, rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]...)
 	// util.DPrintf("RaftNode[%d] appendEntries starts,  currentTerm[%d] peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] args.Entries[%d] commitIndex[%d]",
 	// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
