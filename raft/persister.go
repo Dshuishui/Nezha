@@ -38,7 +38,7 @@ func (p *Persister) Init(path string) {
 }
 
 func (p *Persister) Put(key string, value []byte) {
-	err := p.db.Put([]byte(key), []byte(value), nil)	// 转换成字节数组是因为LevelDB是只接受字节数组作为键和值的输入。
+	err := p.db.Put([]byte(key), value, nil)	// 转换成字节数组是因为LevelDB是只接受字节数组作为键和值的输入。
 	if err != nil {
 		util.EPrintf("Put key %s value %s failed, err: %s", key, value, err)
 	}

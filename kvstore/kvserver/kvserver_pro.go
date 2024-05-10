@@ -485,7 +485,7 @@ func (kvs *KVServer) applyLoop() {
 							binary.PutVarint(positionBytes, offset)
 							kvs.persister.Put(op.Key,positionBytes)		
 
-							// kvs.persister.Put(op.Key, op.Value)
+							// kvs.persister.Put(op.Key, []byte(op.Value))
 							// fmt.Println("length:",len(positionBytes))
 						} else if existOp { // 虽然该请求的处理还未超时，但是已经处理过了。
 							opCtx.ignored = true
