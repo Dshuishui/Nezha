@@ -206,12 +206,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 
 	// 写入raft层
 	var isLeader bool
-	num := 0
 	op.Index, op.Term, isLeader = kvs.raft.Start(&op)
-	num++
-	if (num+1)%400 == 0 {
-		fmt.Println("start num:", num)
-	}
 	if !isLeader {
 		// fmt.Println("不是leader，返回")
 		reply.Err = raft.ErrWrongLeader
