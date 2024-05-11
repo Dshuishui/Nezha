@@ -95,7 +95,7 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 				key := fmt.Sprintf("key_%d", k)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
 				reply, err := kvc.PutInRaft(key, string(value)) // 先随机传入一个地址的连接池
-				fmt.Println("after putinraft , j:",j)
+				// fmt.Println("after putinraft , j:",j)
 				if err == nil && reply != nil && reply.Err != "defeat" {
 					kvc.goodPut++
 				}
