@@ -72,7 +72,7 @@ const ROLE_LEADER = "Leader"
 const ROLE_FOLLOWER = "Follower"
 const ROLE_CANDIDATES = "Candidates"
 
-var threshold int64 = 1 * 256 * 256
+var threshold int64 = 1 * 2 * 256
 var entry_global Entry
 
 // A Go object implementing a single Raft peer.
