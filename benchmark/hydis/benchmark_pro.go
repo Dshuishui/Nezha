@@ -72,34 +72,35 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
 	wg.Add(*cnums)
-	num := 0
+	// last := 0
 	kvc.goodPut = 0
 
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	go func() {
-		for range ticker.C {
-			fmt.Printf("PutInRaft called %d times in the last 2 seconds\n", num)
-			num = 0
-		}
-	}()
+	// ticker := time.NewTicker(2 * time.Second)
+	// defer ticker.Stop()
+	// go func() {
+	// 	for range ticker.C {
+	// 		fmt.Printf("PutInRaft called %d times in the last 2 seconds\n", num-last)
+	// 		last = num
+	// 	}
+	// }()
 
 	for i := 0; i < *cnums; i++ {
 		go func(i int) {
 			defer wg.Done()
+			num := 0
 			rand.Seed(time.Now().Unix())
 			for j := 0; j < base; j++ {
 				k := rand.Intn(*dnums)
-				num++
 				//k := base*i + j
 				key := fmt.Sprintf("key_%d", k)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				reply, err := kvc.PutInRaft(key, string(value), kvc.pools) // 先随机传入一个地址的连接池
+				reply, err := kvc.PutInRaft(key, string(value)) // 先随机传入一个地址的连接池
 				if err == nil && reply != nil && reply.Err != "defeat" {
 					kvc.goodPut++
 				}
-				if num%50000 == 0 { // 加一是除去刚开始为0 的条件
-					fmt.Printf("Client %v put key num: %v\n", i+1, num)
+				if j>= num+40000 {
+					num = j
+					fmt.Printf("Goroutine %v put key num: %v\n", i, num)
 				}
 			}
 		}(i)
@@ -155,7 +156,7 @@ func (kvc *KVClient) Get(key string) (string, bool) {
 }
 
 // Method of Send RPC of PutInRaft
-func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kvrpc.PutInRaftResponse, error) {
+func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftResponse, error) {
 	request := &kvrpc.PutInRaftRequest{
 		Key:      key,
 		Value:    value,
@@ -169,7 +170,7 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kv
 		// 	util.EPrintf("failed to get conn: %v", err)
 		// }
 		// defer conn.Close()
-		p := pools[kvc.leaderId] // 拿到leaderid对应的那个连接池
+		p := kvc.pools[kvc.leaderId] // 拿到leaderid对应的那个连接池
 		// fmt.Printf("拿出连接池对应的地址为%v",p.GetAddress())
 		conn, err := p.Get()
 		if err != nil {
@@ -194,8 +195,8 @@ func (kvc *KVClient) PutInRaft(key string, value string, pools []pool.Pool) (*kv
 			kvc.changeToLeader(int(reply.LeaderId))
 			// fmt.Printf("等待leader的出现,更改后的leaderid是%v\n",kvc.leaderId)
 			// time.Sleep(6 * time.Millisecond)
-		}else if reply.Err == "defeat"{
-			return reply,nil
+		} else if reply.Err == "defeat" {
+			return reply, nil
 		}
 	}
 }
