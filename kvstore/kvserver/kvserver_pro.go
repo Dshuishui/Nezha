@@ -501,8 +501,8 @@ func (kvs *KVServer) applyLoop() {
 							// value := kvs.persister.Get(op.Key)		leveldb拿取value
 
 							// 从 LevelDB 中获取键对应的值，并解码为整数
-							// positionBytes,_ := kvs.persister.Get(op.Key)
-							positionBytes := kvs.persister.Get(op.Key)
+							positionBytes,_ := kvs.persister.Get(op.Key)
+							// positionBytes := kvs.persister.Get(op.Key)
 							position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
 							if positionBytes == nil {                   //  说明leveldb中没有该key
 								opCtx.keyExist = false
