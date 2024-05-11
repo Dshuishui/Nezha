@@ -72,7 +72,7 @@ const ROLE_LEADER = "Leader"
 const ROLE_FOLLOWER = "Follower"
 const ROLE_CANDIDATES = "Candidates"
 
-var threshold int64 = 30 * 1024 * 1024
+var threshold int64 = 1 * 1024 * 1024
 var entry_global Entry
 
 // A Go object implementing a single Raft peer.
@@ -574,9 +574,9 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				rf.log = append(rf.log, logEntry) // 把新log加入进来
 
 				// offset := rf.Offsets[index]      // 截取后面错误的offset
-				offset := rf.Offsets[index-rf.shotOffset-1]
+				offset := rf.Offsets[index-rf.shotOffset-1]		// 这个要减一
 				// rf.Offsets = rf.Offsets[:logPos] // 删除当前错误的offset，以及后续的所有
-				rf.Offsets = rf.Offsets[:logPos-rf.shotOffset-1]
+				rf.Offsets = rf.Offsets[:logPos-rf.shotOffset]	// 不用减一，因为logPos已经是减一了的
 				arrEntry := []*Entry{&entry}     // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
 				// offsets2, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
 				// rf.mu.Unlock()
