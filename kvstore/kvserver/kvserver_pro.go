@@ -23,6 +23,7 @@ import (
 	// "github.com/JasonLou99/Hybrid_KV_Store/persister"
 	"github.com/JasonLou99/Hybrid_KV_Store/rpc/kvrpc"
 	"github.com/JasonLou99/Hybrid_KV_Store/rpc/raftrpc"
+
 	// "github.com/JasonLou99/Hybrid_KV_Store/rpc/raftrpc"
 	"github.com/JasonLou99/Hybrid_KV_Store/util"
 
@@ -38,8 +39,8 @@ var (
 	internalAddress_arg = flag.String("internalAddress", "", "Input Your address") // 返回的是一个指向string类型的指针
 	address_arg         = flag.String("address", "", "Input Your address")
 	peers_arg           = flag.String("peers", "", "Input Your Peers")
-	gap_arg 			= flag.String("gap", "", "Input Your gap")
-	syncTime_arg 			= flag.String("syncTime", "", "Input Your syncTime")
+	gap_arg             = flag.String("gap", "", "Input Your gap")
+	syncTime_arg        = flag.String("syncTime", "", "Input Your syncTime")
 )
 
 const (
@@ -177,7 +178,7 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 	reply := kvs.StartGet(in)
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
-	}else if reply.Err == raft.ErrNoKey{
+	} else if reply.Err == raft.ErrNoKey {
 		// 返回客户端没有该key即可，这里先不做操作
 		fmt.Println("server端没有client查询的key")
 	}
@@ -205,7 +206,12 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 
 	// 写入raft层
 	var isLeader bool
+	num := 0
 	op.Index, op.Term, isLeader = kvs.raft.Start(&op)
+	num++
+	if (num+1)%400 == 0 {
+		fmt.Println("start num:", num)
+	}
 	if !isLeader {
 		// fmt.Println("不是leader，返回")
 		reply.Err = raft.ErrWrongLeader
@@ -441,7 +447,7 @@ func (kvs *KVServer) applyLoop() {
 				cmd := msg.Command
 				index := msg.CommandIndex
 				cmdTerm := msg.CommandTerm
-				offset  := msg.Offset
+				offset := msg.Offset
 
 				func() {
 					kvs.mu.Lock()
@@ -472,21 +478,21 @@ func (kvs *KVServer) applyLoop() {
 					if op.OpType == OP_TYPE_PUT {
 						if !existSeq || op.SeqId > prevSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
 							// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
-							if op.SeqId % 10000 == 0 {
+							if op.SeqId%10000 == 0 {
 								fmt.Println("底层执行了Put请求，以及重置put操作时间")
 							}
 							kvs.lastPutTime = time.Now() // 更新put操作时间
 
 							// 将整数编码为字节流并存入 LevelDB
 							// indexKey := make([]byte, 4)                            // 假设整数是 int32 类型
-							// kvs.persister.Put(op.Key,indexKey)		
+							// kvs.persister.Put(op.Key,indexKey)
 							// binary.BigEndian.PutUint32(indexKey, uint32(op.Index)) // 这里注意是把op.Index放进去还是对应日志的entry.Command.Index，两者应该都一样
 							// kvs.persister.Put(op.Key, indexKey)                    // <key,idnex>,其中index是string类型
 							// addrs := kvs.raft.GetOffsets()		// 拿到raft层的offsets，这个可以优化用通道传输
 							// addr := addrs[op.Index]
-							positionBytes := make([]byte, binary.MaxVarintLen64)		// 相当于把地址（指向keysize开始处）压缩一下
+							positionBytes := make([]byte, binary.MaxVarintLen64) // 相当于把地址（指向keysize开始处）压缩一下
 							binary.PutVarint(positionBytes, offset)
-							// kvs.persister.Put(op.Key,positionBytes)		
+							// kvs.persister.Put(op.Key,positionBytes)
 
 							kvs.persister.Put(op.Key, []byte(op.Value))
 							// fmt.Println("length:",len(positionBytes))
@@ -501,12 +507,12 @@ func (kvs *KVServer) applyLoop() {
 
 							// 从 LevelDB 中获取键对应的值，并解码为整数
 							// positionBytes,_ := kvs.persister.Get(op.Key)
-							positionBytes:= kvs.persister.Get(op.Key)
+							positionBytes := kvs.persister.Get(op.Key)
 							position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
-							if positionBytes == nil {	//  说明leveldb中没有该key
+							if positionBytes == nil {                   //  说明leveldb中没有该key
 								opCtx.keyExist = false
 								opCtx.value = ""
-							}else{
+							} else {
 								value, err := kvs.raft.ReadValueFromFile("data.log", position)
 								if err != nil {
 									fmt.Println("拿取value有问题")
@@ -530,8 +536,8 @@ func (kvs *KVServer) applyLoop() {
 func main() {
 	// peers inputed by command line
 	flag.Parse()
-	syncTime,_ := strconv.Atoi(*syncTime_arg)
-	gap,_ := strconv.Atoi(*gap_arg)
+	syncTime, _ := strconv.Atoi(*syncTime_arg)
+	gap, _ := strconv.Atoi(*gap_arg)
 	internalAddress := *internalAddress_arg // 取出指针所指向的值，存入internalAddress变量
 	address := *address_arg
 	peers := strings.Split(*peers_arg, ",") // 将逗号作为分隔符传递给strings.Split函数，以便将peers_arg字符串分割成多个子字符串，并存储在peers的切片中
@@ -544,7 +550,7 @@ func main() {
 	kvs.reqMap = make(map[int]*OpContext)
 	kvs.seqMap = make(map[int64]int64)
 	kvs.lastAppliedIndex = 0
-	kvs.persister.Init("./kvstore/kvserver/db_key_index")	// 初始化存储<key,index>的leveldb文件
+	kvs.persister.Init("./kvstore/kvserver/db_key_index") // 初始化存储<key,index>的leveldb文件
 
 	go kvs.applyLoop()
 
@@ -554,7 +560,7 @@ func main() {
 		timeout := 38 * time.Second
 		for {
 			time.Sleep(timeout)
-			if (time.Since(kvs.lastPutTime) > timeout)&&(time.Since(kvs.raft.LastAppendTime) > timeout) {
+			if (time.Since(kvs.lastPutTime) > timeout) && (time.Since(kvs.raft.LastAppendTime) > timeout) {
 				cancel() // 超时后取消上下文
 				fmt.Println("38秒没有请求，停止服务器")
 				wg.Done()
