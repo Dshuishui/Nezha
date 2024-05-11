@@ -487,10 +487,10 @@ func (kvs *KVServer) applyLoop() {
 							// addr := addrs[op.Index]
 							positionBytes := make([]byte, binary.MaxVarintLen64) // 相当于把地址（指向keysize开始处）压缩一下
 							binary.PutVarint(positionBytes, offset)
-							kvs.persister.Put(op.Key,positionBytes)
+							// kvs.persister.Put(op.Key,positionBytes)
 
-							// kvs.persister.Put(op.Key, []byte(op.Value))
-							// fmt.Println("length:",len(positionBytes))
+							kvs.persister.Put(op.Key, []byte(op.Value))
+							fmt.Println("length:",len(positionBytes))
 							// fmt.Println("length:",len([]byte(op.Value)))
 						} else if existOp { // 虽然该请求的处理还未超时，但是已经处理过了。
 							opCtx.ignored = true
