@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion7
 
 const (
 	Raft_AppendEntriesInRaft_FullMethodName = "/Raft/AppendEntriesInRaft"
+	Raft_HeartbeatInRaft_FullMethodName     = "/Raft/HeartbeatInRaft"
 	Raft_RequestVote_FullMethodName         = "/Raft/RequestVote"
 )
 
@@ -28,6 +29,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type RaftClient interface {
 	AppendEntriesInRaft(ctx context.Context, in *AppendEntriesInRaftRequest, opts ...grpc.CallOption) (*AppendEntriesInRaftResponse, error)
+	HeartbeatInRaft(ctx context.Context, in *AppendEntriesInRaftRequest, opts ...grpc.CallOption) (*AppendEntriesInRaftResponse, error)
 	RequestVote(ctx context.Context, in *RequestVoteRequest, opts ...grpc.CallOption) (*RequestVoteResponse, error)
 }
 
@@ -48,6 +50,15 @@ func (c *raftClient) AppendEntriesInRaft(ctx context.Context, in *AppendEntriesI
 	return out, nil
 }
 
+func (c *raftClient) HeartbeatInRaft(ctx context.Context, in *AppendEntriesInRaftRequest, opts ...grpc.CallOption) (*AppendEntriesInRaftResponse, error) {
+	out := new(AppendEntriesInRaftResponse)
+	err := c.cc.Invoke(ctx, Raft_HeartbeatInRaft_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *raftClient) RequestVote(ctx context.Context, in *RequestVoteRequest, opts ...grpc.CallOption) (*RequestVoteResponse, error) {
 	out := new(RequestVoteResponse)
 	err := c.cc.Invoke(ctx, Raft_RequestVote_FullMethodName, in, out, opts...)
@@ -62,6 +73,7 @@ func (c *raftClient) RequestVote(ctx context.Context, in *RequestVoteRequest, op
 // for forward compatibility
 type RaftServer interface {
 	AppendEntriesInRaft(context.Context, *AppendEntriesInRaftRequest) (*AppendEntriesInRaftResponse, error)
+	HeartbeatInRaft(context.Context, *AppendEntriesInRaftRequest) (*AppendEntriesInRaftResponse, error)
 	RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteResponse, error)
 	mustEmbedUnimplementedRaftServer()
 }
@@ -72,6 +84,9 @@ type UnimplementedRaftServer struct {
 
 func (UnimplementedRaftServer) AppendEntriesInRaft(context.Context, *AppendEntriesInRaftRequest) (*AppendEntriesInRaftResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AppendEntriesInRaft not implemented")
+}
+func (UnimplementedRaftServer) HeartbeatInRaft(context.Context, *AppendEntriesInRaftRequest) (*AppendEntriesInRaftResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method HeartbeatInRaft not implemented")
 }
 func (UnimplementedRaftServer) RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RequestVote not implemented")
@@ -107,6 +122,24 @@ func _Raft_AppendEntriesInRaft_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Raft_HeartbeatInRaft_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AppendEntriesInRaftRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RaftServer).HeartbeatInRaft(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Raft_HeartbeatInRaft_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RaftServer).HeartbeatInRaft(ctx, req.(*AppendEntriesInRaftRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Raft_RequestVote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RequestVoteRequest)
 	if err := dec(in); err != nil {
@@ -135,6 +168,10 @@ var Raft_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AppendEntriesInRaft",
 			Handler:    _Raft_AppendEntriesInRaft_Handler,
+		},
+		{
+			MethodName: "HeartbeatInRaft",
+			Handler:    _Raft_HeartbeatInRaft_Handler,
 		},
 		{
 			MethodName: "RequestVote",

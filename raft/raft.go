@@ -609,6 +609,39 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	return reply, nil
 }
 
+func (rf *Raft) HeartbeatInRaft(ctx context.Context, args *raftrpc.AppendEntriesInRaftRequest) (*raftrpc.AppendEntriesInRaftResponse, error) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	reply := &raftrpc.AppendEntriesInRaftResponse{}
+	reply.Term = int32(rf.currentTerm)
+	reply.Success = false
+	reply.ConflictIndex = -1
+	reply.ConflictTerm = -1
+	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
+	if args.Term < int32(rf.currentTerm) {
+		return reply, nil
+	}
+	rf.LastAppendTime = time.Now()
+	// 发现更大的任期，则转为该任期的follower
+	if args.Term > int32(rf.currentTerm) {
+		rf.currentTerm = int(args.Term)
+		rf.role = ROLE_FOLLOWER
+		rf.votedFor = -1
+	}
+	// 认识新的leader
+	rf.leaderId = int(args.LeaderId)
+	// 刷新活跃时间
+	rf.lastActiveTime = time.Now()
+	reply.Success = true                           // 成功心跳
+	if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
+		rf.commitIndex = int(args.LeaderCommit)
+		if rf.lastIndex() < rf.commitIndex { // 感觉，不存在这种情况，走到这里基本都是日志与leader一样了，怎么还会索引比commitindex小
+			rf.commitIndex = rf.lastIndex()
+		}
+	}
+	return reply, nil
+}
+
 // 已兼容snapshot
 func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	index := -1
@@ -761,7 +794,28 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 	reply, err := client.AppendEntriesInRaft(ctx, args)
 
 	if err != nil {
-		// util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ", err, address)
+		util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ", err, address)
+		return reply, false
+	}
+	return reply, true
+}
+
+func (rf *Raft) sendHeartbeat(address string, args *raftrpc.AppendEntriesInRaftRequest, p pool.Pool) (*raftrpc.AppendEntriesInRaftResponse, bool) {
+	// 用grpc连接池同步日志
+	conn, err := p.Get()
+	if err != nil {
+		util.EPrintf("failed to get conn: %v", err)
+		return nil, false
+
+	}
+	defer conn.Close()
+	client := raftrpc.NewRaftClient(conn.Value())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+	reply, err := client.HeartbeatInRaft(ctx, args)
+
+	if err != nil {
+		util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ", err, address)
 		return reply, false
 	}
 	return reply, true
@@ -1062,7 +1116,7 @@ func (rf *Raft) doHeartBeat(peerId int) {
 	}
 	args.Entries = nil
 	go func(peerId int) {
-		if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
+		if reply, ok := rf.sendHeartbeat(rf.peers[peerId], &args, rf.pools[peerId]); ok {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
 			if rf.currentTerm != int(args.Term) {

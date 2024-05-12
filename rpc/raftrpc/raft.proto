@@ -8,6 +8,7 @@ option go_package="./;raftrpc";
 
 service Raft {
   rpc AppendEntriesInRaft (AppendEntriesInRaftRequest) returns (AppendEntriesInRaftResponse) {}
+  rpc HeartbeatInRaft (AppendEntriesInRaftRequest) returns (AppendEntriesInRaftResponse) {}
   rpc RequestVote (RequestVoteRequest) returns (RequestVoteResponse) {}
 }
  
