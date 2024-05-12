@@ -1130,7 +1130,9 @@ func (rf *Raft) doHeartBeat(peerId int) {
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				return
 			}
+			rf.SyncChans[peerId] <- strconv.Itoa(peerId)
 		}
+		rf.SyncChans[peerId] <- strconv.Itoa(peerId)
 	}(peerId)
 }
 
@@ -1174,7 +1176,7 @@ func (rf *Raft) appendEntriesLoop() {
 				First = false
 			}
 			now := time.Now() // 心跳
-			if (now.Sub(rf.LastAppendTime) > 500*time.Millisecond)  {
+			if (now.Sub(rf.LastAppendTime) > 1000*time.Millisecond)  {
 				for peerId := 0; peerId < len(rf.peers); peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
 					if peerId == rf.me {
 						continue
