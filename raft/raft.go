@@ -815,7 +815,7 @@ func (rf *Raft) sendHeartbeat(address string, args *raftrpc.AppendEntriesInRaftR
 	reply, err := client.HeartbeatInRaft(ctx, args)
 
 	if err != nil {
-		util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ", err, address)
+		util.EPrintf("Error calling HeartbeatInRaft method on server side; err:%v; address:%v ", err, address)
 		return reply, false
 	}
 	return reply, true
@@ -1114,7 +1114,7 @@ func (rf *Raft) doHeartBeat(peerId int) {
 	} else {
 		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
 	}
-	args.Entries = nil
+	args.Entries = []*raftrpc.LogEntry{}
 	go func(peerId int) {
 		if reply, ok := rf.sendHeartbeat(rf.peers[peerId], &args, rf.pools[peerId]); ok {
 			rf.mu.Lock()
