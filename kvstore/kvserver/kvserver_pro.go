@@ -487,7 +487,7 @@ func (kvs *KVServer) applyLoop() {
 							// addr := addrs[op.Index]
 							positionBytes := make([]byte, binary.MaxVarintLen64) // 相当于把地址（指向keysize开始处）压缩一下
 							binary.PutVarint(positionBytes, offset)
-							kvs.persister.Put(op.Key,positionBytes)
+							kvs.persister.Put(op.Key, positionBytes)
 
 							// kvs.persister.Put(op.Key, []byte(op.Value))
 							// fmt.Println("length:",len(positionBytes))
@@ -555,7 +555,8 @@ func main() {
 		timeout := 38 * time.Second
 		for {
 			time.Sleep(timeout)
-			if (time.Since(kvs.lastPutTime) > timeout) && (time.Since(kvs.raft.LastAppendTime) > timeout) {
+			// if (time.Since(kvs.lastPutTime) > timeout) && (time.Since(kvs.raft.LastAppendTime) > timeout) {
+			if time.Since(kvs.lastPutTime) > timeout {
 				cancel() // 超时后取消上下文
 				fmt.Println("38秒没有请求，停止服务器")
 				wg.Done()

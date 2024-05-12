@@ -621,7 +621,6 @@ func (rf *Raft) HeartbeatInRaft(ctx context.Context, args *raftrpc.AppendEntries
 	if args.Term < int32(rf.currentTerm) {
 		return reply, nil
 	}
-	rf.LastAppendTime = time.Now()
 	// 发现更大的任期，则转为该任期的follower
 	if args.Term > int32(rf.currentTerm) {
 		rf.currentTerm = int(args.Term)
@@ -843,7 +842,7 @@ func (rf *Raft) electionLoop() {
 			defer rf.mu.Unlock()
 			// fmt.Println("释放electionLoop的锁1或者")
 			now := time.Now()
-			timeout := time.Duration(15000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
+			timeout := time.Duration(5000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
 			elapses := now.Sub(rf.lastActiveTime)
 			// follower -> candidates
 			if rf.role == ROLE_FOLLOWER {
