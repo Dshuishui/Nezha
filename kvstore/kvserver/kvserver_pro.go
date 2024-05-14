@@ -54,7 +54,7 @@ type KVServer struct {
 	address         string
 	internalAddress string    // internal address for communication between nodes
 	lastPutTime     time.Time // lastPutTime记录最后一次PUT请求的时间
-	valuelog        *ValueLog
+	// valuelog        *ValueLog
 	// pools           []pool.Pool // 用于日志同步的连接池
 
 	me        int
@@ -67,6 +67,7 @@ type KVServer struct {
 
 	lastAppliedIndex int // 已持久化存储的日志index
 	kvrpc.UnimplementedKVServer
+	// resultCh  chan *kvrpc.PutInRaftResponse
 }
 
 // ValueLog represents the Value Log file for storing values.
@@ -187,11 +188,29 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 
 func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) (*kvrpc.PutInRaftResponse, error) {
 	// fmt.Println("走到了server端的put函数")
-	reply := kvs.StartPut(in)
-	if reply.Err == raft.ErrWrongLeader {
-		reply.LeaderId = kvs.raft.GetLeaderId()
-	}
-	return reply, nil
+	// reply := kvs.StartPut(in)
+	// if reply.Err == raft.ErrWrongLeader {
+	// 	reply.LeaderId = kvs.raft.GetLeaderId()
+	// }
+	// return reply, nil
+
+	// 创建一个用于接收处理结果的通道
+	resultCh := make(chan *kvrpc.PutInRaftResponse)
+		// 在 goroutine 中处理请求
+		go func() {
+		// 处理请求的逻辑...
+		// 这里可以根据具体的业务逻辑来处理客户端请求并将其发送到 Raft 集群中
+
+		// 处理完成后，将结果发送到通道
+		reply := kvs.StartPut(in)
+		if reply.Err == raft.ErrWrongLeader {
+			reply.LeaderId = kvs.raft.GetLeaderId()
+		}
+		resultCh <- reply
+	}()
+
+	// 返回结果通道，让客户端可以等待结果
+	return <-resultCh, nil
 }
 
 func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResponse {
@@ -410,6 +429,7 @@ func MakeKVServer(address string, internalAddress string, peers []string) *KVSer
 	kvs.address = address
 	kvs.internalAddress = internalAddress
 	kvs.peers = peers
+	// kvs.resultCh = make(chan *kvrpc.PutInRaftResponse)
 	kvs.lastPutTime = time.Now()
 	// Initialize ValueLog and LevelDB (Paths would be specified here).
 	// 在这个.代表的是打开的工作区或文件夹的根目录，即FlexSync。指向的是VSCode左侧侧边栏（Explorer栏）中展示的最顶层文件夹。
