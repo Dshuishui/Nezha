@@ -5,8 +5,8 @@ package lattices
 */
 
 import (
-	config "github.com/JasonLou99/Hybrid_KV_Store/config"
-	"github.com/JasonLou99/Hybrid_KV_Store/util"
+	config "gitee.com/dong-shuishui/FlexSync/config"
+	"gitee.com/dong-shuishui/FlexSync/util"
 )
 
 // Lattice接口，用来实现Merge方法的多态

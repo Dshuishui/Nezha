@@ -11,13 +11,13 @@ import (
 	// "sync/atomic"
 	"time"
 
-	"github.com/JasonLou99/Hybrid_KV_Store/rpc/kvrpc"
-	"github.com/JasonLou99/Hybrid_KV_Store/util"
+	"gitee.com/dong-shuishui/FlexSync/rpc/kvrpc"
+	"gitee.com/dong-shuishui/FlexSync/util"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/JasonLou99/Hybrid_KV_Store/pool"
+	"gitee.com/dong-shuishui/FlexSync/pool"
 )
 
 /*
