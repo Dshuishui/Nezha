@@ -12,13 +12,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	// kvc "github.com/JasonLou99/Hybrid_KV_Store/kvstore/kvclient"
-	"github.com/JasonLou99/Hybrid_KV_Store/pool"
-	"github.com/JasonLou99/Hybrid_KV_Store/raft"
+	// kvc "gitee.com/dong-shuishui/FlexSync/kvstore/kvclient"
+	"gitee.com/dong-shuishui/FlexSync/pool"
+	"gitee.com/dong-shuishui/FlexSync/raft"
 
-	// raftrpc "github.com/JasonLou99/Hybrid_KV_Store/rpc/Raftrpc"
-	"github.com/JasonLou99/Hybrid_KV_Store/rpc/kvrpc"
-	"github.com/JasonLou99/Hybrid_KV_Store/util"
+	// raftrpc "gitee.com/dong-shuishui/FlexSync/rpc/Raftrpc"
+	"gitee.com/dong-shuishui/FlexSync/rpc/kvrpc"
+	"gitee.com/dong-shuishui/FlexSync/util"
 
 	crand "crypto/rand"
 	"math/big"

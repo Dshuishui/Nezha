@@ -1,18 +1,10 @@
-module github.com/JasonLou99/Hybrid_KV_Store
+module gitee.com/dong-shuishui/FlexSync
 
 go 1.18
 
-require (
-	github.com/syndtr/goleveldb v1.0.0
-	github.com/tecbot/gorocksdb v0.0.0-20191217155057-f0fad39f321c
-)
+require github.com/syndtr/goleveldb v1.0.0
 
-require (
-	github.com/facebookgo/ensure v0.0.0-20200202191622-63f1cf65ac4c // indirect
-	github.com/facebookgo/stack v0.0.0-20160209184415-751773369052 // indirect
-	github.com/facebookgo/subset v0.0.0-20200203212716-c811ad88dec4 // indirect
-	gopkg.in/yaml.v2 v2.2.2 // indirect
-)
+require gopkg.in/yaml.v2 v2.2.2 // indirect
 
 require (
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
