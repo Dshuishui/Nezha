@@ -23,7 +23,6 @@ import (
 	crand "crypto/rand"
 	"math/big"
 
-	"google.golang.org/grpc"
 )
 
 var (
@@ -48,27 +47,6 @@ type KVClient struct {
 
 // batchRawPut blinds put bench.
 func (kvc *KVClient) batchRawPut(value []byte) {
-	// 这就是自己修改grpc线程池option参数的做法
-	DesignOptions := pool.Options{
-		Dial:                 pool.Dial,
-		MaxIdle:              150,
-		MaxActive:            300,
-		MaxConcurrentStreams: 800,
-		Reuse:                true,
-	}
-	fmt.Printf("servers:%v\n", kvc.Kvservers)
-	// 根据servers的地址，创建了一一对应server地址的grpc连接池
-	for i := 0; i < len(kvc.Kvservers); i++ {
-		// fmt.Println("进入到生成连接池的for循环")
-		peers_single := []string{kvc.Kvservers[i]}
-		p, err := pool.New(peers_single, DesignOptions)
-		if err != nil {
-			util.EPrintf("failed to new pool: %v", err)
-		}
-		// grpc连接池组
-		kvc.pools = append(kvc.pools, p)
-	}
-
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
 	wg.Add(*cnums)
@@ -99,7 +77,7 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 				if err == nil && reply != nil && reply.Err != "defeat" {
 					kvc.goodPut++
 				}
-				if j>= num+100 {
+				if j >= num+100 {
 					num = j
 					// fmt.Printf("Goroutine %v put key num: %v\n", i, num)
 				}
@@ -110,49 +88,6 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 	for _, pool := range kvc.pools {
 		pool.Close()
 		util.DPrintf("The raft pool has been closed")
-	}
-}
-
-// Method of Send RPC of GetInRaft
-func (kvc *KVClient) SendGetInRaft(address string, request *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
-	conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
-	if err != nil {
-		util.EPrintf("err in SendGetInRaft: %v", err)
-		return nil, err
-	}
-	defer conn.Close()
-	client := kvrpc.NewKVClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
-	reply, err := client.GetInRaft(ctx, request)
-	if err != nil {
-		util.EPrintf("err in SendGetInRaft: %v", err)
-		return nil, err
-	}
-	return reply, nil
-}
-
-func (kvc *KVClient) Get(key string) (string, bool) {
-	args := &kvrpc.GetInRaftRequest{
-		Key:      key,
-		ClientId: kvc.clientId,
-		SeqId:    atomic.AddInt64(&kvc.seqId, 1),
-	}
-
-	for {
-		reply, err := kvc.SendGetInRaft(kvc.Kvservers[kvc.leaderId], args)
-		if err != nil {
-			util.EPrintf("can not connect ", kvc.Kvservers[kvc.leaderId], "or it's not leader")
-			return "", false
-		}
-		if reply.Err == raft.OK {
-			return reply.Value, true
-		} else if reply.Err == raft.ErrNoKey {
-			return "", false
-		} else if reply.Err == raft.ErrWrongLeader {
-			kvc.changeToLeader(int(reply.LeaderId))
-			time.Sleep(1 * time.Millisecond)
-		}
 	}
 }
 
@@ -202,6 +137,29 @@ func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftRespon
 	}
 }
 
+func (kvc *KVClient) InitPool() {
+	// 这就是自己修改grpc线程池option参数的做法
+	DesignOptions := pool.Options{
+		Dial:                 pool.Dial,
+		MaxIdle:              150,
+		MaxActive:            300,
+		MaxConcurrentStreams: 800,
+		Reuse:                true,
+	}
+	fmt.Printf("servers:%v\n", kvc.Kvservers)
+	// 根据servers的地址，创建了一一对应server地址的grpc连接池
+	for i := 0; i < len(kvc.Kvservers); i++ {
+		// fmt.Println("进入到生成连接池的for循环")
+		peers_single := []string{kvc.Kvservers[i]}
+		p, err := pool.New(peers_single, DesignOptions)
+		if err != nil {
+			util.EPrintf("failed to new pool: %v", err)
+		}
+		// grpc连接池组
+		kvc.pools = append(kvc.pools, p)
+	}
+}
+
 func (kvc *KVClient) changeToLeader(Id int) (leaderId int) {
 	kvc.mu.Lock()
 	defer kvc.mu.Unlock()
@@ -227,6 +185,7 @@ func main() {
 	kvc.clientId = nrand()
 
 	value := make([]byte, valueSize)
+	kvc.InitPool()
 	startTime := time.Now()
 	// 开始发送请求
 	kvc.batchRawPut(value)

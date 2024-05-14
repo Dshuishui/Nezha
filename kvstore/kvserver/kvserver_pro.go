@@ -120,6 +120,43 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
+func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeRequest) (*kvrpc.ScanRangeResponse, error) {
+	reply := kvs.StartScan(in)
+	return reply, nil
+}
+
+func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeResponse {
+	startKey := args.GetStartKey()
+	endKey := args.GetEndKey()
+
+	result := make(map[string]string)
+	// 执行scan范围查询
+	for i := startKey; i <= endKey; i++ {
+		// 从 LevelDB 中获取键对应的值，并解码为整数
+		key := strconv.Itoa(int(i))
+		positionBytes, _ := kvs.persister.Get(key)
+		// positionBytes := kvs.persister.Get(op.Key)
+		position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
+		if positionBytes == nil {                   //  说明leveldb中没有该key
+			value := "NOKEY"
+			result[key] = value
+		} else {
+			value, err := kvs.raft.ReadValueFromFile("./kvstore/kvserver/db_key_index", position)
+			if err != nil {
+				fmt.Println("拿取value有问题")
+				panic(err)
+			}
+			result[key] = value
+		}
+	}
+
+	// 构造响应并返回
+	res := &kvrpc.ScanRangeResponse{
+		KeyValuePairs: result,
+	}
+	return res
+}
+
 func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInRaftResponse) {
 	reply.Err = raft.OK
 
@@ -521,14 +558,14 @@ func (kvs *KVServer) applyLoop() {
 							// value := kvs.persister.Get(op.Key)		leveldb拿取value
 
 							// 从 LevelDB 中获取键对应的值，并解码为整数
-							positionBytes,_ := kvs.persister.Get(op.Key)
+							positionBytes, _ := kvs.persister.Get(op.Key)
 							// positionBytes := kvs.persister.Get(op.Key)
 							position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
 							if positionBytes == nil {                   //  说明leveldb中没有该key
 								opCtx.keyExist = false
 								opCtx.value = ""
 							} else {
-								value, err := kvs.raft.ReadValueFromFile("data.log", position)
+								value, err := kvs.raft.ReadValueFromFile("./kvstore/kvserver/db_key_index", position)
 								if err != nil {
 									fmt.Println("拿取value有问题")
 									panic(err)
