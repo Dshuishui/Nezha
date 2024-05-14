@@ -31,7 +31,8 @@ var (
 	cnums = flag.Int("cnums", 1, "Client Threads Number")
 	dnums = flag.Int("dnums", 1000000, "data num")
 	// getratio = flag.Int("getratio", 1, "Get Times per Put Times")
-	vsize = flag.Int("vsize", 64, "value size in type")
+	k1 = flag.Int("startkey", 0, "first key")
+	k2 = flag.Int("endkey", 20, "last key")
 )
 
 type KVClient struct {
@@ -46,7 +47,7 @@ type KVClient struct {
 }
 
 // randread
-func (kvc *KVClient) scan() {
+func (kvc *KVClient) scan(k1 int32, k2 int32) {
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
 	wg.Add(*cnums)
@@ -59,8 +60,8 @@ func (kvc *KVClient) scan() {
 			num := 0
 			rand.Seed(time.Now().Unix())
 			for j := 0; j < base; j++ {
-				k1 := rand.Intn(*dnums)
-				k2 := rand.Intn(*dnums)
+				// k1 := rand.Intn(*dnums)
+				// k2 := rand.Intn(*dnums)
 				startKey := int32(k1)
 				endKey := int32(k2)
 				// 生成随机的startKey和endKey
@@ -166,7 +167,9 @@ func nrand() int64 { //随机生成clientId
 func main() {
 	flag.Parse()
 	// dataNum := *dnums
-	valueSize := *vsize
+	startkey := int32(*k1)
+	endkey := int32(*k2)
+	gapkey := int(endkey-startkey)
 	servers := strings.Split(*ser, ",")
 	// fmt.Printf("servers:%v\n",servers)
 	kvc := new(KVClient)
@@ -176,9 +179,9 @@ func main() {
 	kvc.InitPool() // 初始化grpc连接池
 	startTime := time.Now()
 	// 开始发送请求
-	kvc.scan()
+	kvc.scan(startkey,endkey)
 
-	sum_Size_MB := float64(kvc.goodPut*valueSize) / 1000000
+	sum_Size_MB := float64(kvc.goodPut*256000*gapkey) / 1000000
 	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, total %v, goodPut %v, value %v, client %v, Size %vMB\n",
-		time.Since(startTime), float64(sum_Size_MB)/time.Since(startTime).Seconds(), *dnums, kvc.goodPut, *vsize, *cnums, sum_Size_MB)
+		time.Since(startTime), float64(sum_Size_MB)/time.Since(startTime).Seconds(), *dnums, kvc.goodPut, 256000, *cnums, sum_Size_MB)
 }
