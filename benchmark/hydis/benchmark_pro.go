@@ -101,7 +101,7 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 				}
 				if j>= num+100 {
 					num = j
-					fmt.Printf("Goroutine %v put key num: %v\n", i, num)
+					// fmt.Printf("Goroutine %v put key num: %v\n", i, num)
 				}
 			}
 		}(i)
