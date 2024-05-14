@@ -8,6 +8,7 @@ option go_package="./;kvrpc";
 
 service KV{
   rpc GetInRaft (GetInRaftRequest) returns (GetInRaftResponse) {}
+  rpc ScanRangeInRaft (ScanRangeRequest) returns (ScanRangeResponse) {}
   rpc PutInRaft (PutInRaftRequest) returns (PutInRaftResponse) {}
 }
 
@@ -34,4 +35,13 @@ message PutInRaftRequest {
 message PutInRaftResponse {
   string Err = 1;
   int32 LeaderId = 2;
+}
+
+message ScanRangeRequest {
+  int32 start_key = 1;
+  int32 end_key = 2;
+}
+
+message ScanRangeResponse {
+  map<string, string> key_value_pairs = 1;
 }
