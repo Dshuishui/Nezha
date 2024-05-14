@@ -188,29 +188,29 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 
 func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) (*kvrpc.PutInRaftResponse, error) {
 	// fmt.Println("走到了server端的put函数")
-	// reply := kvs.StartPut(in)
-	// if reply.Err == raft.ErrWrongLeader {
-	// 	reply.LeaderId = kvs.raft.GetLeaderId()
-	// }
-	// return reply, nil
-
-	// 创建一个用于接收处理结果的通道
-	resultCh := make(chan *kvrpc.PutInRaftResponse)
-	// 在 goroutine 中处理请求
-	go func() {
-	// 处理请求的逻辑...
-	// 这里可以根据具体的业务逻辑来处理客户端请求并将其发送到 Raft 集群中
-
-	// 处理完成后，将结果发送到通道
 	reply := kvs.StartPut(in)
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
 	}
-	resultCh <- reply
-	}()
+	return reply, nil
 
-	// 返回结果通道，让客户端可以等待结果
-	return <-resultCh, nil
+	// 创建一个用于接收处理结果的通道
+	// resultCh := make(chan *kvrpc.PutInRaftResponse)
+	// // 在 goroutine 中处理请求
+	// go func() {
+	// // 处理请求的逻辑...
+	// // 这里可以根据具体的业务逻辑来处理客户端请求并将其发送到 Raft 集群中
+
+	// // 处理完成后，将结果发送到通道
+	// reply := kvs.StartPut(in)
+	// if reply.Err == raft.ErrWrongLeader {
+	// 	reply.LeaderId = kvs.raft.GetLeaderId()
+	// }
+	// resultCh <- reply
+	// }()
+
+	// // 返回结果通道，让客户端可以等待结果
+	// return <-resultCh, nil
 }
 
 func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResponse {
