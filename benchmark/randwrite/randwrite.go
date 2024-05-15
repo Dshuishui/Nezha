@@ -46,7 +46,7 @@ type KVClient struct {
 }
 
 // batchRawPut blinds put bench.
-func (kvc *KVClient) batchRawPut(value []byte) {
+func (kvc *KVClient) batchRawPut(value string) {
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
 	wg.Add(*cnums)
@@ -68,11 +68,12 @@ func (kvc *KVClient) batchRawPut(value []byte) {
 			num := 0
 			rand.Seed(time.Now().Unix())
 			for j := 0; j < base; j++ {
-				k := rand.Intn(*dnums)
+				// k := rand.Intn(*dnums)
 				//k := base*i + j
-				key := fmt.Sprintf("key_%d", k)
+				// key := fmt.Sprintf("key_%d", k)
+				key := util.GenerateFixedSizeKey(*dnums)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				reply, err := kvc.PutInRaft(key, string(value)) // 先随机传入一个地址的连接池
+				reply, err := kvc.PutInRaft(key, value) // 先随机传入一个地址的连接池
 				// fmt.Println("after putinraft , j:",j)
 				if err == nil && reply != nil && reply.Err != "defeat" {
 					kvc.goodPut++
@@ -184,7 +185,8 @@ func main() {
 	kvc.Kvservers = servers
 	kvc.clientId = nrand()
 
-	value := make([]byte, valueSize)
+	// value := make([]byte, valueSize)
+	value := util.GenerateLargeValue(valueSize)
 	kvc.InitPool()
 	startTime := time.Now()
 	// 开始发送请求
