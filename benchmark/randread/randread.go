@@ -24,7 +24,7 @@ import (
 	crand "crypto/rand"
 	"math/big"
 
-	"google.golang.org/grpc"
+	// "google.golang.org/grpc"
 )
 
 var (
@@ -90,18 +90,20 @@ func (kvc *KVClient) randRead(key int) {
 
 // Method of Send RPC of GetInRaft
 func (kvc *KVClient) SendGetInRaft(address string, request *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
-	conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
+	// p := kvc.pools[rand.Intn(len(kvc.Kvservers))]		// 随机对一个server进行scan查询
+	// fmt.Printf("拿出连接池对应的地址为%v",p.GetAddress())
+	p := kvc.pools[kvc.leaderId] // 拿到leaderid对应的那个连接池
+	conn, err := p.Get()
 	if err != nil {
-		util.EPrintf("err in SendGetInRaft: %v", err)
-		return nil, err
+		util.EPrintf("failed to get conn: %v", err)
 	}
 	defer conn.Close()
-	client := kvrpc.NewKVClient(conn)
+	client := kvrpc.NewKVClient(conn.Value())
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
 	defer cancel()
 	reply, err := client.GetInRaft(ctx, request)
 	if err != nil {
-		util.EPrintf("err in SendGetInRaft: %v", err)
+		util.EPrintf("err in SendGetInRaft: %v, address:%v", err,address)
 		return nil, err
 	}
 	return reply, nil
@@ -123,7 +125,7 @@ func (kvc *KVClient) Get(key string) (string, bool,error) {
 		if reply.Err == raft.OK {
 			return reply.Value, true, nil
 		} else if reply.Err == raft.ErrNoKey {
-			return "", false, nil
+			return reply.Value, false, nil
 		} else if reply.Err == raft.ErrWrongLeader {
 			kvc.changeToLeader(int(reply.LeaderId))
 			time.Sleep(1 * time.Millisecond)

@@ -13,7 +13,7 @@ import (
 	// "sync/atomic"
 	"time"
 
-	// kvc "gitee.com/dong-shuishui/FlexSync/kvstore/kvclient"
+	"gitee.com/dong-shuishui/FlexSync/raft"
 	"gitee.com/dong-shuishui/FlexSync/pool"
 
 	// raftrpc "gitee.com/dong-shuishui/FlexSync/rpc/Raftrpc"
@@ -81,7 +81,7 @@ func (kvc *KVClient) scan(k1 int32, k2 int32) {
 					num = j
 					// fmt.Printf("Goroutine %v put key num: %v\n", i, num)
 				}
-				fmt.Printf("This the result of scan:%+v\n",reply)
+				fmt.Printf("This the result of scan:%+v\n", reply)
 			}
 		}(i)
 	}
@@ -92,39 +92,35 @@ func (kvc *KVClient) scan(k1 int32, k2 int32) {
 	}
 }
 
-// Method of Send RPC of GetInRaft
-func (kvc *KVClient) SendRangeGetInRaft(address string, request *kvrpc.ScanRangeRequest) (*kvrpc.ScanRangeResponse, error) {
-	// conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
-	// p := kvc.pools[kvc.leaderId] // 拿到leaderid对应的那个连接池		
-	p := kvc.pools[rand.Intn(len(kvc.Kvservers))]		// 随机对一个server进行scan查询
-	// fmt.Printf("拿出连接池对应的地址为%v",p.GetAddress())
-	conn, err := p.Get()
-	if err != nil {
-		util.EPrintf("failed to get conn: %v", err)
-	}
-	defer conn.Close()
-	client := kvrpc.NewKVClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*6)
-	defer cancel()
-	reply, err := client.ScanRangeInRaft(ctx, request)
-	if err != nil {
-		util.EPrintf("err in SendGetInRaft: %v", err)
-		return nil, err
-	}
-	return reply, nil
-}
-
 func (kvc *KVClient) rangeGet(key1 int32, key2 int32) (*kvrpc.ScanRangeResponse, error) {
 	args := &kvrpc.ScanRangeRequest{
 		StartKey: key1,
 		EndKey:   key2,
 	}
-	reply, err := kvc.SendRangeGetInRaft(kvc.Kvservers[kvc.leaderId], args)
-	if err != nil {
-		util.EPrintf("can not connect ", kvc.Kvservers[kvc.leaderId], "or it's not leader")
-		return nil, err
+	for{
+		p := kvc.pools[kvc.leaderId] // 拿到leaderid对应的那个连接池
+		// p := kvc.pools[rand.Intn(len(kvc.Kvservers))]		// 随机对一个server进行scan查询
+		conn, err := p.Get()
+		if err != nil {
+			util.EPrintf("failed to get conn: %v", err)
+		}
+		defer conn.Close()
+		client := kvrpc.NewKVClient(conn.Value())
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*6)
+		defer cancel()
+		reply, err := client.ScanRangeInRaft(ctx, args)
+		if err != nil {
+			util.EPrintf("err in ScanRangeInRaft: %v", err)
+			return nil, err
+		}
+		if reply.Err == raft.ErrWrongLeader {
+			kvc.changeToLeader(int(reply.LeaderId))
+			continue	
+		}
+		if reply.Err == raft.OK {
+			return reply, nil
+		}
 	}
-	return reply, nil
 }
 
 func (kvc *KVClient) InitPool() {
@@ -169,7 +165,7 @@ func main() {
 	// dataNum := *dnums
 	startkey := int32(*k1)
 	endkey := int32(*k2)
-	gapkey := int(endkey-startkey)
+	gapkey := int(endkey-startkey) + 1
 	servers := strings.Split(*ser, ",")
 	// fmt.Printf("servers:%v\n",servers)
 	kvc := new(KVClient)
@@ -179,7 +175,7 @@ func main() {
 	kvc.InitPool() // 初始化grpc连接池
 	startTime := time.Now()
 	// 开始发送请求
-	kvc.scan(startkey,endkey)
+	kvc.scan(startkey, endkey)
 	valuesize := 256000
 
 	sum_Size_MB := float64(kvc.goodPut*valuesize*gapkey) / 1000000
