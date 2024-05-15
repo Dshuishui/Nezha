@@ -62,8 +62,8 @@ func (kvc *KVClient) scan(k1 int32, k2 int32) {
 			for j := 0; j < base; j++ {
 				// k1 := rand.Intn(*dnums)
 				// k2 := rand.Intn(*dnums)
-				startKey := int32(k1)
-				endKey := int32(k2)
+				startKey := k1
+				endKey := k2
 				// 生成随机的startKey和endKey
 				// startKey := fmt.Sprintf("key_%d", k1)
 				// endKey := fmt.Sprintf("key_%d", k2)
@@ -72,7 +72,7 @@ func (kvc *KVClient) scan(k1 int32, k2 int32) {
 					startKey, endKey = endKey, startKey
 				}
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				_, err := kvc.rangeGet(startKey, endKey) // 先随机传入一个地址的连接池
+				reply, err := kvc.rangeGet(startKey, endKey) // 先随机传入一个地址的连接池
 				// fmt.Println("after putinraft , j:",j)
 				if err != nil {
 					kvc.goodPut++
@@ -81,7 +81,7 @@ func (kvc *KVClient) scan(k1 int32, k2 int32) {
 					num = j
 					// fmt.Printf("Goroutine %v put key num: %v\n", i, num)
 				}
-				// fmt.Printf("This the result of scan:%+v\n",reply)
+				fmt.Printf("This the result of scan:%+v\n",reply)
 			}
 		}(i)
 	}
@@ -180,8 +180,9 @@ func main() {
 	startTime := time.Now()
 	// 开始发送请求
 	kvc.scan(startkey,endkey)
+	valuesize := 256000
 
-	sum_Size_MB := float64(kvc.goodPut*256000*gapkey) / 1000000
+	sum_Size_MB := float64(kvc.goodPut*valuesize*gapkey) / 1000000
 	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, total %v, goodPut %v, value %v, client %v, Size %vMB\n",
-		time.Since(startTime), float64(sum_Size_MB)/time.Since(startTime).Seconds(), *dnums, kvc.goodPut, 256000, *cnums, sum_Size_MB)
+		time.Since(startTime), float64(sum_Size_MB)/time.Since(startTime).Seconds(), *dnums, kvc.goodPut, valuesize, *cnums, sum_Size_MB)
 }

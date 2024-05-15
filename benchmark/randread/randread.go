@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"strconv"
 
 	// "strconv"
 	"context"
@@ -32,7 +33,7 @@ var (
 	cnums = flag.Int("cnums", 1, "Client Threads Number")
 	dnums = flag.Int("dnums", 1000000, "data num")
 	// getratio = flag.Int("getratio", 1, "Get Times per Put Times")
-	vsize = flag.Int("vsize", 64, "value size in type")
+	key = flag.Int("key", 6, "target key")
 )
 
 type KVClient struct {
@@ -47,7 +48,7 @@ type KVClient struct {
 }
 
 // randread
-func (kvc *KVClient) randRead() {
+func (kvc *KVClient) randRead(key int) {
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
 	wg.Add(*cnums)
@@ -60,11 +61,12 @@ func (kvc *KVClient) randRead() {
 			num := 0
 			rand.Seed(time.Now().Unix())
 			for j := 0; j < base; j++ {
-				k := rand.Intn(*dnums)
+				// k := rand.Intn(*dnums)
 				//k := base*i + j
-				key := fmt.Sprintf("key_%d", k)
+				// key := fmt.Sprintf("key_%d", k)
+				targetkey := strconv.Itoa(key)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				reply, keyExist, err := kvc.Get(key) // 先随机传入一个地址的连接池
+				reply, keyExist, err := kvc.Get(targetkey) // 先随机传入一个地址的连接池
 				// fmt.Println("after putinraft , j:",j)
 				if err != nil {
 					kvc.goodPut++
@@ -169,7 +171,7 @@ func nrand() int64 { //随机生成clientId
 func main() {
 	flag.Parse()
 	// dataNum := *dnums
-	valueSize := *vsize
+	key := *key
 	servers := strings.Split(*ser, ",")
 	// fmt.Printf("servers:%v\n",servers)
 	kvc := new(KVClient)
@@ -179,9 +181,10 @@ func main() {
 	kvc.InitPool()		// 初始化grpc连接池
 	startTime := time.Now()
 	// 开始发送请求
-	kvc.randRead()
+	kvc.randRead(key)
+	valuesize := 256000
 
-	sum_Size_MB := float64(kvc.goodPut*valueSize) / 1000000
+	sum_Size_MB := float64(kvc.goodPut*valuesize) / 1000000
 	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, total %v, goodPut %v, value %v, client %v, Size %vMB\n",
-		time.Since(startTime), float64(sum_Size_MB)/time.Since(startTime).Seconds(), *dnums, kvc.goodPut, *vsize, *cnums, sum_Size_MB)
+		time.Since(startTime), float64(sum_Size_MB)/time.Since(startTime).Seconds(), *dnums, kvc.goodPut, valuesize, *cnums, sum_Size_MB)
 }
