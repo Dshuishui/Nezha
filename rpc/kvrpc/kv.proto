@@ -44,4 +44,6 @@ message ScanRangeRequest {
 
 message ScanRangeResponse {
   map<string, string> key_value_pairs = 1;
+  int32 LeaderId = 2; 
+  string Err = 3;
 }

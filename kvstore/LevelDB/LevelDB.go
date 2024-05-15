@@ -138,7 +138,7 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 		// positionBytes := kvs.persister.Get(op.Key)
 		position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
 		if positionBytes == nil {                   //  说明leveldb中没有该key
-			value := "NOKEY"
+			value := raft.NoKey
 			result[key] = value
 		} else {
 			value, err := kvs.raft.ReadValueFromFile("./kvstore/kvserver/db_key_index", position)
@@ -544,9 +544,9 @@ func (kvs *KVServer) applyLoop() {
 							// addr := addrs[op.Index]
 							positionBytes := make([]byte, binary.MaxVarintLen64) // 相当于把地址（指向keysize开始处）压缩一下
 							binary.PutVarint(positionBytes, offset)
-							kvs.persister.Put(op.Key, positionBytes)
+							// kvs.persister.Put(op.Key, positionBytes)
 
-							// kvs.persister.Put(op.Key, []byte(op.Value))
+							kvs.persister.Put(op.Key, []byte(op.Value))
 							// fmt.Println("length:",len(positionBytes))
 							// fmt.Println("length:",len([]byte(op.Value)))
 						} else if existOp { // 虽然该请求的处理还未超时，但是已经处理过了。
@@ -555,23 +555,16 @@ func (kvs *KVServer) applyLoop() {
 					} else { // OP_TYPE_GET
 						if existOp { // 如果是GET请求，只要没超时，都可以进行幂等处理
 							// opCtx.value, opCtx.keyExist = kvs.kvStore[op.Key]	// --------------------------------------------
-							// value := kvs.persister.Get(op.Key)		leveldb拿取value
-
-							// 从 LevelDB 中获取键对应的值，并解码为整数
-							positionBytes, _ := kvs.persister.Get(op.Key)
-							// positionBytes := kvs.persister.Get(op.Key)
-							position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
-							if positionBytes == nil {                   //  说明leveldb中没有该key
-								opCtx.keyExist = false
-								opCtx.value = ""
-							} else {
-								value, err := kvs.raft.ReadValueFromFile("./kvstore/kvserver/db_key_index", position)
-								if err != nil {
-									fmt.Println("拿取value有问题")
-									panic(err)
-								}
-								opCtx.value = value
+							value ,err := kvs.persister.Get(op.Key)		//  leveldb拿取value
+							if err != nil {
+								fmt.Println("拿取value有问题")
+								panic(err)
 							}
+							if value ==nil {
+								opCtx.keyExist = false
+								opCtx.value = raft.NoKey
+							}
+							opCtx.value = string(value)				
 						}
 					}
 
