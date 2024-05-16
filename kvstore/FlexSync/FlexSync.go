@@ -196,7 +196,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 				reply.Err = raft.ErrNoKey
 				reply.Value = raft.NoKey
 			} else {
-				value, err := kvs.raft.ReadValueFromFile("./kvstore/FlexSync/db_key_index", position)
+				value, err := kvs.raft.ReadValueFromFile("raft/RaftState.log", position)
 				if err != nil {
 					fmt.Println("拿取value有问题")
 					panic(err)
