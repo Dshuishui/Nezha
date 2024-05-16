@@ -417,6 +417,12 @@ func (rf *Raft) GetLeaderId() (leaderId int32) {
 	return int32(rf.leaderId)
 }
 
+func (rf *Raft) GetApplyIndex() (applyindex int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.lastApplied
+}
+
 func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteRequest) (*raftrpc.RequestVoteResponse, error) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -442,7 +448,7 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 		rf.currentTerm = int(args.Term)
 		rf.role = ROLE_FOLLOWER
 		rf.votedFor = -1                    // 有问题，如果两个leader同时选举，那会进行多次投票，因为都满足下方的投票条件---没有问题，如果第二个来请求投票，此时args.Term = rf.currentTerm。因为rf.currentTerm已经更新
-		rf.leaderId = int(args.CandidateId) // 先假设这个即将成为leader
+		// rf.leaderId = int(args.CandidateId) // 先假设这个即将成为leader
 	}
 
 	// 每个任期，只能投票给1人
@@ -632,12 +638,12 @@ func (rf *Raft) HeartbeatInRaft(ctx context.Context, args *raftrpc.AppendEntries
 	// 刷新活跃时间
 	rf.lastActiveTime = time.Now()
 	reply.Success = true                           // 成功心跳
-	if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
-		rf.commitIndex = int(args.LeaderCommit)
-		if rf.lastIndex() < rf.commitIndex { // 感觉，不存在这种情况，走到这里基本都是日志与leader一样了，怎么还会索引比commitindex小
-			rf.commitIndex = rf.lastIndex()
-		}
-	}
+	// if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
+	// 	rf.commitIndex = int(args.LeaderCommit)
+	// 	if rf.lastIndex() < rf.commitIndex { // 感觉，不存在这种情况，走到这里基本都是日志与leader一样了，怎么还会索引比commitindex小
+	// 		rf.commitIndex = rf.lastIndex()
+	// 	}
+	// }
 	return reply, nil
 }
 
@@ -666,7 +672,6 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Term:    int32(rf.currentTerm),
 	}
 	// fmt.Println("到这了嘛4")
-	rf.log = append(rf.log, &logEntry)
 	index = rf.lastIndex()
 	term = rf.currentTerm
 	entry_global = Entry{
@@ -676,7 +681,6 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Key:         command.(*raftrpc.DetailCod).Key,
 		Value:       command.(*raftrpc.DetailCod).Value,
 	}
-	rf.mu.Unlock()
 	arrEntry := []*Entry{&entry_global}
 	// rf.batchLog = append(rf.batchLog, &entry)
 	// if err := enc.Encode(entry); err != nil {
@@ -696,6 +700,8 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// 	rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
 	// }
 	rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
+	rf.log = append(rf.log, &logEntry)		// 确保日志落盘之后，再更新log
+	rf.mu.Unlock()
 	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// if err != nil {
 	// 	panic(err)
@@ -1123,7 +1129,7 @@ func (rf *Raft) doHeartBeat(peerId int) {
 			}
 			if reply.Term > int32(rf.currentTerm) { // 变成follower
 				rf.role = ROLE_FOLLOWER
-				rf.leaderId = 0
+				// rf.leaderId = 0
 				rf.currentTerm = int(reply.Term)
 				rf.votedFor = -1
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
@@ -1134,6 +1140,87 @@ func (rf *Raft) doHeartBeat(peerId int) {
 		rf.SyncChans[peerId] <- strconv.Itoa(peerId)
 	}(peerId)
 }
+
+func (rf *Raft) CheckActive(peerId int,resultChan chan <- bool) {
+	args := raftrpc.AppendEntriesInRaftRequest{}
+	args.Term = int32(rf.currentTerm)
+	args.LeaderId = int32(rf.me)
+	args.LeaderCommit = int32(rf.commitIndex)
+	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)
+	if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
+		args.PrevLogTerm = 0
+	} else {
+		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
+	}
+	args.Entries = []*raftrpc.LogEntry{}
+	if reply, ok := rf.sendHeartbeat(rf.peers[peerId], &args, rf.pools[peerId]); ok {
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		if rf.currentTerm != int(args.Term) {
+			return
+		}
+		if reply.Term > int32(rf.currentTerm) { // 变成follower
+			rf.role = ROLE_FOLLOWER
+			// rf.leaderId = 0		
+			rf.currentTerm = int(reply.Term)
+			rf.votedFor = -1
+			// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+			return
+		}
+		if reply.Success {
+			resultChan <- true
+		}else {
+			resultChan <- false
+		}
+	}else{
+		fmt.Printf("Failed to send heartbeat to node %v\n", peerId)
+		resultChan <- false
+    	return
+	}
+}
+
+func (rf *Raft) GetReadIndex() (commitindex int,isleader bool) {
+	rf.mu.Lock()
+
+	// 只有leader才执行，如果不是就返回false
+	if rf.role != ROLE_LEADER {
+		// fmt.Println("到这了嘛3")
+		rf.mu.Unlock()
+		return -1, false
+	}
+
+	resultChan := make(chan bool, len(rf.peers))		// 设置为集群中服务器的数量以确保不会被阻塞
+	var wg sync.WaitGroup
+  
+	for peerId := 0; peerId < len(rf.peers); peerId++ {
+	  wg.Add(1)
+	  go func(peerId int) {
+		defer wg.Done()
+		rf.CheckActive(peerId, resultChan)
+	  }(peerId)
+	}
+  
+	// 使用goroutine等待所有的心跳请求完成
+	go func() {
+	  wg.Wait()
+	  close(resultChan)
+	}()
+  
+	successCount := 0
+	for result := range resultChan {
+	  if result {
+		successCount++
+	  }
+	}
+  
+	if successCount > len(rf.peers)/2 {
+	//   log.Printf("Majority of nodes responded. Current commit index: %d", l.commitIndex)
+	  return rf.commitIndex,true
+	}
+  
+	fmt.Println("Failed to get majority response")
+	return -1,false // 表示失败，同时也不是合格的leader
+  }
 
 func (rf *Raft) appendEntriesLoop() {
 	First := true
@@ -1408,6 +1495,8 @@ func (rf *Raft) lastTerm() (lastLogTerm int) {
 func (rf *Raft) index2LogPos(index int) (pos int) {
 	return index - 1
 }
+
+
 
 // 服务器地址数组；当前方法对应的服务器地址数组中的下标；持久化存储了当前服务器状态的结构体；传递消息的通道结构体
 func Make(peers []string, me int,

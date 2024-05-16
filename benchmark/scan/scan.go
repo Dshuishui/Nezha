@@ -47,7 +47,7 @@ type KVClient struct {
 }
 
 // randread
-func (kvc *KVClient) scan(k1 int32, k2 int32) {
+func (kvc *KVClient) scan(gapkey int) {
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
 	wg.Add(*cnums)
@@ -60,10 +60,10 @@ func (kvc *KVClient) scan(k1 int32, k2 int32) {
 			num := 0
 			rand.Seed(time.Now().Unix())
 			for j := 0; j < base; j++ {
-				// k1 := rand.Intn(*dnums)
-				// k2 := rand.Intn(*dnums)
-				startKey := k1
-				endKey := k2
+				k1 := rand.Intn(1000)
+				k2 := k1+gapkey
+				startKey := int32(k1)
+				endKey := int32(k2)
 				// 生成随机的startKey和endKey
 				// startKey := fmt.Sprintf("key_%d", k1)
 				// endKey := fmt.Sprintf("key_%d", k2)
@@ -163,9 +163,9 @@ func nrand() int64 { //随机生成clientId
 func main() {
 	flag.Parse()
 	// dataNum := *dnums
-	startkey := int32(*k1)
-	endkey := int32(*k2)
-	gapkey := int(endkey-startkey) + 1
+	// startkey := int32(*k1)
+	// endkey := int32(*k2)
+	gapkey := 100
 	servers := strings.Split(*ser, ",")
 	// fmt.Printf("servers:%v\n",servers)
 	kvc := new(KVClient)
@@ -175,7 +175,7 @@ func main() {
 	kvc.InitPool() // 初始化grpc连接池
 	startTime := time.Now()
 	// 开始发送请求
-	kvc.scan(startkey, endkey)
+	kvc.scan(gapkey)
 	valuesize := 256000
 
 	sum_Size_MB := float64(kvc.goodPut*valuesize*gapkey) / 1000000

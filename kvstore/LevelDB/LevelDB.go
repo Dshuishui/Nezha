@@ -122,94 +122,133 @@ func (kv *KVServer) killed() bool {
 
 func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeRequest) (*kvrpc.ScanRangeResponse, error) {
 	reply := kvs.StartScan(in)
+	if reply.Err == raft.ErrWrongLeader {
+		reply.LeaderId = kvs.raft.GetLeaderId()
+	} else if reply.Err == raft.ErrNoKey {
+		// 返回客户端没有该key即可，这里先不做操作
+		// fmt.Println("server端没有client查询的key")
+	}
 	return reply, nil
 }
 
 func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeResponse {
 	startKey := args.GetStartKey()
 	endKey := args.GetEndKey()
+	gapKey := endKey - startKey + 1
+	reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
 
 	result := make(map[string]string)
-	// 执行scan范围查询
-	for i := startKey; i <= endKey; i++ {
-		// 从 LevelDB 中获取键对应的值，并解码为整数
-		key := strconv.Itoa(int(i))
-		positionBytes, _ := kvs.persister.Get(key)
-		// positionBytes := kvs.persister.Get(op.Key)
-		position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
-		if positionBytes == nil {                   //  说明leveldb中没有该key
-			value := raft.NoKey
-			result[key] = value
-		} else {
-			value, err := kvs.raft.ReadValueFromFile("./kvstore/kvserver/db_key_index", position)
-			if err != nil {
-				fmt.Println("拿取value有问题")
-				panic(err)
+	commitindex, isleader := kvs.raft.GetReadIndex()
+	if !isleader {
+		reply.Err = raft.ErrWrongLeader
+		return reply // 不是leader，拿不到commitindex直接退出，找其它leader
+	}
+	for {
+		if kvs.raft.GetApplyIndex() >= commitindex {
+			// 执行scan范围查询
+			wg := sync.WaitGroup{}
+			wg.Add(int(gapKey))
+			for i := startKey; i <= endKey; i++ {
+				go func(i int32) {
+					defer wg.Done()
+					// 从 LevelDB 中获取键对应的值，并解码为整数
+					key := strconv.Itoa(int(i))
+					value, _ := kvs.persister.Get(key)
+					// positionBytes := kvs.persister.Get(op.Key)
+					if value == nil { //  说明leveldb中没有该key
+						result[key] = raft.NoKey
+						// reply.Err = raft.ErrNoKey
+					}
+					result[key] = string(value)
+				}(i)
 			}
-			result[key] = value
+			wg.Wait()
+			// 构造响应并返回
+			res := &kvrpc.ScanRangeResponse{
+				KeyValuePairs: result,
+			}
+			return res
 		}
+		time.Sleep(6 * time.Millisecond)
 	}
-
-	// 构造响应并返回
-	res := &kvrpc.ScanRangeResponse{
-		KeyValuePairs: result,
-	}
-	return res
 }
 
-func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInRaftResponse) {
-	reply.Err = raft.OK
+// func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) (reply *kvrpc.GetInRaftResponse) {
+// 	reply.Err = raft.OK
 
-	op := raftrpc.DetailCod{
-		OpType:   OP_TYPE_GET,
-		Key:      args.Key,
-		ClientId: args.ClientId,
-		SeqId:    args.SeqId,
-	}
+// 	op := raftrpc.DetailCod{
+// 		OpType:   OP_TYPE_GET,
+// 		Key:      args.Key,
+// 		ClientId: args.ClientId,
+// 		SeqId:    args.SeqId,
+// 	}
 
-	// 写入raft层
-	var isLeader bool
-	op.Index, op.Term, isLeader = kvs.raft.Start(&op) // 读操作不需要写入raft日志，即不需要作为日志追加进去
-	if !isLeader {
+// 	// 写入raft层
+// 	var isLeader bool
+// 	op.Index, op.Term, isLeader = kvs.raft.Start(&op) // 读操作不需要写入raft日志，即不需要作为日志追加进去
+// 	if !isLeader {
+// 		reply.Err = raft.ErrWrongLeader
+// 		return reply
+// 	}
+
+// 	opCtx := newOpContext(&op)
+
+// 	func() {
+// 		kvs.mu.Lock()
+// 		defer kvs.mu.Unlock()
+// 		// 保存RPC上下文，等待提交回调，可能会因为Leader变更覆盖同样Index，不过前一个RPC会超时退出并令客户端重试
+// 		kvs.reqMap[int(op.Index)] = opCtx
+// 	}()
+
+// 	// RPC结束前清理上下文
+// 	defer func() {
+// 		kvs.mu.Lock()
+// 		defer kvs.mu.Unlock()
+// 		if one, ok := kvs.reqMap[int(op.Index)]; ok {
+// 			if one == opCtx {
+// 				delete(kvs.reqMap, int(op.Index))
+// 			}
+// 		}
+// 	}()
+
+// 	timer := time.NewTimer(8000 * time.Millisecond)
+// 	defer timer.Stop()
+// 	select {
+// 	case <-opCtx.committed: // 如果提交了
+// 		if opCtx.wrongLeader { // 同样index位置的term不一样了, 说明leader变了，需要client向新leader重新写入
+// 			reply.Err = raft.ErrWrongLeader
+// 		} else if !opCtx.keyExist { // key不存在
+// 			reply.Err = raft.ErrNoKey
+// 		} else {
+// 			reply.Value = opCtx.value // 返回值
+// 		}
+// 	case <-timer.C: // 如果2秒都没提交成功，让client重试
+// 		reply.Err = raft.ErrWrongLeader
+// 	}
+// 	return reply
+// }
+
+func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResponse {
+	reply := &kvrpc.GetInRaftResponse{Err: raft.OK}
+	commitindex, isleader := kvs.raft.GetReadIndex()
+	if !isleader {
 		reply.Err = raft.ErrWrongLeader
-		return reply
+		return reply // 不是leader，拿不到commitindex直接退出，找其它leader
 	}
-
-	opCtx := newOpContext(&op)
-
-	func() {
-		kvs.mu.Lock()
-		defer kvs.mu.Unlock()
-		// 保存RPC上下文，等待提交回调，可能会因为Leader变更覆盖同样Index，不过前一个RPC会超时退出并令客户端重试
-		kvs.reqMap[int(op.Index)] = opCtx
-	}()
-
-	// RPC结束前清理上下文
-	defer func() {
-		kvs.mu.Lock()
-		defer kvs.mu.Unlock()
-		if one, ok := kvs.reqMap[int(op.Index)]; ok {
-			if one == opCtx {
-				delete(kvs.reqMap, int(op.Index))
+	for { // 证明了此服务器就是leader
+		if kvs.raft.GetApplyIndex() >= commitindex {
+			key := args.GetKey()
+			value, _ := kvs.persister.Get(key)
+			// positionBytes := kvs.persister.Get(op.Key)
+			if value == nil { //  说明leveldb中没有该key
+				reply.Err = raft.ErrNoKey
+				reply.Value = raft.NoKey
 			}
+			reply.Value = string(value)
+			return reply
 		}
-	}()
-
-	timer := time.NewTimer(8000 * time.Millisecond)
-	defer timer.Stop()
-	select {
-	case <-opCtx.committed: // 如果提交了
-		if opCtx.wrongLeader { // 同样index位置的term不一样了, 说明leader变了，需要client向新leader重新写入
-			reply.Err = raft.ErrWrongLeader
-		} else if !opCtx.keyExist { // key不存在
-			reply.Err = raft.ErrNoKey
-		} else {
-			reply.Value = opCtx.value // 返回值
-		}
-	case <-timer.C: // 如果2秒都没提交成功，让client重试
-		reply.Err = raft.ErrWrongLeader
+		time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
 	}
-	return reply
 }
 
 func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
@@ -555,16 +594,16 @@ func (kvs *KVServer) applyLoop() {
 					} else { // OP_TYPE_GET
 						if existOp { // 如果是GET请求，只要没超时，都可以进行幂等处理
 							// opCtx.value, opCtx.keyExist = kvs.kvStore[op.Key]	// --------------------------------------------
-							value ,err := kvs.persister.Get(op.Key)		//  leveldb拿取value
+							value, err := kvs.persister.Get(op.Key) //  leveldb拿取value
 							if err != nil {
 								fmt.Println("拿取value有问题")
 								panic(err)
 							}
-							if value ==nil {
+							if value == nil {
 								opCtx.keyExist = false
 								opCtx.value = raft.NoKey
 							}
-							opCtx.value = string(value)				
+							opCtx.value = string(value)
 						}
 					}
 
