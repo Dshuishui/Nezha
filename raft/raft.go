@@ -83,8 +83,8 @@ type Raft struct {
 	me        int        // this peer's index into peers[]
 	dead      int32      // set by Kill()
 
-	currentTerm int        // 见过的最大任期
-	votedFor    int        // 记录在currentTerm任期投票给谁了
+	currentTerm int                 // 见过的最大任期
+	votedFor    int                 // 记录在currentTerm任期投票给谁了
 	log         []*raftrpc.LogEntry // 操作日志
 
 	// 所有服务器，易失状态
@@ -219,7 +219,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 	err = writer.Flush()
 	if err != nil {
 		log.Fatalf("刷新缓冲区失败：%v", err)
-	}	
+	}
 
 	rf.Offsets = append(rf.Offsets, offsets...)
 }
@@ -447,7 +447,7 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 	if args.Term > int32(rf.currentTerm) {
 		rf.currentTerm = int(args.Term)
 		rf.role = ROLE_FOLLOWER
-		rf.votedFor = -1                    // 有问题，如果两个leader同时选举，那会进行多次投票，因为都满足下方的投票条件---没有问题，如果第二个来请求投票，此时args.Term = rf.currentTerm。因为rf.currentTerm已经更新
+		rf.votedFor = -1 // 有问题，如果两个leader同时选举，那会进行多次投票，因为都满足下方的投票条件---没有问题，如果第二个来请求投票，此时args.Term = rf.currentTerm。因为rf.currentTerm已经更新
 		// rf.leaderId = int(args.CandidateId) // 先假设这个即将成为leader
 	}
 
@@ -553,13 +553,13 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		}
 		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
 			rf.log = append(rf.log, logEntry)
-			rf.batchLog= append(rf.batchLog, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
+			rf.batchLog = append(rf.batchLog, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
 
 			if index == rf.lastIndex() { // 已经将日志补足后，开始批量写入
 				// offsets1, err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
 				// rf.mu.Unlock()
 				rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
-				rf.batchLog = rf.batchLog[:0]		// 清空暂存日志的数组
+				rf.batchLog = rf.batchLog[:0] // 清空暂存日志的数组
 				// go func() {
 				// 	err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
 				// 	if err != nil {
@@ -580,10 +580,10 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				rf.log = append(rf.log, logEntry) // 把新log加入进来
 
 				// offset := rf.Offsets[index]      // 截取后面错误的offset
-				offset := rf.Offsets[index-rf.shotOffset-1]		// 这个要减一
+				offset := rf.Offsets[index-rf.shotOffset-1] // 这个要减一
 				// rf.Offsets = rf.Offsets[:logPos] // 删除当前错误的offset，以及后续的所有
-				rf.Offsets = rf.Offsets[:logPos-rf.shotOffset]	// 不用减一，因为logPos已经是减一了的
-				arrEntry := []*Entry{&entry}     // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
+				rf.Offsets = rf.Offsets[:logPos-rf.shotOffset] // 不用减一，因为logPos已经是减一了的
+				arrEntry := []*Entry{&entry}                   // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
 				// offsets2, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
 				// rf.mu.Unlock()
 				rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
@@ -637,7 +637,7 @@ func (rf *Raft) HeartbeatInRaft(ctx context.Context, args *raftrpc.AppendEntries
 	rf.leaderId = int(args.LeaderId)
 	// 刷新活跃时间
 	rf.lastActiveTime = time.Now()
-	reply.Success = true                           // 成功心跳
+	reply.Success = true // 成功心跳
 	// if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
 	// 	rf.commitIndex = int(args.LeaderCommit)
 	// 	if rf.lastIndex() < rf.commitIndex { // 感觉，不存在这种情况，走到这里基本都是日志与leader一样了，怎么还会索引比commitindex小
@@ -690,17 +690,17 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// // 如果总大小超过3MB，截取日志数组并退出循环
 	// if rf.batchLogSize >= fileSizeLimit {
 	// 	rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
-		// go func() {
-		// 	err := rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
-		// 	if err != nil {
-		// 		fmt.Println("Error in WriteEntryToFile:", err)
-		// 	}
-		// }()
+	// go func() {
+	// 	err := rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
+	// 	if err != nil {
+	// 		fmt.Println("Error in WriteEntryToFile:", err)
+	// 	}
+	// }()
 	// 	buffer.Reset()
 	// 	rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
 	// }
 	rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
-	rf.log = append(rf.log, &logEntry)		// 确保日志落盘之后，再更新log
+	rf.log = append(rf.log, &logEntry) // 确保日志落盘之后，再更新log
 	rf.mu.Unlock()
 	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// if err != nil {
@@ -1135,13 +1135,13 @@ func (rf *Raft) doHeartBeat(peerId int) {
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				return
 			}
-			rf.SyncChans[peerId] <- strconv.Itoa(peerId)
+			// rf.SyncChans[peerId] <- strconv.Itoa(peerId)
 		}
-		rf.SyncChans[peerId] <- strconv.Itoa(peerId)
+		// rf.SyncChans[peerId] <- strconv.Itoa(peerId)
 	}(peerId)
 }
 
-func (rf *Raft) CheckActive(peerId int,resultChan chan <- bool) {
+func (rf *Raft) CheckActive(peerId int, resultChan chan<- bool) {
 	args := raftrpc.AppendEntriesInRaftRequest{}
 	args.Term = int32(rf.currentTerm)
 	args.LeaderId = int32(rf.me)
@@ -1161,7 +1161,7 @@ func (rf *Raft) CheckActive(peerId int,resultChan chan <- bool) {
 		}
 		if reply.Term > int32(rf.currentTerm) { // 变成follower
 			rf.role = ROLE_FOLLOWER
-			// rf.leaderId = 0		
+			// rf.leaderId = 0
 			rf.currentTerm = int(reply.Term)
 			rf.votedFor = -1
 			// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
@@ -1169,29 +1169,30 @@ func (rf *Raft) CheckActive(peerId int,resultChan chan <- bool) {
 		}
 		if reply.Success {
 			resultChan <- true
-		}else {
+		} else {
 			resultChan <- false
 		}
-	}else{
+	} else {
 		fmt.Printf("Failed to send heartbeat to node %v\n", peerId)
 		resultChan <- false
-    	return
+		return
 	}
 }
 
-func (rf *Raft) GetReadIndex() (commitindex int,isleader bool) {
+func (rf *Raft) GetReadIndex() (commitindex int, isleader bool) {
 	rf.mu.Lock()
-
+	// defer rf.mu.Unlock()
 	// 只有leader才执行，如果不是就返回false
 	if rf.role != ROLE_LEADER {
 		// fmt.Println("到这了嘛3")
 		rf.mu.Unlock()
 		return -1, false
 	}
+	rf.mu.Unlock()
 
-	resultChan := make(chan bool, len(rf.peers))		// 设置为集群中服务器的数量以确保不会被阻塞
+	resultChan := make(chan bool, len(rf.peers)) // 设置为集群中服务器的数量以确保不会被阻塞
 	var wg sync.WaitGroup
-  
+
 	for peerId := 0; peerId < len(rf.peers); peerId++ {
 		if peerId == rf.me {
 			continue
@@ -1202,28 +1203,28 @@ func (rf *Raft) GetReadIndex() (commitindex int,isleader bool) {
 			rf.CheckActive(peerId, resultChan)
 		}(peerId)
 	}
-  
+
 	// 使用goroutine等待所有的心跳请求完成
 	go func() {
-	  wg.Wait()
-	  close(resultChan)
+		wg.Wait()
+		close(resultChan)
 	}()
-  
+
 	successCount := 0
 	for result := range resultChan {
-	  if result {
-		successCount++
-	  }
+		if result {
+			successCount++
+		}
 	}
-  
-	if successCount > len(rf.peers)/2 {
-	//   log.Printf("Majority of nodes responded. Current commit index: %d", l.commitIndex)
-	  return rf.commitIndex,true
+
+	if successCount+1 > len(rf.peers)/2 {
+		//   log.Printf("Majority of nodes responded. Current commit index: %d", l.commitIndex)
+		return rf.commitIndex, true
 	}
-  
+
 	fmt.Println("Failed to get majority response")
-	return -1,false // 表示失败，同时也不是合格的leader
-  }
+	return -1, false // 表示失败，同时也不是合格的leader
+}
 
 func (rf *Raft) appendEntriesLoop() {
 	First := true
@@ -1265,7 +1266,7 @@ func (rf *Raft) appendEntriesLoop() {
 				First = false
 			}
 			now := time.Now() // 心跳
-			if (now.Sub(rf.LastAppendTime) > 200*time.Millisecond)  {
+			if now.Sub(rf.LastAppendTime) > 200*time.Millisecond {
 				for peerId := 0; peerId < len(rf.peers); peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
 					if peerId == rf.me {
 						continue
@@ -1443,7 +1444,7 @@ func (rf *Raft) applyLogLoop() {
 			// fmt.Printf("此时的commitIndex是多少：%v",rf.commitIndex)
 			if (rf.commitIndex > rf.lastApplied) && ((rf.lastApplied - rf.shotOffset) <
 				len(rf.Offsets)) {
-			// if rf.commitIndex > rf.lastApplied {
+				// if rf.commitIndex > rf.lastApplied {
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				rf.lastApplied += 1
 				// util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
@@ -1498,8 +1499,6 @@ func (rf *Raft) lastTerm() (lastLogTerm int) {
 func (rf *Raft) index2LogPos(index int) (pos int) {
 	return index - 1
 }
-
-
 
 // 服务器地址数组；当前方法对应的服务器地址数组中的下标；持久化存储了当前服务器状态的结构体；传递消息的通道结构体
 func Make(peers []string, me int,
