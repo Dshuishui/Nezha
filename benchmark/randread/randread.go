@@ -89,10 +89,10 @@ func (kvc *KVClient) randRead(key int) {
 }
 
 // Method of Send RPC of GetInRaft
-func (kvc *KVClient) SendGetInRaft(address string, request *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
+func (kvc *KVClient) SendGetInRaft(targetId int, request *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
 	// p := kvc.pools[rand.Intn(len(kvc.Kvservers))]		// 随机对一个server进行scan查询
 	// fmt.Printf("拿出连接池对应的地址为%v",p.GetAddress())
-	p := kvc.pools[kvc.leaderId] // 拿到leaderid对应的那个连接池
+	p := kvc.pools[targetId] // 拿到leaderid对应的那个连接池
 	conn, err := p.Get()
 	if err != nil {
 		util.EPrintf("failed to get conn: %v", err)
@@ -103,10 +103,15 @@ func (kvc *KVClient) SendGetInRaft(address string, request *kvrpc.GetInRaftReque
 	defer cancel()
 	reply, err := client.GetInRaft(ctx, request)
 	if err != nil {
-		util.EPrintf("err in SendGetInRaft: %v, address:%v", err,address)
+		util.EPrintf("err in SendGetInRaft: %v, address:%v", err,kvc.Kvservers[targetId])
 		return nil, err
 	}
 	return reply, nil
+	// 1、直接先调用raft层的方法，用来获取当前leader的commitindex
+	// 2、raft层的方法，通过grpc发送消息给leaderid的节点，首先判读是否是自己，是自己就当leader处理。
+		// 3、不是自己就通过grpc调用leader的方法获取commmitindex的方法，leader要先发送心跳，根据收到的回复，再回复commitindex，这里先假设都不会过期。如果过期了，需要返回leaderid给follow，重新执行并替换第二部的leaderid
+		// 4、拿到commitindex后，等待applyindex大于等于commitindex。再执行get请求。
+	// 5、如果是自己：直接调用上述leader获取commitindex的方法，拿到commitindex后直接执行get请求。
 }
 
 func (kvc *KVClient) Get(key string) (string, bool,error) {
@@ -115,11 +120,12 @@ func (kvc *KVClient) Get(key string) (string, bool,error) {
 		ClientId: kvc.clientId,
 		SeqId:    atomic.AddInt64(&kvc.seqId, 1),
 	}
-
+	// targetId := rand.Intn(len(kvc.Kvservers))		// 理论上是先随机找个目标服务器
+	targetId := kvc.leaderId			// 这里先固定为leader
 	for {
-		reply, err := kvc.SendGetInRaft(kvc.Kvservers[kvc.leaderId], args)
+		reply, err := kvc.SendGetInRaft(targetId, args)
 		if err != nil {
-			util.EPrintf("can not connect ", kvc.Kvservers[kvc.leaderId], "or it's not leader")
+			fmt.Println("can not connect ", kvc.Kvservers[targetId], "or it's not leader")
 			return "", false, err 
 		}
 		if reply.Err == raft.OK {
@@ -127,7 +133,8 @@ func (kvc *KVClient) Get(key string) (string, bool,error) {
 		} else if reply.Err == raft.ErrNoKey {
 			return reply.Value, false, nil
 		} else if reply.Err == raft.ErrWrongLeader {
-			kvc.changeToLeader(int(reply.LeaderId))
+			// kvc.changeToLeader(int(reply.LeaderId))
+			targetId = int(reply.LeaderId)		
 			time.Sleep(1 * time.Millisecond)
 		}
 	}
