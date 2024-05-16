@@ -229,9 +229,16 @@ func GenerateLargeValue(size int) string {
 // 生成size+3个字节大小的key，加3是因为前面还会将生成的字节数组与“key”拼在一起
 func GenerateFixedSizeKey(size int) string {
 	const letters = "0123456789"
+	const nonZeroLetters = "123456789"
 	var buffer bytes.Buffer
+	rand.Seed(time.Now().UnixNano())
+
+	// 确保第一个字符不是 '0'
+	firstLetter := nonZeroLetters[rand.Intn(len(nonZeroLetters))]
+	buffer.WriteByte(firstLetter)
+
 	lettersLength := len(letters)
-	for i := 0; i < size; i++ {
+	for i := 1; i < size; i++ {
 		randomLetter := letters[rand.Intn(lettersLength)]
 		buffer.WriteByte(randomLetter)
 	}
