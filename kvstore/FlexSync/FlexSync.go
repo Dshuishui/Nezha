@@ -143,6 +143,7 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 		reply.Err = raft.ErrWrongLeader
 		return reply // 不是leader，拿不到commitindex直接退出，找其它leader
 	}
+	var mu sync.Mutex
 	for {
 		if kvs.raft.GetApplyIndex() >= commitindex {
 			// 执行scan范围查询
@@ -157,7 +158,9 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 					// positionBytes := kvs.persister.Get(op.Key)
 					// position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
 					if positionBytes == -1 {                   //  说明leveldb中没有该key
+						mu.Lock()
 						result[key] = raft.NoKey
+						mu.Unlock()
 						// reply.Err = raft.ErrNoKey
 					} else {
 						value, err := kvs.raft.ReadValueFromFile("./raft/RaftState.log", positionBytes)
@@ -165,7 +168,9 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 							fmt.Println("拿取value有问题")
 							panic(err)
 						}
+						mu.Lock()
 						result[key] = value
+						mu.Unlock()
 					}
 				}(i)
 			}

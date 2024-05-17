@@ -337,8 +337,8 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 
 // ReadValueFromFile 从指定的偏移量读取value
 func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, error) {
-	rf.mu.Lock()
-    defer rf.mu.Unlock()
+	// rf.mu.Lock()
+    // defer rf.mu.Unlock()
 	// 打开文件
 	file, err := os.Open(filename)
 	if err != nil {
