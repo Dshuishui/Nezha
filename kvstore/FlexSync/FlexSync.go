@@ -176,10 +176,8 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 			}
 			wg.Wait()
 			// 构造响应并返回
-			res := &kvrpc.ScanRangeResponse{
-				KeyValuePairs: result,
-			}
-			return res
+			reply.KeyValuePairs = result
+			return reply
 		}
 		time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
 	}
