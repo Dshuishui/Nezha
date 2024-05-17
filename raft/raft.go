@@ -1173,8 +1173,9 @@ func (rf *Raft) CheckActive(peerId int, resultChan chan<- bool) {
 	args.Entries = []*raftrpc.LogEntry{}
 	if reply, ok := rf.sendHeartbeat(rf.peers[peerId], &args, rf.pools[peerId]); ok {
 		rf.mu.Lock()
-		defer rf.mu.Unlock()
+		// defer rf.mu.Unlock()
 		if rf.currentTerm != int(args.Term) {
+			rf.mu.Unlock()
 			return
 		}
 		if reply.Term > int32(rf.currentTerm) { // 变成follower
@@ -1183,13 +1184,17 @@ func (rf *Raft) CheckActive(peerId int, resultChan chan<- bool) {
 			rf.currentTerm = int(reply.Term)
 			rf.votedFor = -1
 			// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+			rf.mu.Unlock()
 			return
 		}
 		if reply.Success {
+			fmt.Printf("receive true from node %v\n", peerId)
 			resultChan <- true
 		} else {
+			fmt.Printf("receive false from node %v\n", peerId)
 			resultChan <- false
 		}
+		rf.mu.Unlock()
 	} else {
 		fmt.Printf("Failed to send heartbeat to node %v\n", peerId)
 		resultChan <- false
@@ -1236,7 +1241,7 @@ func (rf *Raft) GetReadIndex() (commitindex int, isleader bool) {
 	}
 
 	if successCount+1 > len(rf.peers)/2 {
-		//   log.Printf("Majority of nodes responded. Current commit index: %d", l.commitIndex)
+		log.Printf("Majority of nodes responded. Current commit index: %d", rf.commitIndex)
 		return rf.commitIndex, true
 	}
 
