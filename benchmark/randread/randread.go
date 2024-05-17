@@ -23,7 +23,6 @@ import (
 
 	crand "crypto/rand"
 	"math/big"
-
 	// "google.golang.org/grpc"
 )
 
@@ -66,13 +65,16 @@ func (kvc *KVClient) randRead() {
 				// key := fmt.Sprintf("key_%d", k)
 				targetkey := strconv.Itoa(key)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				reply, keyExist, err := kvc.Get(targetkey) // 先随机传入一个地址的连接池
+				value, keyExist, err := kvc.Get(targetkey) // 先随机传入一个地址的连接池
 				// fmt.Println("after putinraft , j:",j)
-				if err != nil {
+				if err == nil {
 					kvc.goodPut++
 				}
-				if err!=nil && keyExist {
-					fmt.Printf("Got the value:%v corresponding to the key:%v\n ", reply, key)
+				if err == nil && keyExist {
+					fmt.Printf("Got the value:** corresponding to the key:%v === exist\n ", key)
+				}
+				if !keyExist {
+					fmt.Printf("Got the value:%v corresponding to the key:%v === nokey\n ", value, key)
 				}
 				if j >= num+100 {
 					num = j
@@ -103,30 +105,30 @@ func (kvc *KVClient) SendGetInRaft(targetId int, request *kvrpc.GetInRaftRequest
 	defer cancel()
 	reply, err := client.GetInRaft(ctx, request)
 	if err != nil {
-		util.EPrintf("err in SendGetInRaft: %v, address:%v", err,kvc.Kvservers[targetId])
+		util.EPrintf("err in SendGetInRaft: %v, address:%v", err, kvc.Kvservers[targetId])
 		return nil, err
 	}
 	return reply, nil
 	// 1、直接先调用raft层的方法，用来获取当前leader的commitindex
 	// 2、raft层的方法，通过grpc发送消息给leaderid的节点，首先判读是否是自己，是自己就当leader处理。
-		// 3、不是自己就通过grpc调用leader的方法获取commmitindex的方法，leader要先发送心跳，根据收到的回复，再回复commitindex，这里先假设都不会过期。如果过期了，需要返回leaderid给follow，重新执行并替换第二部的leaderid
-		// 4、拿到commitindex后，等待applyindex大于等于commitindex。再执行get请求。
+	// 3、不是自己就通过grpc调用leader的方法获取commmitindex的方法，leader要先发送心跳，根据收到的回复，再回复commitindex，这里先假设都不会过期。如果过期了，需要返回leaderid给follow，重新执行并替换第二部的leaderid
+	// 4、拿到commitindex后，等待applyindex大于等于commitindex。再执行get请求。
 	// 5、如果是自己：直接调用上述leader获取commitindex的方法，拿到commitindex后直接执行get请求。
 }
 
-func (kvc *KVClient) Get(key string) (string, bool,error) {
+func (kvc *KVClient) Get(key string) (string, bool, error) {
 	args := &kvrpc.GetInRaftRequest{
 		Key:      key,
 		ClientId: kvc.clientId,
 		SeqId:    atomic.AddInt64(&kvc.seqId, 1),
 	}
 	// targetId := rand.Intn(len(kvc.Kvservers))		// 理论上是先随机找个目标服务器
-	targetId := kvc.leaderId			// 这里先固定为leader
+	targetId := kvc.leaderId // 这里先固定为leader
 	for {
 		reply, err := kvc.SendGetInRaft(targetId, args)
 		if err != nil {
 			fmt.Println("can not connect ", kvc.Kvservers[targetId], "or it's not leader")
-			return "", false, err 
+			return "", false, err
 		}
 		if reply.Err == raft.OK {
 			return reply.Value, true, nil
@@ -134,7 +136,7 @@ func (kvc *KVClient) Get(key string) (string, bool,error) {
 			return reply.Value, false, nil
 		} else if reply.Err == raft.ErrWrongLeader {
 			// kvc.changeToLeader(int(reply.LeaderId))
-			targetId = int(reply.LeaderId)		
+			targetId = int(reply.LeaderId)
 			time.Sleep(1 * time.Millisecond)
 		}
 	}
@@ -187,7 +189,7 @@ func main() {
 	kvc.Kvservers = servers
 	kvc.clientId = nrand()
 
-	kvc.InitPool()		// 初始化grpc连接池
+	kvc.InitPool() // 初始化grpc连接池
 	startTime := time.Now()
 	// 开始发送请求
 	kvc.randRead()
