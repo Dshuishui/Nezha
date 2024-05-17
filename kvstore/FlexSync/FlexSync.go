@@ -176,6 +176,7 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 			}
 			return res
 		}
+		time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
 	}
 }
 
