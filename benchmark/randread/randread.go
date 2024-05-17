@@ -60,7 +60,7 @@ func (kvc *KVClient) randRead() {
 			num := 0
 			rand.Seed(time.Now().Unix())
 			for j := 0; j < base; j++ {
-				key := rand.Intn(10000)
+				key := rand.Intn(3800)
 				//k := base*i + j
 				// key := fmt.Sprintf("key_%d", k)
 				targetkey := strconv.Itoa(key)
@@ -74,6 +74,7 @@ func (kvc *KVClient) randRead() {
 					fmt.Printf("Got the value:** corresponding to the key:%v === exist\n ", key)
 				}
 				if !keyExist {
+					kvc.PutInRaft(targetkey,value)	// 找到不存在的，先随便弥补一个键值对
 					fmt.Printf("Got the value:%v corresponding to the key:%v === nokey\n ", value, key)
 				}
 				if j >= num+100 {
@@ -138,6 +139,52 @@ func (kvc *KVClient) Get(key string) (string, bool, error) {
 			// kvc.changeToLeader(int(reply.LeaderId))
 			targetId = int(reply.LeaderId)
 			time.Sleep(1 * time.Millisecond)
+		}
+	}
+}
+
+// Method of Send RPC of PutInRaft
+func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftResponse, error) {
+	request := &kvrpc.PutInRaftRequest{
+		Key:      key,
+		Value:    value,
+		Op:       "Put",
+		ClientId: kvc.clientId,
+		SeqId:    atomic.AddInt64(&kvc.seqId, 1),
+	}
+	for {
+		// conn, err := grpc.Dial(kvc.Kvservers[kvc.leaderId], grpc.WithInsecure(), grpc.WithBlock())
+		// if err != nil {
+		// 	util.EPrintf("failed to get conn: %v", err)
+		// }
+		// defer conn.Close()
+		p := kvc.pools[kvc.leaderId] // 拿到leaderid对应的那个连接池
+		// fmt.Printf("拿出连接池对应的地址为%v",p.GetAddress())
+		conn, err := p.Get()
+		if err != nil {
+			util.EPrintf("failed to get conn: %v", err)
+		}
+		defer conn.Close()
+		client := kvrpc.NewKVClient(conn.Value())
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*3) // 设置5秒定时往下传
+		defer cancel()
+
+		reply, err := client.PutInRaft(ctx, request)
+		if err != nil {
+			// fmt.Println("客户端调用PutInRaft有问题")
+			util.EPrintf("err in PutInRaft-调用了服务器的put方法: %v", err)
+			// 这里防止服务器是宕机了，所以要change leader
+			return nil, err
+		}
+		if reply.Err == raft.OK {
+			// fmt.Printf("找到了leader %v\n",kvc.leaderId)
+			return reply, nil
+		} else if reply.Err == raft.ErrWrongLeader {
+			kvc.changeToLeader(int(reply.LeaderId))
+			// fmt.Printf("等待leader的出现,更改后的leaderid是%v\n",kvc.leaderId)
+			// time.Sleep(6 * time.Millisecond)
+		} else if reply.Err == "defeat" {
+			return reply, nil
 		}
 	}
 }
