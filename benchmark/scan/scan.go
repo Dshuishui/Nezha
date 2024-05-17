@@ -13,8 +13,8 @@ import (
 	// "sync/atomic"
 	"time"
 
-	"gitee.com/dong-shuishui/FlexSync/raft"
 	"gitee.com/dong-shuishui/FlexSync/pool"
+	"gitee.com/dong-shuishui/FlexSync/raft"
 
 	// raftrpc "gitee.com/dong-shuishui/FlexSync/rpc/Raftrpc"
 	"gitee.com/dong-shuishui/FlexSync/rpc/kvrpc"
@@ -61,7 +61,7 @@ func (kvc *KVClient) scan(gapkey int) {
 			rand.Seed(time.Now().Unix())
 			for j := 0; j < base; j++ {
 				k1 := rand.Intn(1000)
-				k2 := k1+gapkey
+				k2 := k1 + gapkey
 				startKey := int32(k1)
 				endKey := int32(k2)
 				// 生成随机的startKey和endKey
@@ -75,7 +75,7 @@ func (kvc *KVClient) scan(gapkey int) {
 				_, err := kvc.rangeGet(startKey, endKey) // 先随机传入一个地址的连接池
 				// fmt.Println("after putinraft , j:",j)
 				if err == nil {
-					fmt.Printf("got the key range %v-%v",startKey,endKey)
+					fmt.Printf("got the key range %v-%v\n", startKey, endKey)
 					kvc.goodPut++
 				}
 				if j >= num+100 {
@@ -99,7 +99,7 @@ func (kvc *KVClient) rangeGet(key1 int32, key2 int32) (*kvrpc.ScanRangeResponse,
 		StartKey: key1,
 		EndKey:   key2,
 	}
-	for{
+	for {
 		p := kvc.pools[kvc.leaderId] // 拿到leaderid对应的那个连接池
 		// p := kvc.pools[rand.Intn(len(kvc.Kvservers))]		// 随机对一个server进行scan查询
 		conn, err := p.Get()
@@ -117,7 +117,7 @@ func (kvc *KVClient) rangeGet(key1 int32, key2 int32) (*kvrpc.ScanRangeResponse,
 		}
 		if reply.Err == raft.ErrWrongLeader {
 			kvc.changeToLeader(int(reply.LeaderId))
-			continue	
+			continue
 		}
 		if reply.Err == raft.OK {
 			return reply, nil
@@ -167,7 +167,7 @@ func main() {
 	// dataNum := *dnums
 	// startkey := int32(*k1)
 	// endkey := int32(*k2)
-	gapkey := 10
+	gapkey := 100
 	servers := strings.Split(*ser, ",")
 	// fmt.Printf("servers:%v\n",servers)
 	kvc := new(KVClient)
