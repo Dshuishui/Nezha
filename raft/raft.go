@@ -1190,10 +1190,10 @@ func (rf *Raft) CheckActive(peerId int, resultChan chan<- bool) {
 			return
 		}
 		if reply.Success {
-			fmt.Printf("receive true from node %v\n", peerId)
+			// fmt.Printf("receive true from node %v\n", peerId)
 			resultChan <- true
 		} else {
-			fmt.Printf("receive false from node %v\n", peerId)
+			// fmt.Printf("receive false from node %v\n", peerId)
 			resultChan <- false
 		}
 		rf.mu.Unlock()
@@ -1243,7 +1243,7 @@ func (rf *Raft) GetReadIndex() (commitindex int, isleader bool) {
 	}
 
 	if successCount+1 > len(rf.peers)/2 {
-		log.Printf("Majority of nodes responded. Current commit index: %d", rf.commitIndex)
+		// log.Printf("Majority of nodes responded. Current commit index: %d", rf.commitIndex)
 		return rf.commitIndex, true
 	}
 
