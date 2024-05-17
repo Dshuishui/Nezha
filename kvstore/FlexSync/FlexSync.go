@@ -196,7 +196,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 				reply.Value = raft.NoKey
 			} else {
 				// fmt.Printf("此时的position的字节数组的长度:%v", len(positionBytes))
-				fmt.Printf("此时的position是:%v", positionBytes)
+				// fmt.Printf("此时的position是:%v", positionBytes)
 				// position, n := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
 				// 检查解码是否成功
 				// if n <= 0 {
