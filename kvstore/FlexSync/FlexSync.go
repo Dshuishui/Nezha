@@ -154,7 +154,11 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 					defer wg.Done()
 					// 从 LevelDB 中获取键对应的值，并解码为整数
 					key := strconv.Itoa(int(i))
-					positionBytes, _ := kvs.persister.Get(key)
+					positionBytes, err := kvs.persister.Get_opt(key)
+					if err != nil {
+						fmt.Println("拿取value有问题")
+						panic(err)
+					}
 					// positionBytes := kvs.persister.Get(op.Key)
 					// position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
 					if positionBytes == -1 {                   //  说明leveldb中没有该key
@@ -193,7 +197,11 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	for { // 证明了此服务器就是leader
 		if kvs.raft.GetApplyIndex() >= commitindex {
 			key := args.GetKey()
-			positionBytes, _ := kvs.persister.Get(key)
+			positionBytes, err := kvs.persister.Get_opt(key)
+			if err != nil {
+				fmt.Println("拿取value有问题")
+				panic(err)
+			}
 			// positionBytes := kvs.persister.Get(op.Key)
 			if positionBytes == -1 { //  说明leveldb中没有该key
 				reply.Err = raft.ErrNoKey
@@ -558,7 +566,7 @@ func (kvs *KVServer) applyLoop() {
 							// positionBytes = positionBytes[:n]
 							// fmt.Printf("此时put进去的offsetL%v\n", offset)
 							// fmt.Printf("转换后的offset：%v\n", positionBytes)
-							kvs.persister.Put(op.Key, offset)
+							kvs.persister.Put_opt(op.Key, offset)
 
 							// kvs.persister.Put(op.Key, []byte(op.Value))
 							// fmt.Println("length:",len(positionBytes))
@@ -572,7 +580,11 @@ func (kvs *KVServer) applyLoop() {
 							// value := kvs.persister.Get(op.Key)		leveldb拿取value
 
 							// 从 LevelDB 中获取键对应的值，并解码为整数
-							positionBytes, _ := kvs.persister.Get(op.Key)
+							positionBytes, err := kvs.persister.Get_opt(op.Key)
+							if err != nil {
+								fmt.Println("拿取value有问题")
+								panic(err)
+							}
 							// positionBytes := kvs.persister.Get(op.Key)
 							// position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
 							if positionBytes == -1 {                   //  说明leveldb中没有该key

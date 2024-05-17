@@ -154,7 +154,7 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 					defer wg.Done()
 					// 从 LevelDB 中获取键对应的值，并解码为整数
 					key := strconv.Itoa(int(i))
-					value, err := kvs.persister.Getlevel(key)
+					value, err := kvs.persister.Get(key)
 					if err != nil {
 						fmt.Println("拿取value有问题")
 						panic(err)
@@ -243,7 +243,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	for { // 证明了此服务器就是leader
 		if kvs.raft.GetApplyIndex() >= commitindex {
 			key := args.GetKey()
-			value, err := kvs.persister.Getlevel(key)
+			value, err := kvs.persister.Get(key)
 			if err != nil {
 				fmt.Println("拿取value有问题")
 				panic(err)
@@ -594,7 +594,7 @@ func (kvs *KVServer) applyLoop() {
 							// binary.PutVarint(positionBytes, offset)
 							// kvs.persister.Put(op.Key, positionBytes)
 
-							kvs.persister.Put_level(op.Key, op.Value)
+							kvs.persister.Put(op.Key, op.Value)
 							// fmt.Println("length:",len(positionBytes))
 							// fmt.Println("length:",len([]byte(op.Value)))
 						} else if existOp { // 虽然该请求的处理还未超时，但是已经处理过了。
@@ -603,7 +603,7 @@ func (kvs *KVServer) applyLoop() {
 					} else { // OP_TYPE_GET
 						if existOp { // 如果是GET请求，只要没超时，都可以进行幂等处理
 							// opCtx.value, opCtx.keyExist = kvs.kvStore[op.Key]	// --------------------------------------------
-							value, err := kvs.persister.Getlevel(op.Key) //  leveldb拿取value
+							value, err := kvs.persister.Get(op.Key) //  leveldb拿取value
 							if err != nil {
 								fmt.Println("拿取value有问题")
 								panic(err)
