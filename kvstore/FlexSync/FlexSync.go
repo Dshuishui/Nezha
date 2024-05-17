@@ -155,12 +155,12 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 					key := strconv.Itoa(int(i))
 					positionBytes, _ := kvs.persister.Get(key)
 					// positionBytes := kvs.persister.Get(op.Key)
-					position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
-					if positionBytes == nil {                   //  说明leveldb中没有该key
+					// position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
+					if positionBytes == -1 {                   //  说明leveldb中没有该key
 						result[key] = raft.NoKey
 						// reply.Err = raft.ErrNoKey
 					} else {
-						value, err := kvs.raft.ReadValueFromFile("./kvstore/kvserver/db_key_index", position)
+						value, err := kvs.raft.ReadValueFromFile("./kvstore/kvserver/db_key_index", positionBytes)
 						if err != nil {
 							fmt.Println("拿取value有问题")
 							panic(err)
@@ -191,12 +191,21 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 			key := args.GetKey()
 			positionBytes, _ := kvs.persister.Get(key)
 			// positionBytes := kvs.persister.Get(op.Key)
-			position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
-			if positionBytes == nil {                   //  说明leveldb中没有该key
+			if positionBytes == -1 { //  说明leveldb中没有该key
 				reply.Err = raft.ErrNoKey
 				reply.Value = raft.NoKey
 			} else {
-				value, err := kvs.raft.ReadValueFromFile("raft/RaftState.log", position)
+				// fmt.Printf("此时的position的字节数组的长度:%v", len(positionBytes))
+				fmt.Printf("此时的position是:%v", positionBytes)
+				// position, n := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
+				// 检查解码是否成功
+				// if n <= 0 {
+				// 	fmt.Println("Failed to decode varint")
+				// 	panic("StartGet函数处的解码有问题")
+				// }
+				// fmt.Printf("此时编码了多少个字节成为int64:%v", n)
+				// fmt.Printf("拿出来的偏移量：%v\n", position)
+				value, err := kvs.raft.ReadValueFromFile("./raft/RaftState.log", positionBytes)
 				if err != nil {
 					fmt.Println("拿取value有问题")
 					panic(err)
@@ -215,7 +224,7 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 		reply.LeaderId = kvs.raft.GetLeaderId()
 	} else if reply.Err == raft.ErrNoKey {
 		// 返回客户端没有该key即可，这里先不做操作
-		// fmt.Println("server端没有client查询的key")
+		// fmt.Println("执行成功，但是server端没有client查询的key")
 	}
 	return reply, nil
 }
@@ -539,9 +548,13 @@ func (kvs *KVServer) applyLoop() {
 							// kvs.persister.Put(op.Key, indexKey)                    // <key,idnex>,其中index是string类型
 							// addrs := kvs.raft.GetOffsets()		// 拿到raft层的offsets，这个可以优化用通道传输
 							// addr := addrs[op.Index]
-							positionBytes := make([]byte, binary.MaxVarintLen64) // 相当于把地址（指向keysize开始处）压缩一下
-							binary.PutVarint(positionBytes, offset)
-							kvs.persister.Put(op.Key, positionBytes)
+							// positionBytes := make([]byte, binary.MaxVarintLen64) // 相当于把地址（指向keysize开始处）压缩一下
+							// n := binary.PutVarint(positionBytes, offset)
+							// 只保留实际使用的字节
+							// positionBytes = positionBytes[:n]
+							// fmt.Printf("此时put进去的offsetL%v\n", offset)
+							// fmt.Printf("转换后的offset：%v\n", positionBytes)
+							kvs.persister.Put(op.Key, offset)
 
 							// kvs.persister.Put(op.Key, []byte(op.Value))
 							// fmt.Println("length:",len(positionBytes))
@@ -557,12 +570,12 @@ func (kvs *KVServer) applyLoop() {
 							// 从 LevelDB 中获取键对应的值，并解码为整数
 							positionBytes, _ := kvs.persister.Get(op.Key)
 							// positionBytes := kvs.persister.Get(op.Key)
-							position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
-							if positionBytes == nil {                   //  说明leveldb中没有该key
+							// position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
+							if positionBytes == -1 {                   //  说明leveldb中没有该key
 								opCtx.keyExist = false
 								opCtx.value = raft.NoKey
 							} else {
-								value, err := kvs.raft.ReadValueFromFile("./kvstore/kvserver/db_key_index", position)
+								value, err := kvs.raft.ReadValueFromFile("./kvstore/kvserver/db_key_index", positionBytes)
 								if err != nil {
 									fmt.Println("拿取value有问题")
 									panic(err)
