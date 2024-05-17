@@ -1155,9 +1155,9 @@ func (rf *Raft) doHeartBeat(peerId int) {
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				return
 			}
-			// rf.SyncChans[peerId] <- strconv.Itoa(peerId)
+			rf.SyncChans[peerId] <- strconv.Itoa(peerId)
 		}
-		// rf.SyncChans[peerId] <- strconv.Itoa(peerId)
+		rf.SyncChans[peerId] <- strconv.Itoa(peerId)
 	}(peerId)
 }
 
