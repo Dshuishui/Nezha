@@ -108,7 +108,7 @@ func (kvc *KVClient) rangeGet(key1 int32, key2 int32) (*kvrpc.ScanRangeResponse,
 		}
 		defer conn.Close()
 		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*6)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
 		defer cancel()
 		reply, err := client.ScanRangeInRaft(ctx, args)
 		if err != nil {
