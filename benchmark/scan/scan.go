@@ -167,7 +167,7 @@ func main() {
 	// dataNum := *dnums
 	// startkey := int32(*k1)
 	// endkey := int32(*k2)
-	gapkey := 100
+	gapkey := 10
 	servers := strings.Split(*ser, ",")
 	// fmt.Printf("servers:%v\n",servers)
 	kvc := new(KVClient)
