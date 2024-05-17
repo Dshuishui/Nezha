@@ -643,7 +643,7 @@ func main() {
 	kvs.reqMap = make(map[int]*OpContext)
 	kvs.seqMap = make(map[int64]int64)
 	kvs.lastAppliedIndex = 0
-	kvs.persister.Init("./kvstore/kvserver/db_key_index") // 初始化存储<key,index>的leveldb文件
+	kvs.persister.Init("./kvstore/LevelDB/db_key_value") // 初始化存储<key,index>的leveldb文件
 
 	go kvs.applyLoop()
 
