@@ -160,7 +160,7 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 						result[key] = raft.NoKey
 						// reply.Err = raft.ErrNoKey
 					} else {
-						value, err := kvs.raft.ReadValueFromFile("./kvstore/kvserver/db_key_index", positionBytes)
+						value, err := kvs.raft.ReadValueFromFile("./raft/RaftState.log", positionBytes)
 						if err != nil {
 							fmt.Println("拿取value有问题")
 							panic(err)
