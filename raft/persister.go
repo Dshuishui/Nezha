@@ -1,14 +1,13 @@
 package raft
+
 import (
 	"gitee.com/dong-shuishui/FlexSync/util"
 
 	// "github.com/syndtr/goleveldb/leveldb"
-	"github.com/tecbot/gorocksdb"
-)
-
-import (
-	"sync"
 	"fmt"
+	"sync"
+
+	"github.com/tecbot/gorocksdb"
 )
 
 type Persister struct {
@@ -64,6 +63,15 @@ func (p *Persister) Put(key string, value int64) {
 	}
 }
 
+func (p *Persister) Put_level(key string, value string) {
+	wo := gorocksdb.NewDefaultWriteOptions()
+	defer wo.Destroy()
+	err := p.db.Put(wo, []byte(key), []byte(value))
+	if err != nil {
+		util.EPrintf("Put key %v value %v failed, err: %v", key, value, err)
+	}
+}
+
 // func (p *Persister) Get(key string) []byte {
 // 	value, err := p.db.Get([]byte(key), nil)
 // 	if err != nil {
@@ -94,6 +102,23 @@ func (p *Persister) Get(key string) (int64, error) {
 	}
 
 	return value, nil
+}
+
+func (p *Persister) Getlevel(key string) (string, error) {
+	ro := gorocksdb.NewDefaultReadOptions()
+	defer ro.Destroy()
+
+	slice, err := p.db.Get(ro, []byte(key))
+	if err != nil {
+		util.EPrintf("Get key %s failed, err: %s", key, err)
+		return "", err
+	}
+	defer slice.Free()
+	valueBytes := slice.Data()
+	if slice.Size() == 0 {
+		return ErrNoKey, nil
+	}
+	return string(valueBytes), nil
 }
 
 func MakePersister() *Persister {
