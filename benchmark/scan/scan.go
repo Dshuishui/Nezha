@@ -72,16 +72,18 @@ func (kvc *KVClient) scan(gapkey int) {
 					startKey, endKey = endKey, startKey
 				}
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				reply, err := kvc.rangeGet(startKey, endKey) // 先随机传入一个地址的连接池
+				_, err := kvc.rangeGet(startKey, endKey) // 先随机传入一个地址的连接池
 				// fmt.Println("after putinraft , j:",j)
-				if err != nil {
+				if err == nil {
+					fmt.Printf("got the key range %v-%v",startKey,endKey)
 					kvc.goodPut++
 				}
 				if j >= num+100 {
 					num = j
 					// fmt.Printf("Goroutine %v put key num: %v\n", i, num)
 				}
-				fmt.Printf("This the result of scan:%+v\n", reply)
+				// fmt.Printf("This the result of scan:%+v\n", reply)
+				// fmt.Printf("got the key range %v-%v",startKey,endKey)
 			}
 		}(i)
 	}
