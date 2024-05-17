@@ -143,6 +143,7 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 		reply.Err = raft.ErrWrongLeader
 		return reply // 不是leader，拿不到commitindex直接退出，找其它leader
 	}
+	var mu sync.Mutex
 	for {
 		if kvs.raft.GetApplyIndex() >= commitindex {
 			// 执行scan范围查询
@@ -163,15 +164,15 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 						// result[key] = raft.NoKey
 						// reply.Err = raft.ErrNoKey
 					// }
+					mu.Lock()
 					result[key] = value
+					mu.Unlock()
 				}(i)
 			}
 			wg.Wait()
 			// 构造响应并返回
-			res := &kvrpc.ScanRangeResponse{
-				KeyValuePairs: result,
-			}
-			return res
+			reply.KeyValuePairs = result
+			return reply
 		}
 		time.Sleep(6 * time.Millisecond)
 	}
@@ -265,7 +266,7 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 		reply.LeaderId = kvs.raft.GetLeaderId()
 	} else if reply.Err == raft.ErrNoKey {
 		// 返回客户端没有该key即可，这里先不做操作
-		fmt.Println("server端没有client查询的key")
+		// fmt.Println("server端没有client查询的key")
 	}
 	return reply, nil
 }
