@@ -153,13 +153,17 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 					defer wg.Done()
 					// 从 LevelDB 中获取键对应的值，并解码为整数
 					key := strconv.Itoa(int(i))
-					value, _ := kvs.persister.Get(key)
-					// positionBytes := kvs.persister.Get(op.Key)
-					if value == nil { //  说明leveldb中没有该key
-						result[key] = raft.NoKey
-						// reply.Err = raft.ErrNoKey
+					value, err := kvs.persister.Getlevel(key)
+					if err != nil {
+						fmt.Println("拿取value有问题")
+						panic(err)
 					}
-					result[key] = string(value)
+					// positionBytes := kvs.persister.Get(op.Key)
+					// if value == -1 { //  说明leveldb中没有该key
+						// result[key] = raft.NoKey
+						// reply.Err = raft.ErrNoKey
+					// }
+					result[key] = value
 				}(i)
 			}
 			wg.Wait()
@@ -238,13 +242,17 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	for { // 证明了此服务器就是leader
 		if kvs.raft.GetApplyIndex() >= commitindex {
 			key := args.GetKey()
-			value, _ := kvs.persister.Get(key)
-			// positionBytes := kvs.persister.Get(op.Key)
-			if value == nil { //  说明leveldb中没有该key
-				reply.Err = raft.ErrNoKey
-				reply.Value = raft.NoKey
+			value, err := kvs.persister.Getlevel(key)
+			if err != nil {
+				fmt.Println("拿取value有问题")
+				panic(err)
 			}
-			reply.Value = string(value)
+			// positionBytes := kvs.persister.Get(op.Key)
+			// if value == -1 { //  说明leveldb中没有该key
+			// 	reply.Err = raft.ErrNoKey
+			// 	reply.Value = raft.NoKey
+			// }
+			reply.Value = value
 			return reply
 		}
 		time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
@@ -538,7 +546,7 @@ func (kvs *KVServer) applyLoop() {
 				cmd := msg.Command
 				index := msg.CommandIndex
 				cmdTerm := msg.CommandTerm
-				offset := msg.Offset
+				// offset := msg.Offset
 
 				func() {
 					kvs.mu.Lock()
@@ -581,11 +589,11 @@ func (kvs *KVServer) applyLoop() {
 							// kvs.persister.Put(op.Key, indexKey)                    // <key,idnex>,其中index是string类型
 							// addrs := kvs.raft.GetOffsets()		// 拿到raft层的offsets，这个可以优化用通道传输
 							// addr := addrs[op.Index]
-							positionBytes := make([]byte, binary.MaxVarintLen64) // 相当于把地址（指向keysize开始处）压缩一下
-							binary.PutVarint(positionBytes, offset)
+							// positionBytes := make([]byte, binary.MaxVarintLen64) // 相当于把地址（指向keysize开始处）压缩一下
+							// binary.PutVarint(positionBytes, offset)
 							// kvs.persister.Put(op.Key, positionBytes)
 
-							kvs.persister.Put(op.Key, []byte(op.Value))
+							kvs.persister.Put_level(op.Key, op.Value)
 							// fmt.Println("length:",len(positionBytes))
 							// fmt.Println("length:",len([]byte(op.Value)))
 						} else if existOp { // 虽然该请求的处理还未超时，但是已经处理过了。
@@ -594,16 +602,16 @@ func (kvs *KVServer) applyLoop() {
 					} else { // OP_TYPE_GET
 						if existOp { // 如果是GET请求，只要没超时，都可以进行幂等处理
 							// opCtx.value, opCtx.keyExist = kvs.kvStore[op.Key]	// --------------------------------------------
-							value, err := kvs.persister.Get(op.Key) //  leveldb拿取value
+							value, err := kvs.persister.Getlevel(op.Key) //  leveldb拿取value
 							if err != nil {
 								fmt.Println("拿取value有问题")
 								panic(err)
 							}
-							if value == nil {
-								opCtx.keyExist = false
-								opCtx.value = raft.NoKey
-							}
-							opCtx.value = string(value)
+							// if value == -1 {
+							// 	opCtx.keyExist = false
+							// 	opCtx.value = raft.NoKey
+							// }
+							opCtx.value = value
 						}
 					}
 
