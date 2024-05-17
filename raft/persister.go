@@ -6,7 +6,10 @@ import (
 	"github.com/tecbot/gorocksdb"
 )
 
-import "sync"
+import (
+	"sync"
+	"fmt"
+)
 
 type Persister struct {
 	mu        sync.Mutex
@@ -48,12 +51,16 @@ func (p *Persister) Init(path string) {
 // 	}
 // }
 
-func (p *Persister) Put(key string, value []byte) {
+func (p *Persister) Put(key string, value int64) {
 	wo := gorocksdb.NewDefaultWriteOptions()
 	defer wo.Destroy()
-	err := p.db.Put(wo, []byte(key), value)
+	valueBytes := make([]byte, 8)
+	for i := uint(0); i < 8; i++ {
+		valueBytes[i] = byte((value >> (i * 8)) & 0xff)		// 一个字节一个字节的转换
+	}
+	err := p.db.Put(wo, []byte(key), valueBytes)
 	if err != nil {
-		util.EPrintf("Put key %s value %s failed, err: %s", key, value, err)
+		util.EPrintf("Put key %v value %v failed, err: %v", key, value, err)
 	}
 }
 
@@ -66,18 +73,27 @@ func (p *Persister) Put(key string, value []byte) {
 // 	return value
 // }
 
-func (p *Persister) Get(key string) ([]byte, error) {
+func (p *Persister) Get(key string) (int64, error) {
 	ro := gorocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
-	value, err := p.db.Get(ro, []byte(key))
+	slice, err := p.db.Get(ro, []byte(key))
 	if err != nil {
 		util.EPrintf("Get key %s failed, err: %s", key, err)
-		return nil, err
+		return 0, err
 	}
-	defer value.Free()
+	defer slice.Free()
+	valueBytes := slice.Data()
+	if len(valueBytes) != 8 {
+		return -1, fmt.Errorf("unexpected value length: %d", len(valueBytes))
+	}
 
-	return value.Data(), nil
+	var value int64
+	for i := uint(0); i < 8; i++ {
+		value |= int64(valueBytes[i]) << (i * 8)
+	}
+
+	return value, nil
 }
 
 func MakePersister() *Persister {

@@ -351,16 +351,34 @@ func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, error)
 		return "", err
 	}
 
+
+	// 获取文件信息
+	// fileInfo, err := file.Stat()
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// fileSize := fileInfo.Size()
+	// fmt.Printf("当前的offset: %v===filesize: %v\n", offset, fileSize)
+
+
 	// 读取数据到buffer中，首先是固定长度的20字节
 	data := make([]byte, 20)
-	if _, err := file.Read(data); err != nil {
+
+	n, err := file.Read(data)
+	// fmt.Printf("读取了几个字节的数据%v\n",n)
+	if err != nil {
 		fmt.Println("get时，读取key和value的前20个固定字节时有问题")
+		return "", err
+	}
+	// 确保读取的字节数足够
+	if n < 20 {
+		fmt.Printf("not enough data: expected 20 bytes, got %d\n", n)
 		return "", err
 	}
 
 	// 解析固定长度的字段
-	keySize := binary.BigEndian.Uint64(data[12:16])
-	valueSize := binary.BigEndian.Uint64(data[16:20])
+	keySize := binary.BigEndian.Uint32(data[12:16])
+	valueSize := binary.BigEndian.Uint32(data[16:20])
 
 	// 读取Key和Value
 	keyValueBuffer := make([]byte, keySize+valueSize)
