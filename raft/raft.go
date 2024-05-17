@@ -337,6 +337,8 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 
 // ReadValueFromFile 从指定的偏移量读取value
 func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, error) {
+	rf.mu.Lock()
+    defer rf.mu.Unlock()
 	// 打开文件
 	file, err := os.Open(filename)
 	if err != nil {
@@ -1256,10 +1258,11 @@ func (rf *Raft) appendEntriesLoop() {
 
 		func() {
 			rf.mu.Lock() // 这里可以用读锁
-			defer rf.mu.Unlock()
+			// defer rf.mu.Unlock()
 
 			// 只有leader才向外广播心跳
 			if rf.role != ROLE_LEADER {
+				rf.mu.Unlock()
 				return
 			}
 			// 100ms广播1次
@@ -1268,6 +1271,7 @@ func (rf *Raft) appendEntriesLoop() {
 			// 	return
 			// }
 			if rf.lastIndex() == 0 {
+				rf.mu.Unlock()
 				return
 			}
 			// rf.lastBroadcastTime = time.Now() // 确定过了广播的时间间隔，才开始进行广播，并且设置新的广播时间
@@ -1278,6 +1282,7 @@ func (rf *Raft) appendEntriesLoop() {
 			// 		continue
 			// 	}
 			// if (now.Sub(rf.LastAppendTime) > 300*time.Millisecond) && Heartbeat == 1 {
+			rf.mu.Unlock()
 			if First {
 				for peerId := 0; peerId < len(rf.peers); peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
 					if peerId == rf.me {
