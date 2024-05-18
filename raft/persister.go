@@ -27,7 +27,7 @@ func (p *Persister) Init(path string) {
 	}
 }
 
-func (p *Persister) Put(key string, value int64) {
+func (p *Persister) Put_opt(key string, value int64) {
 	wo := gorocksdb.NewDefaultWriteOptions()
 	defer wo.Destroy()
 	valueBytes := make([]byte, 8)
@@ -40,7 +40,7 @@ func (p *Persister) Put(key string, value int64) {
 	}
 }
 
-func (p *Persister) Put_level(key string, value string) {
+func (p *Persister) Put(key string, value string) {
 	wo := gorocksdb.NewDefaultWriteOptions()
 	defer wo.Destroy()
 	err := p.db.Put(wo, []byte(key), []byte(value))
@@ -49,7 +49,7 @@ func (p *Persister) Put_level(key string, value string) {
 	}
 }
 
-func (p *Persister) Get(key string) (int64, error) {
+func (p *Persister) Get_opt(key string) (int64, error) {
 	ro := gorocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
@@ -72,7 +72,7 @@ func (p *Persister) Get(key string) (int64, error) {
 	return value, nil
 }
 
-func (p *Persister) Getlevel(key string) (string, error) {
+func (p *Persister) Get(key string) (string, error) {
 	ro := gorocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
