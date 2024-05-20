@@ -36,7 +36,7 @@ func (p *Persister) Put_opt(key string, value int64) {
 	}
 	err := p.db.Put(wo, []byte(key), valueBytes)
 	if err != nil {
-		util.EPrintf("Put key %v value %v failed, err: %v", key, value, err)
+		util.EPrintf("Put key %v value ** failed, err: %v", key, value, err)
 	}
 }
 
@@ -45,7 +45,7 @@ func (p *Persister) Put(key string, value string) {
 	defer wo.Destroy()
 	err := p.db.Put(wo, []byte(key), []byte(value))
 	if err != nil {
-		util.EPrintf("Put key %v value %v failed, err: %v", key, value, err)
+		util.EPrintf("Put key %v value ** failed, err: %v", key, value, err)
 	}
 }
 
