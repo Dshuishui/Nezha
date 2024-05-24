@@ -1031,6 +1031,9 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// 设置日志同步的阈值
 	// fmt.Println("The length of appendlog:",len(rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]))
 	for i := rf.index2LogPos(int(args.PrevLogIndex) + 1); i < len(rf.log); i++ {
+		if rf.log[i]==nil {
+			continue
+		}
 		if err := enc.Encode(rf.log[i]); err != nil { // 将 rf.log[i] 日志项编码后的字节序列写入到 buffer 缓冲区中
 			util.EPrintf("Encode error：", err)
 		}
