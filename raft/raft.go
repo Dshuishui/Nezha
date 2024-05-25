@@ -562,6 +562,9 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	var index int
 	var logPos int
 	for i, logEntry := range logEntrys {
+		if logEntry ==nil {
+			continue
+		}
 		index = int(args.PrevLogIndex) + 1 + i
 		logPos = rf.index2LogPos(index)
 		entry = Entry{
@@ -1032,6 +1035,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// fmt.Println("The length of appendlog:",len(rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]))
 	for i := rf.index2LogPos(int(args.PrevLogIndex) + 1); i < len(rf.log); i++ {
 		if rf.log[i]==nil {
+			fmt.Printf("rf.log的第%v个为nil\n",i)
 			continue
 		}
 		if err := enc.Encode(rf.log[i]); err != nil { // 将 rf.log[i] 日志项编码后的字节序列写入到 buffer 缓冲区中
