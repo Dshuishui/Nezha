@@ -568,11 +568,11 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		index = int(args.PrevLogIndex) + 1 + i
 		logPos = rf.index2LogPos(index)
 		entry = Entry{
-			Index:       uint32(logEntry.Command.Index),
-			CurrentTerm: uint32(logEntry.Command.Term),
+			Index:       uint32(logEntry.GetCommand().Index),
+			CurrentTerm: uint32(logEntry.GetCommand().Term),
 			VotedFor:    uint32(rf.leaderId),
-			Key:         logEntry.Command.Key,
-			Value:       logEntry.Command.Value,
+			Key:         logEntry.GetCommand().Key,
+			Value:       logEntry.GetCommand().Value,
 		}
 		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
 			rf.log = append(rf.log, logEntry)
