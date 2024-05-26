@@ -650,7 +650,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 38 * time.Second
+		timeout := 38000 * time.Second
 		for {
 			time.Sleep(timeout)
 			// if (time.Since(kvs.lastPutTime) > timeout) && (time.Since(kvs.raft.LastAppendTime) > timeout) {
