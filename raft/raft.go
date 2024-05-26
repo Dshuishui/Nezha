@@ -563,7 +563,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	var logPos int
 	for i, logEntry := range logEntrys {
 		if logEntry ==nil || logEntry.GetCommand()==nil {
-			fmt.Println("此时logEntry为nil，太抽象了")
+			fmt.Println("此时logEntry为nil，或者logEntry中的Command为nil。太抽象了")
 			continue
 		}
 		index = int(args.PrevLogIndex) + 1 + i
@@ -975,7 +975,7 @@ func (rf *Raft) electionLoop() {
 					}
 
 					op := raftrpc.DetailCod{
-						OpType: "TermLog",
+						OpType: "TermLog",	
 					}
 					rf.mu.Unlock()
 					op.Index, op.Term, _ = rf.Start(&op) // 需要提交一个空的指令，需要在初始化nextindex之后，提交空指令
