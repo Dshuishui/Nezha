@@ -562,7 +562,8 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	var index int
 	var logPos int
 	for i, logEntry := range logEntrys {
-		if logEntry ==nil {
+		if logEntry ==nil || logEntry.GetCommand()==nil {
+			fmt.Println("此时logEntry为nil，太抽象了")
 			continue
 		}
 		index = int(args.PrevLogIndex) + 1 + i
