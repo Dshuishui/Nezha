@@ -60,7 +60,7 @@ func (kvc *KVClient) scan(gapkey int) {
 			num := 0
 			rand.Seed(time.Now().Unix())
 			for j := 0; j < base; j++ {
-				k1 := rand.Intn(1000)
+				k1 := rand.Intn(800)
 				k2 := k1 + gapkey
 				startKey := int32(k1)
 				endKey := int32(k2)
@@ -75,7 +75,7 @@ func (kvc *KVClient) scan(gapkey int) {
 				_, err := kvc.rangeGet(startKey, endKey) // 先随机传入一个地址的连接池
 				// fmt.Println("after putinraft , j:",j)
 				if err == nil {
-					fmt.Printf("got the key range %v-%v\n", startKey, endKey)
+					// fmt.Printf("got the key range %v-%v\n", startKey, endKey)
 					kvc.goodPut++
 				}
 				if j >= num+100 {
@@ -178,7 +178,7 @@ func main() {
 	startTime := time.Now()
 	// 开始发送请求
 	kvc.scan(gapkey)
-	valuesize := 256000
+	valuesize := 64
 
 	sum_Size_MB := float64(kvc.goodPut*valuesize*gapkey) / 1000000
 	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, total %v, goodPut %v, value %v, client %v, Size %vMB\n",

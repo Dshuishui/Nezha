@@ -60,7 +60,7 @@ func (kvc *KVClient) randRead() {
 			num := 0
 			rand.Seed(time.Now().Unix())
 			for j := 0; j < base; j++ {
-				key := rand.Intn(15258)
+				key := rand.Intn(800)
 				//k := base*i + j
 				// key := fmt.Sprintf("key_%d", k)
 				targetkey := strconv.Itoa(key)
@@ -74,7 +74,7 @@ func (kvc *KVClient) randRead() {
 					// fmt.Printf("Got the value:** corresponding to the key:%v === exist\n ", key)
 				}
 				if !keyExist {
-					// kvc.PutInRaft(targetkey,value)	// 找到不存在的，先随便弥补一个键值对
+					kvc.PutInRaft(targetkey, value) // 找到不存在的，先随便弥补一个键值对
 					fmt.Printf("Got the value:%v corresponding to the key:%v === nokey\n ", value, key)
 				}
 				if j >= num+100 {
@@ -240,7 +240,7 @@ func main() {
 	startTime := time.Now()
 	// 开始发送请求
 	kvc.randRead()
-	valuesize := 256000
+	valuesize := 64
 
 	sum_Size_MB := float64(kvc.goodPut*valuesize) / 1000000
 	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, total %v, goodPut %v, value %v, client %v, Size %vMB\n",
