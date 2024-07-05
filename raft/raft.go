@@ -198,7 +198,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 		binary.BigEndian.PutUint32(data[12:16], keySize)
 		binary.BigEndian.PutUint32(data[16:20], valueSize)
 		copy(data[20:20+keySize], entry.Key)
-		copy(data[20+keySize:], entry.Value)
+		copy(data[20+keySize:], entry.Value)//cfghdf
 
 		// 写入文件
 		u, err := writer.Write(data)
