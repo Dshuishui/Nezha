@@ -338,7 +338,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 // ReadValueFromFile 从指定的偏移量读取value
 func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, error) {
 	// rf.mu.Lock()
-    // defer rf.mu.Unlock()
+	// defer rf.mu.Unlock()
 	// 打开文件
 	file, err := os.Open(filename)
 	if err != nil {
@@ -353,7 +353,6 @@ func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, error)
 		return "", err
 	}
 
-
 	// 获取文件信息
 	// fileInfo, err := file.Stat()
 	// if err != nil {
@@ -361,7 +360,6 @@ func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, error)
 	// }
 	// fileSize := fileInfo.Size()
 	// fmt.Printf("当前的offset: %v===filesize: %v\n", offset, fileSize)
-
 
 	// 读取数据到buffer中，首先是固定长度的20字节
 	data := make([]byte, 20)
@@ -562,7 +560,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	var index int
 	var logPos int
 	for i, logEntry := range logEntrys {
-		if logEntry ==nil || logEntry.GetCommand()==nil {
+		if logEntry == nil || logEntry.GetCommand() == nil {
 			fmt.Println("此时logEntry为nil，或者logEntry中的Command为nil。太抽象了")
 			continue
 		}
@@ -975,7 +973,7 @@ func (rf *Raft) electionLoop() {
 					}
 
 					op := raftrpc.DetailCod{
-						OpType: "TermLog",	
+						OpType: "TermLog",
 					}
 					rf.mu.Unlock()
 					op.Index, op.Term, _ = rf.Start(&op) // 需要提交一个空的指令，需要在初始化nextindex之后，提交空指令
@@ -1035,8 +1033,8 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// 设置日志同步的阈值
 	// fmt.Println("The length of appendlog:",len(rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]))
 	for i := rf.index2LogPos(int(args.PrevLogIndex) + 1); i < len(rf.log); i++ {
-		if rf.log[i]==nil {
-			fmt.Printf("rf.log的第%v个为nil\n",i)
+		if rf.log[i] == nil {
+			fmt.Printf("rf.log的第%v个为nil\n", i)
 			continue
 		}
 		if err := enc.Encode(rf.log[i]); err != nil { // 将 rf.log[i] 日志项编码后的字节序列写入到 buffer 缓冲区中
@@ -1302,7 +1300,7 @@ func (rf *Raft) appendEntriesLoop() {
 				First = false
 			}
 			now := time.Now() // 心跳
-			if now.Sub(rf.LastAppendTime) > 1000*time.Millisecond {
+			if now.Sub(rf.LastAppendTime) > 10000*time.Millisecond {
 				for peerId := 0; peerId < len(rf.peers); peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
 					if peerId == rf.me {
 						continue

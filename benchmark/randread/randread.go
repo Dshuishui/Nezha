@@ -102,7 +102,7 @@ func (kvc *KVClient) SendGetInRaft(targetId int, request *kvrpc.GetInRaftRequest
 	}
 	defer conn.Close()
 	client := kvrpc.NewKVClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
 	defer cancel()
 	reply, err := client.GetInRaft(ctx, request)
 	if err != nil {
