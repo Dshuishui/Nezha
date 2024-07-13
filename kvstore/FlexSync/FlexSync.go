@@ -628,7 +628,7 @@ func main() {
 	kvs.reqMap = make(map[int]*OpContext)
 	kvs.seqMap = make(map[int64]int64)
 	kvs.lastAppliedIndex = 0
-	kvs.persister.Init("./kvstore/FlexSync/db_key_index") // 初始化存储<key,index>的leveldb文件
+	kvs.persister.Init("./kvstore/FlexSync/db_key_index",true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
 
 	go kvs.applyLoop()
 

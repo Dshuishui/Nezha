@@ -13,18 +13,34 @@ type Persister struct {
 	db *gorocksdb.DB
 }
 
-func (p *Persister) Init(path string) {
-	var err error
-	bbto := gorocksdb.NewDefaultBlockBasedTableOptions()
-	bbto.SetBlockCache(gorocksdb.NewLRUCache(3 << 30))
-	opts := gorocksdb.NewDefaultOptions()
+// func (p *Persister) Init(path string) {
+// 	var err error
+// 	bbto := gorocksdb.NewDefaultBlockBasedTableOptions()
+// 	bbto.SetBlockCache(gorocksdb.NewLRUCache(3 << 30))
+// 	opts := gorocksdb.NewDefaultOptions()
 
-	opts.SetBlockBasedTableFactory(bbto)
-	opts.SetCreateIfMissing(true)
-	p.db, err = gorocksdb.OpenDb(opts, path)
-	if err != nil {
-		util.EPrintf("Open db failed, err: %s", err)
-	}
+// 	opts.SetBlockBasedTableFactory(bbto)
+// 	opts.SetCreateIfMissing(true)
+// 	p.db, err = gorocksdb.OpenDb(opts, path)
+// 	if err != nil {
+// 		util.EPrintf("Open db failed, err: %s", err)
+// 	}
+// }
+// 设置按需开关缓存
+func (p *Persister) Init(path string, disableCache bool) {
+    var err error
+    bbto := gorocksdb.NewDefaultBlockBasedTableOptions()
+    if !disableCache {
+        bbto.SetBlockCache(gorocksdb.NewLRUCache(3 << 30))
+    }
+    opts := gorocksdb.NewDefaultOptions()
+
+    opts.SetBlockBasedTableFactory(bbto)
+    opts.SetCreateIfMissing(true)
+    p.db, err = gorocksdb.OpenDb(opts, path)
+    if err != nil {
+        util.EPrintf("Open db failed, err: %s", err)
+    }
 }
 
 func (p *Persister) Put_opt(key string, value int64) {
