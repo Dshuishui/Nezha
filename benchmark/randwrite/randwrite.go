@@ -115,13 +115,14 @@ func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftRespon
 		}
 		defer conn.Close()
 		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*3) // 设置5秒定时往下传
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*1) // 设置5秒定时往下传
 		defer cancel()
 
 		reply, err := client.PutInRaft(ctx, request)
 		if err != nil {
 			// fmt.Println("客户端调用PutInRaft有问题")
-			util.EPrintf("err in PutInRaft-调用了服务器的put方法: %v", err)
+			// util.EPrintf("err in PutInRaft-调用了服务器的put方法: %v", err)
+			util.EPrintf("seqid：%v, err in PutInRaft-调用了服务器的put方法: %v",request.SeqId, err)
 			// 这里防止服务器是宕机了，所以要change leader
 			return nil, err
 		}
