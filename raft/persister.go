@@ -76,7 +76,10 @@ func (p *Persister) Get_opt(key string) (int64, error) {
 	}
 	defer slice.Free()
 	valueBytes := slice.Data()
-	if slice.Size() == 0 {
+	// if slice.Size() == 0 {
+	// 	return -1, nil
+	// }
+	if !slice.Exists() {
 		return -1, nil
 	}
 
