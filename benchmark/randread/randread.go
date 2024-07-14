@@ -25,7 +25,7 @@ import (
 	"math/big"
 	// "google.golang.org/grpc"
 )
-
+// go run ./benchmark/randread/randread.go -cnums 400 -dnums 100000 -servers 192.168.1.62:3088,192.168.1.100:3088,192.168.1.104:3088
 var (
 	ser = flag.String("servers", "", "the Server, Client Connects to")
 	// mode     = flag.String("mode", "RequestRatio", "Read or Put and so on")
@@ -60,7 +60,7 @@ func (kvc *KVClient) randRead() {
 			num := 0
 			rand.Seed(time.Now().Unix())
 			for j := 0; j < base; j++ {
-				key := rand.Intn(800)
+				key := rand.Intn(10000)
 				//k := base*i + j
 				// key := fmt.Sprintf("key_%d", k)
 				targetkey := strconv.Itoa(key)
@@ -240,7 +240,7 @@ func main() {
 	startTime := time.Now()
 	// 开始发送请求
 	kvc.randRead()
-	valuesize := 64
+	valuesize := 64000
 
 	sum_Size_MB := float64(kvc.goodPut*valuesize) / 1000000
 	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, total %v, goodPut %v, value %v, client %v, Size %vMB\n",

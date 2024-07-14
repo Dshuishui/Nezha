@@ -61,28 +61,32 @@ func (kvc *KVClient) batchRawPut(value string) {
 	// 		last = num
 	// 	}
 	// }()
-
 	for i := 0; i < *cnums; i++ {
 		go func(i int) {
 			defer wg.Done()
-			num := 0
-			rand.Seed(time.Now().Unix())
+			rand.Seed(time.Now().UnixNano())
 			for j := 0; j < base; j++ {
-				// k := rand.Intn(*dnums)
-				//k := base*i + j
-				// key := fmt.Sprintf("key_%d", k)
-				// key := util.GenerateFixedSizeKey(4)
 				key := i*base + j
 				strkey := strconv.Itoa(key)
-				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				reply, err := kvc.PutInRaft(strkey, value) // 先随机传入一个地址的连接池
-				// fmt.Println("after putinraft , j:",j)
-				if err == nil && reply != nil && reply.Err != "defeat" {
-					kvc.goodPut++
-				}
-				if j >= num+100 {
-					num = j
-					// fmt.Printf("Goroutine %v put key num: %v\n", i, num)
+				
+				// 添加重试逻辑
+				maxRetries := 10 // 最大重试次数
+				retryDelay := time.Millisecond * 500 // 重试间隔
+				
+				for retry := 0; retry < maxRetries; retry++ {
+					reply, err := kvc.PutInRaft(strkey, value)
+					
+					if err == nil && reply != nil && reply.Err != "defeat" {
+						kvc.goodPut++
+						break // 请求成功，退出重试循环
+					}
+					
+					if retry < maxRetries - 1 {
+						// 如果不是最后一次重试，则等待一段时间后再重试
+						time.Sleep(retryDelay)
+						// 可以选择增加重试间隔时间，例如：
+						// retryDelay *= 2
+					}
 				}
 			}
 		}(i)

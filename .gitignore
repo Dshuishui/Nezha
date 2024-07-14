@@ -14,3 +14,4 @@ run_client.sh
 error.log
 error_client.log
 result/causal_put-latency.csv
+test
