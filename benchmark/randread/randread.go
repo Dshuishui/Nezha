@@ -25,6 +25,7 @@ import (
 	"math/big"
 	// "google.golang.org/grpc"
 )
+
 // go run ./benchmark/randread/randread.go -cnums 400 -dnums 100000 -servers 192.168.1.62:3088,192.168.1.100:3088,192.168.1.104:3088
 var (
 	ser = flag.String("servers", "", "the Server, Client Connects to")
@@ -68,13 +69,14 @@ func (kvc *KVClient) randRead() {
 				value, keyExist, err := kvc.Get(targetkey) // 先随机传入一个地址的连接池
 				// fmt.Println("after putinraft , j:",j)
 				if err == nil {
-					kvc.goodPut++
+					// kvc.goodPut++
 				}
 				if err == nil && keyExist {
+					kvc.goodPut++
 					// fmt.Printf("Got the value:** corresponding to the key:%v === exist\n ", key)
 				}
 				if !keyExist {
-					kvc.PutInRaft(targetkey, value) // 找到不存在的，先随便弥补一个键值对
+					// kvc.PutInRaft(targetkey, value) // 找到不存在的，先随便弥补一个键值对
 					fmt.Printf("Got the value:%v corresponding to the key:%v === nokey\n ", value, key)
 				}
 				if j >= num+100 {
@@ -102,7 +104,7 @@ func (kvc *KVClient) SendGetInRaft(targetId int, request *kvrpc.GetInRaftRequest
 	}
 	defer conn.Close()
 	client := kvrpc.NewKVClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
 	defer cancel()
 	reply, err := client.GetInRaft(ctx, request)
 	if err != nil {
