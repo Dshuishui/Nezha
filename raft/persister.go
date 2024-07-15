@@ -27,7 +27,7 @@ type Persister struct {
 }
 
 // PadKey 函数用于将给定的键填充到指定长度
-func PadKey(key string) string {
+func (p *Persister)PadKey(key string) string {
     if len(key) > KeyLength {
         // 如果键长度超过指定长度，进行截断
         return key[:KeyLength]
@@ -37,7 +37,7 @@ func PadKey(key string) string {
 }
 
 // UnpadKey 去除键的填充
-func UnpadKey(paddedKey string) string {
+func (p *Persister)UnpadKey(paddedKey string) string {
 	return strings.TrimLeft(paddedKey, "0")
 }
 
@@ -93,7 +93,7 @@ func (p *Persister) Put_opt(key string, value int64) {
 	// 	valueBytes[i] = byte((value >> (i * 8)) & 0xff)		// 一个字节一个字节的转换
 	// }
 	binary.LittleEndian.PutUint64(valueBytes, uint64(value))
-	paddedKey := PadKey(key)
+	paddedKey := p.PadKey(key)
 	p.muWO.Lock()
     defer p.muWO.Unlock()
 	err := p.db.Put(p.wo, []byte(paddedKey), valueBytes)
@@ -105,7 +105,7 @@ func (p *Persister) Put_opt(key string, value int64) {
 func (p *Persister) Put(key string, value string) {
 	// wo := gorocksdb.NewDefaultWriteOptions()
 	// defer wo.Destroy()
-	paddedKey := PadKey(key)
+	paddedKey := p.PadKey(key)
 	p.muWO.Lock()
     defer p.muWO.Unlock()
 	err := p.db.Put(p.wo, []byte(paddedKey), []byte(value))
@@ -118,7 +118,7 @@ func (p *Persister) Get_opt(key string) (int64, error) {
 	// ro := gorocksdb.NewDefaultReadOptions()
 	// defer ro.Destroy()
 
-	paddedKey := PadKey(key)
+	paddedKey := p.PadKey(key)
 	p.muRO.Lock()
     defer p.muRO.Unlock()
 	slice, err := p.db.Get(p.ro, []byte(paddedKey))
@@ -148,7 +148,7 @@ func (p *Persister) Get(key string) (string, error) {
 	// ro := gorocksdb.NewDefaultReadOptions()
 	// defer ro.Destroy()
 
-	paddedKey := PadKey(key)
+	paddedKey := p.PadKey(key)
 	p.muRO.Lock()
     defer p.muRO.Unlock()
 	slice, err := p.db.Get(p.ro, []byte(paddedKey))
@@ -170,8 +170,8 @@ func (p *Persister) ScanRange_opt(startKey, endKey string) (map[string]int64, er
 	defer p.muRO.Unlock()
 	result := make(map[string]int64)
 	
-	paddedStartKey := PadKey(startKey)
-	paddedEndKey := PadKey(endKey)
+	paddedStartKey := p.PadKey(startKey)
+	paddedEndKey := p.PadKey(endKey)
 	
 	it := p.db.NewIterator(p.ro)
 	defer it.Close()
@@ -194,7 +194,7 @@ func (p *Persister) ScanRange_opt(startKey, endKey string) (map[string]int64, er
 		}
 		
 		// 存储去除填充的键
-		originalKey := UnpadKey(string(key.Data()))
+		originalKey := p.UnpadKey(string(key.Data()))
 		result[originalKey] = valueInt64
 	}
 	
@@ -238,8 +238,8 @@ func (p *Persister) ScanRange(startKey, endKey string) (map[string]string, error
 	defer p.muRO.Unlock()
 	result := make(map[string]string)
 	
-	paddedStartKey := PadKey(startKey)
-	paddedEndKey := PadKey(endKey)
+	paddedStartKey := p.PadKey(startKey)
+	paddedEndKey := p.PadKey(endKey)
 	
 	it := p.db.NewIterator(p.ro)
 	defer it.Close()
@@ -259,7 +259,7 @@ func (p *Persister) ScanRange(startKey, endKey string) (map[string]string, error
 		valueString := string(value.Data())
 		
 		// 存储去除填充的键
-		originalKey := UnpadKey(string(key.Data()))
+		originalKey := p.UnpadKey(string(key.Data()))
 		result[originalKey] = valueString
 	}
 	
