@@ -56,10 +56,12 @@ func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
     if err != nil {
         return nil, fmt.Errorf("open db failed: %w", err)
     }
-	// return &Persister{		// 服用读写实例
+	// return &Persister{		// 复用读写实例
         // db: db,
 	p.wo = gorocksdb.NewDefaultWriteOptions()
 	p.ro = gorocksdb.NewDefaultReadOptions()
+	p.muRO = sync.Mutex{}
+	p.muWO = sync.Mutex{}
     // },nil
 	return p,nil
 }
