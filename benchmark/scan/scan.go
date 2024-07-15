@@ -57,10 +57,10 @@ func (kvc *KVClient) scan(gapkey int) {
 	for i := 0; i < *cnums; i++ {
 		go func(i int) {
 			defer wg.Done()
-			num := 0
+			// num := 0
 			rand.Seed(time.Now().Unix())
 			for j := 0; j < base; j++ {
-				k1 := rand.Intn(800)
+				k1 := rand.Intn(100000)
 				k2 := k1 + gapkey
 				startKey := int32(k1)
 				endKey := int32(k2)
@@ -78,10 +78,10 @@ func (kvc *KVClient) scan(gapkey int) {
 					// fmt.Printf("got the key range %v-%v\n", startKey, endKey)
 					kvc.goodPut++
 				}
-				if j >= num+100 {
-					num = j
+				// if j >= num+100 {
+					// num = j
 					// fmt.Printf("Goroutine %v put key num: %v\n", i, num)
-				}
+				// }
 				// fmt.Printf("This the result of scan:%+v\n", reply)
 				// fmt.Printf("got the key range %v-%v",startKey,endKey)
 			}
