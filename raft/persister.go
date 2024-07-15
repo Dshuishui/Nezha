@@ -52,12 +52,12 @@ func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
     opts.SetBlockBasedTableFactory(bbto)
     opts.SetCreateIfMissing(true)
 
-    p.db, err = gorocksdb.OpenDb(opts, path)
+    db, err := gorocksdb.OpenDb(opts, path)
     if err != nil {
         return nil, fmt.Errorf("open db failed: %w", err)
     }
 	return &Persister{		// 服用读写实例
-        db: p.db,
+        db: db,
 		wo: gorocksdb.NewDefaultWriteOptions(),
         ro: gorocksdb.NewDefaultReadOptions(),
     },nil
