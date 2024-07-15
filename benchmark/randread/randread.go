@@ -242,7 +242,7 @@ func main() {
 	startTime := time.Now()
 	// 开始发送请求
 	kvc.randRead()
-	valuesize := 256
+	valuesize := 64000
 
 	sum_Size_MB := float64(kvc.goodPut*valuesize) / 1000000
 	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, total %v, goodPut %v, value %v, client %v, Size %vMB\n",
