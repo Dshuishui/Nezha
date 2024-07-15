@@ -6,32 +6,35 @@ import (
 	// "github.com/syndtr/goleveldb/leveldb"
 	// "github.com/syndtr/goleveldb/leveldb/errors"
 	"github.com/tecbot/gorocksdb"
+	"fmt"
+	 "encoding/binary"
+	 "errors"
 )
+
+const KeyLength = 10
+var ErrKeyNotFound = errors.New("key not found")
 
 type Persister struct {
 	// db *leveldb.DB
 	db *gorocksdb.DB
 }
 
-// func (p *Persister) Init(path string) {
-// 	var err error
-// 	bbto := gorocksdb.NewDefaultBlockBasedTableOptions()
-// 	bbto.SetBlockCache(gorocksdb.NewLRUCache(3 << 30))
-// 	opts := gorocksdb.NewDefaultOptions()
+// PadKey 函数用于将给定的键填充到指定长度
+func PadKey(key string) string {
+    if len(key) > KeyLength {
+        // 如果键长度超过指定长度，进行截断
+        return key[:KeyLength]
+    }
+    // 使用0在左侧填充
+    return fmt.Sprintf("%0*s", KeyLength, key)
+}
 
-// 	opts.SetBlockBasedTableFactory(bbto)
-// 	opts.SetCreateIfMissing(true)
-// 	p.db, err = gorocksdb.OpenDb(opts, path)
-// 	if err != nil {
-// 		util.EPrintf("Open db failed, err: %s", err)
-// 	}
-// }
 // 设置按需开关缓存
 func (p *Persister) Init(path string, disableCache bool) {
     var err error
     bbto := gorocksdb.NewDefaultBlockBasedTableOptions()
     if !disableCache {
-        bbto.SetBlockCache(gorocksdb.NewLRUCache(3 << 30))
+        bbto.SetBlockCache(gorocksdb.NewLRUCache(3 << 30))	// 开关缓存
     }
     opts := gorocksdb.NewDefaultOptions()
 
@@ -47,10 +50,12 @@ func (p *Persister) Put_opt(key string, value int64) {
 	wo := gorocksdb.NewDefaultWriteOptions()
 	defer wo.Destroy()
 	valueBytes := make([]byte, 8)
-	for i := uint(0); i < 8; i++ {
-		valueBytes[i] = byte((value >> (i * 8)) & 0xff)		// 一个字节一个字节的转换
-	}
-	err := p.db.Put(wo, []byte(key), valueBytes)
+	// for i := uint(0); i < 8; i++ {
+	// 	valueBytes[i] = byte((value >> (i * 8)) & 0xff)		// 一个字节一个字节的转换
+	// }
+	binary.LittleEndian.PutUint64(valueBytes, uint64(value))
+	paddedKey := PadKey(key)
+	err := p.db.Put(wo, []byte(paddedKey), valueBytes)
 	if err != nil {
 		util.EPrintf("Put key %v value ** failed, err: %v", key, err)
 	}
@@ -59,7 +64,8 @@ func (p *Persister) Put_opt(key string, value int64) {
 func (p *Persister) Put(key string, value string) {
 	wo := gorocksdb.NewDefaultWriteOptions()
 	defer wo.Destroy()
-	err := p.db.Put(wo, []byte(key), []byte(value))
+	paddedKey := PadKey(key)
+	err := p.db.Put(wo, []byte(paddedKey), []byte(value))
 	if err != nil {
 		util.EPrintf("Put key %v value ** failed, err: %v", key, err)
 	}
@@ -69,7 +75,8 @@ func (p *Persister) Get_opt(key string) (int64, error) {
 	ro := gorocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
-	slice, err := p.db.Get(ro, []byte(key))
+	paddedKey := PadKey(key)
+	slice, err := p.db.Get(ro, []byte(paddedKey))
 	if err != nil {
 		util.EPrintf("Get key %s failed, err: %s", key, err)
 		return 0, err
@@ -80,22 +87,24 @@ func (p *Persister) Get_opt(key string) (int64, error) {
 	// 	return -1, nil
 	// }
 	if !slice.Exists() {
-		return -1, nil
+		return -1, ErrKeyNotFound
 	}
-
-	var value int64
-	for i := uint(0); i < 8; i++ {
-		value |= int64(valueBytes[i]) << (i * 8)
-	}
-
-	return value, nil
+	if len(valueBytes) != 8 {
+        return 0, errors.New("invalid value size")
+    }
+	// var value int64
+	// for i := uint(0); i < 8; i++ {
+	// 	value |= int64(valueBytes[i]) << (i * 8)
+	// }
+	return int64(binary.LittleEndian.Uint64(valueBytes)), nil
 }
 
 func (p *Persister) Get(key string) (string, error) {
 	ro := gorocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
-	slice, err := p.db.Get(ro, []byte(key))
+	paddedKey := PadKey(key)
+	slice, err := p.db.Get(ro, []byte(paddedKey))
 	if err != nil {
 		util.EPrintf("Get key %s failed, err: %s", key, err)
 		return "", err
