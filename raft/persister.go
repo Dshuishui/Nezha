@@ -52,19 +52,16 @@ func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
     opts.SetBlockBasedTableFactory(bbto)
     opts.SetCreateIfMissing(true)
 
-    db, err := gorocksdb.OpenDb(opts, path)
+    p.db, err = gorocksdb.OpenDb(opts, path)
     if err != nil {
         return nil, fmt.Errorf("open db failed: %w", err)
     }
-	muRO := sync.Mutex{}	// 对互斥锁进行初始化
-	muWO := sync.Mutex{}
-	return &Persister{		// 服用读写实例
-        db: db,
-		wo: gorocksdb.NewDefaultWriteOptions(),
-        ro: gorocksdb.NewDefaultReadOptions(),
-		muRO: muRO,
-		muWO: muWO,
-    },nil
+	// return &Persister{		// 服用读写实例
+        // db: db,
+	p.wo = gorocksdb.NewDefaultWriteOptions()
+	p.ro = gorocksdb.NewDefaultReadOptions()
+    // },nil
+	return p,nil
 }
 
 func (p *Persister) Close() {
