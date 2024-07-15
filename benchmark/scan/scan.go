@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"strconv"
 
 	// "strconv"
 	"context"
@@ -62,8 +63,8 @@ func (kvc *KVClient) scan(gapkey int) {
 			for j := 0; j < base; j++ {
 				k1 := rand.Intn(100000)
 				k2 := k1 + gapkey
-				startKey := int32(k1)
-				endKey := int32(k2)
+				startKey := strconv.Itoa(k1)
+				endKey := strconv.Itoa(k2)
 				// 生成随机的startKey和endKey
 				// startKey := fmt.Sprintf("key_%d", k1)
 				// endKey := fmt.Sprintf("key_%d", k2)
@@ -94,7 +95,7 @@ func (kvc *KVClient) scan(gapkey int) {
 	}
 }
 
-func (kvc *KVClient) rangeGet(key1 int32, key2 int32) (*kvrpc.ScanRangeResponse, error) {
+func (kvc *KVClient) rangeGet(key1 string, key2 string) (*kvrpc.ScanRangeResponse, error) {
 	args := &kvrpc.ScanRangeRequest{
 		StartKey: key1,
 		EndKey:   key2,
