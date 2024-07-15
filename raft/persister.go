@@ -56,10 +56,14 @@ func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
     if err != nil {
         return nil, fmt.Errorf("open db failed: %w", err)
     }
+	muRO := sync.Mutex{}	// 对互斥锁进行初始化
+	muWO := sync.Mutex{}
 	return &Persister{		// 服用读写实例
         db: db,
 		wo: gorocksdb.NewDefaultWriteOptions(),
         ro: gorocksdb.NewDefaultReadOptions(),
+		muRO: muRO,
+		muWO: muWO,
     },nil
 }
 
