@@ -31,6 +31,7 @@ import (
 	"google.golang.org/grpc"
 	// "google.golang.org/grpc/credentials/insecure"
 	"gitee.com/dong-shuishui/FlexSync/pool"
+	"gitee.com/dong-shuishui/FlexSync/kvstore/GC"
 	"github.com/syndtr/goleveldb/leveldb"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
@@ -659,6 +660,7 @@ func main() {
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
 	kvs.raft.Gap = gap
 	kvs.raft.SyncTime = syncTime
+	go GC.MonitorFileSize("./kvstore/FlexSync/db_key_index")	// GC处理
 
 	wg.Wait()
 }
