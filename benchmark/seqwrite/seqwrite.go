@@ -68,20 +68,20 @@ func (kvc *KVClient) batchRawPut(value string) {
 			for j := 0; j < base; j++ {
 				key := i*base + j
 				strkey := strconv.Itoa(key)
-				
+
 				// 添加重试逻辑
-				maxRetries := 10 // 最大重试次数
+				maxRetries := 3                    // 最大重试次数
 				retryDelay := time.Millisecond * 500 // 重试间隔
-				
+
 				for retry := 0; retry < maxRetries; retry++ {
 					reply, err := kvc.PutInRaft(strkey, value)
-					
+
 					if err == nil && reply != nil && reply.Err != "defeat" {
 						kvc.goodPut++
 						break // 请求成功，退出重试循环
 					}
-					
-					if retry < maxRetries - 1 {
+
+					if retry < maxRetries-1 {
 						// 如果不是最后一次重试，则等待一段时间后再重试
 						time.Sleep(retryDelay)
 						// 可以选择增加重试间隔时间，例如：
@@ -121,6 +121,7 @@ func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftRespon
 		}
 		defer conn.Close()
 		client := kvrpc.NewKVClient(conn.Value())
+		// 如果测试的value大小为256KB，则需要改成5s。
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*1) // 设置5秒定时往下传
 		defer cancel()
 
