@@ -22,6 +22,7 @@ import (
 
 	"gitee.com/dong-shuishui/FlexSync/pool"
 	// "gitee.com/dong-shuishui/FlexSync/raft"
+	// "gitee.com/dong-shuishui/FlexSync/raft"
 	"gitee.com/dong-shuishui/FlexSync/rpc/raftrpc"
 
 	// "gitee.com/dong-shuishui/FlexSync/rpc/kvrpc"
@@ -190,6 +191,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 		keySize := uint32(len(entry.Key))
 		valueSize := uint32(len(entry.Value))
 		data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value
+		paddedKey := rf.persister.PadKey(entry.Key)		// 存入valuelog里面也用
 
 		// 将数据编码到byte slice中
 		binary.BigEndian.PutUint32(data[0:4], entry.Index)
@@ -197,7 +199,8 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 		binary.BigEndian.PutUint32(data[8:12], entry.VotedFor)
 		binary.BigEndian.PutUint32(data[12:16], keySize)
 		binary.BigEndian.PutUint32(data[16:20], valueSize)
-		copy(data[20:20+keySize], entry.Key)
+
+		copy(data[20:20+keySize], paddedKey)
 		copy(data[20+keySize:], entry.Value)
 
 		// 写入文件
