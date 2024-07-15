@@ -38,8 +38,8 @@ message PutInRaftResponse {
 }
 
 message ScanRangeRequest {
-  int32 start_key = 1;
-  int32 end_key = 2;
+  string start_key = 1;
+  string end_key = 2;
 }
 
 message ScanRangeResponse {

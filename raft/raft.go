@@ -346,6 +346,10 @@ func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, error)
 	}
 	defer file.Close()
 
+	if offset == -1 {
+		return "NOKEY",nil
+	}
+
 	// 移动到指定偏移量
 	_, err = file.Seek(offset, os.SEEK_SET)
 	if err != nil {

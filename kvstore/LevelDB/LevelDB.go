@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"log"
 
 	// "gitee.com/dong-shuishui/FlexSync/config"
 	"gitee.com/dong-shuishui/FlexSync/raft"
@@ -127,6 +128,9 @@ func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeReq
 	} else if reply.Err == raft.ErrNoKey {
 		// 返回客户端没有该key即可，这里先不做操作
 		// fmt.Println("server端没有client查询的key")
+	} else if reply.Err == "error in scan" {
+		reply.Err = "error in scan"
+
 	}
 	return reply, nil
 }
@@ -134,42 +138,22 @@ func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeReq
 func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeResponse {
 	startKey := args.GetStartKey()
 	endKey := args.GetEndKey()
-	gapKey := endKey - startKey + 1
 	reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
 
-	result := make(map[string]string)
 	commitindex, isleader := kvs.raft.GetReadIndex()
 	if !isleader {
 		reply.Err = raft.ErrWrongLeader
 		return reply // 不是leader，拿不到commitindex直接退出，找其它leader
 	}
-	var mu sync.Mutex
 	for {
 		if kvs.raft.GetApplyIndex() >= commitindex {
-			// 执行scan范围查询
-			wg := sync.WaitGroup{}
-			wg.Add(int(gapKey))
-			for i := startKey; i <= endKey; i++ {
-				go func(i int32) {
-					defer wg.Done()
-					// 从 LevelDB 中获取键对应的值，并解码为整数
-					key := strconv.Itoa(int(i))
-					value, err := kvs.persister.Get(key)
-					if err != nil {
-						fmt.Println("拿取value有问题")
-						panic(err)
-					}
-					// positionBytes := kvs.persister.Get(op.Key)
-					// if value == -1 { //  说明leveldb中没有该key
-						// result[key] = raft.NoKey
-						// reply.Err = raft.ErrNoKey
-					// }
-					mu.Lock()
-					result[key] = value
-					mu.Unlock()
-				}(i)
+			// 执行范围查询
+			result, err := kvs.persister.ScanRange(startKey, endKey)
+			if err != nil {
+				log.Printf("Scan error: %v", err)
+				reply.Err = "error in scan"
+				return reply
 			}
-			wg.Wait()
 			// 构造响应并返回
 			reply.KeyValuePairs = result
 			return reply
