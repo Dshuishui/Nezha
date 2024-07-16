@@ -57,9 +57,12 @@ func readEntry(file *os.File) (*Entry, error) {
 	value := make([]byte, valueSize)
 	_, err = io.ReadFull(file, value)
 	if err != nil {
+
 		return nil, fmt.Errorf("读取value错误: %v", err)
 	}
 	entry.Value = string(value)
+	fmt.Printf("成功读取 Entry: Index=%d, Key=%s, KeySize=%d, ValueSize=%d\n", 
+               entry.Index, entry.Key, len(entry.Key) , len(entry.Value))
 	
 	return entry, nil
 }
@@ -130,16 +133,20 @@ func garbageCollect(inputFilename string, outputFilename string) error{
 	num:=0
 	for {
 		entry, err := readEntry(inputFile)
-		fmt.Printf("成功拿到第%v个Entry",num)
+		fmt.Printf("成功拿到第%v个Entry\n",num)
 		num++
 		if err == io.EOF {
 			fmt.Println("读取entry时遇到EOF了")
 			break
 		}
 		if err != nil {
+			// 获取当前文件位置
+			pos, _ := inputFile.Seek(0, io.SeekCurrent)
+			fmt.Printf("错误发生时的文件位置：%d\n", pos)
 			return fmt.Errorf("读取Entry错误: %v", err)
 		}
 		entries[entry.Key] = entry		// 构造一个map映射，方便后续的排序和根据key直接拿取到对应的entry实体。
+
 	}
 	num=0
 	fmt.Printf("读取出的entrys的长度为%v\n",len(entries))
