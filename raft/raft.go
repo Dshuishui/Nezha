@@ -188,10 +188,12 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 	}
 
 	for i, entry := range e {
-		keySize := uint32(len(entry.Key))
+		
 		valueSize := uint32(len(entry.Value))
-		data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value
+		
 		paddedKey := rf.persister.PadKey(entry.Key)		// 存入valuelog里面也用
+		keySize := uint32(len(paddedKey))
+		data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value
 
 		// 将数据编码到byte slice中
 		binary.BigEndian.PutUint32(data[0:4], entry.Index)

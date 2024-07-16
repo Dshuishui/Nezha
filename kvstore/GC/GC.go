@@ -28,54 +28,38 @@ type Entry struct {
 func readEntry(file *os.File) (*Entry, error) {
 	entry := &Entry{}
 	
-	err := binary.Read(file, binary.LittleEndian, &entry.Index)
+	// 读取固定长度的头部（20字节）
+	header := make([]byte, 20)
+	_, err := io.ReadFull(file, header)   	// 读取文件的位置指针会往后移
 	if err != nil {
 		if err == io.EOF {
 			return nil, err
 		}
-		return nil, fmt.Errorf("读取Index错误: %v", err)
-	}
-	// Read函数会根据第三个参数的类型来确定读取的字节数。
-	// 会读取足够多的字节以填充entry.Index字段，
-	// 如果读取的字节不足以构成一个完整的Index字段，
-	// 或者遇到文件结束符io.EOF，binary.Read将返回相应的错误或者结束信号。
-	err = binary.Read(file, binary.LittleEndian, &entry.CurrentTerm)
-	if err != nil {
-		return nil, fmt.Errorf("读取CurrentTerm错误: %v", err)
+		return nil, fmt.Errorf("读取头部错误: %v", err)
 	}
 	
-	err = binary.Read(file, binary.LittleEndian, &entry.VotedFor)
-	if err != nil {
-		return nil, fmt.Errorf("读取VotedFor错误: %v", err)
-	}
+	// 解析头部
+	entry.Index = binary.BigEndian.Uint32(header[0:4])
+	entry.CurrentTerm = binary.BigEndian.Uint32(header[4:8])
+	entry.VotedFor = binary.BigEndian.Uint32(header[8:12])
+	keySize := binary.BigEndian.Uint32(header[12:16])
+	valueSize := binary.BigEndian.Uint32(header[16:20])
 	
-	var keySize, valueSize uint32
-	err = binary.Read(file, binary.LittleEndian, &keySize)
-	if err != nil {
-		return nil, fmt.Errorf("读取keySize错误: %v", err)
-	}
-	fmt.Printf("读取keySize: %d\n", keySize)
-	
-	err = binary.Read(file, binary.LittleEndian, &valueSize)
-	if err != nil {
-		return nil, fmt.Errorf("读取valueSize错误: %v", err)
-	}
-	fmt.Printf("读取valueSize: %d\n", valueSize)
-	
-	keyBytes := make([]byte, keySize)
-	_, err = io.ReadFull(file, keyBytes)
+	// 读取 key，虽然名字涉及到扩充，但是只是普通的key
+	paddedKey := make([]byte, keySize)
+	_, err = io.ReadFull(file, paddedKey)
 	if err != nil {
 		return nil, fmt.Errorf("读取key错误: %v", err)
 	}
-	entry.Key = string(keyBytes)
-	fmt.Printf("读取key: %s\n", entry.Key)
+	entry.Key = string(paddedKey)
 	
-	valueBytes := make([]byte, valueSize)
-	_, err = io.ReadFull(file, valueBytes)
+	// 读取 value
+	value := make([]byte, valueSize)
+	_, err = io.ReadFull(file, value)
 	if err != nil {
 		return nil, fmt.Errorf("读取value错误: %v", err)
 	}
-	entry.Value = string(valueBytes)
+	entry.Value = string(value)
 	
 	return entry, nil
 }
@@ -100,38 +84,32 @@ func readEntry(file *os.File) (*Entry, error) {
 // }
 
 func writeEntry(file *os.File, entry *Entry) error {
-	err := binary.Write(file, binary.LittleEndian, entry.Index)
-	if err != nil {
+	paddedKey := entry.Key   	// 虽然名字涉及到扩充，但是只是普通的key
+	keySize := uint32(len(paddedKey))
+	valueSize := uint32(len(entry.Value))
+	
+	// 写入头部，写入文件的位置指针会往后移
+	if err := binary.Write(file, binary.BigEndian, entry.Index); err != nil {
 		return fmt.Errorf("写入Index错误: %v", err)
 	}
-	
-	err = binary.Write(file, binary.LittleEndian, entry.CurrentTerm)
-	if err != nil {
+	if err := binary.Write(file, binary.BigEndian, entry.CurrentTerm); err != nil {
 		return fmt.Errorf("写入CurrentTerm错误: %v", err)
 	}
-	
-	err = binary.Write(file, binary.LittleEndian, entry.VotedFor)
-	if err != nil {
+	if err := binary.Write(file, binary.BigEndian, entry.VotedFor); err != nil {
 		return fmt.Errorf("写入VotedFor错误: %v", err)
 	}
-	
-	err = binary.Write(file, binary.LittleEndian, uint32(len(entry.Key)))
-	if err != nil {
+	if err := binary.Write(file, binary.BigEndian, keySize); err != nil {
 		return fmt.Errorf("写入keySize错误: %v", err)
 	}
-	
-	err = binary.Write(file, binary.LittleEndian, uint32(len(entry.Value)))
-	if err != nil {
+	if err := binary.Write(file, binary.BigEndian, valueSize); err != nil {
 		return fmt.Errorf("写入valueSize错误: %v", err)
 	}
 	
-	_, err = file.Write([]byte(entry.Key))
-	if err != nil {
+	// 写入key和value
+	if _, err := file.Write([]byte(paddedKey)); err != nil {
 		return fmt.Errorf("写入key错误: %v", err)
 	}
-	
-	_, err = file.Write([]byte(entry.Value))
-	if err != nil {
+	if _, err := file.Write([]byte(entry.Value)); err != nil {
 		return fmt.Errorf("写入value错误: %v", err)
 	}
 	
