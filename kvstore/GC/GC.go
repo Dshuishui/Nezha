@@ -180,7 +180,7 @@ func garbageCollect(inputFilename string, outputFilename string) error{
 func MonitorFileSize(path string) {
 	for {
 		size, err := getFileSize(path)
-		fmt.Println("get File Size")
+		fmt.Printf("get File Size %v\n",size)
 		if err != nil {
 			fmt.Printf("Error checking file size: %v\n", err)
 		} else if size > threshold {
