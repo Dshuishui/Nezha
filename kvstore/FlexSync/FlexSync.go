@@ -639,38 +639,37 @@ func main() {
 
 	go kvs.applyLoop()
 
-	// ctx, cancel := context.WithCancel(context.Background())
-	ctx, _ := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	// ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
-	// go func() {
-	// 	timeout := 38 * time.Second
-	// 	time1 := 5*time.Second
-	// 	for {
-	// 		time.Sleep(timeout)
-	// 		// if (time.Since(kvs.lastPutTime) > timeout) && (time.Since(kvs.raft.LastAppendTime) > timeout) {
-	// 		if time.Since(kvs.lastPutTime) > timeout {
+	go func() {
+		timeout := 38 * time.Second
+		time1 := 5*time.Second
+		for {
+			time.Sleep(timeout)
+			// if (time.Since(kvs.lastPutTime) > timeout) && (time.Since(kvs.raft.LastAppendTime) > timeout) {
+			if time.Since(kvs.lastPutTime) > timeout {
 
-	// 			fmt.Println("开始垃圾回收，可能不会有反应，因为磁盘文件没有超过阈值")
-	// 			GC.MonitorFileSize("./kvstore/FlexSync/db_key_index")	// 做完GC再退出
+				fmt.Println("开始垃圾回收，可能不会有反应，因为磁盘文件没有超过阈值")
+				startTime := time.Now()
+				GC.MonitorFileSize("./kvstore/FlexSync/db_key_index")	// GC处理
+				fmt.Printf("垃圾回收完成，共花费了%v\n",time.Now().Sub(startTime))
 
-	// 			fmt.Println("等五秒再停止服务器")
-	// 			time.Sleep(time1)
-	// 			cancel() // 超时后取消上下文
-	// 			fmt.Println("38秒没有请求，停止服务器")
-	// 			wg.Done()
+				fmt.Println("等五秒再停止服务器")
+				time.Sleep(time1)
+				cancel() // 超时后取消上下文
+				fmt.Println("38秒没有请求，停止服务器")
+				wg.Done()
 
-	// 			kvs.raft.Kill() // 关闭Raft层
-	// 			return          // 退出main函数
-	// 		}
-	// 	}
-	// }()
-	wg.Add(1)
+				kvs.raft.Kill() // 关闭Raft层
+				return          // 退出main函数
+			}
+		}
+	}()
+	wg.Add(1+1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
 	kvs.raft.Gap = gap
 	kvs.raft.SyncTime = syncTime
-	fmt.Println("开始垃圾回收，可能不会有反应，因为磁盘文件没有超过阈值")
-	startTime := time.Now()
-	GC.MonitorFileSize("./kvstore/FlexSync/db_key_index")	// GC处理
-	fmt.Printf("垃圾回收花费了%v\n",time.Now().Sub(startTime))
+
 	wg.Wait()
 }
