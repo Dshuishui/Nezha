@@ -182,7 +182,7 @@ func MonitorFileSize(path string) {
 		if err != nil {
 			fmt.Printf("Error checking file size: %v\n", err)
 		} else if size > threshold {
-			garbageCollect(path, GCedPath)
+			err := garbageCollect(path, GCedPath)
 			if err != nil {
 				fmt.Printf("垃圾回收错误: %v\n", err)
 				return
