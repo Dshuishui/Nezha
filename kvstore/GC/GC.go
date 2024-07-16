@@ -54,11 +54,13 @@ func readEntry(file *os.File) (*Entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("读取keySize错误: %v", err)
 	}
+	fmt.Printf("读取keySize: %d\n", keySize)
 	
 	err = binary.Read(file, binary.LittleEndian, &valueSize)
 	if err != nil {
 		return nil, fmt.Errorf("读取valueSize错误: %v", err)
 	}
+	fmt.Printf("读取valueSize: %d\n", valueSize)
 	
 	keyBytes := make([]byte, keySize)
 	_, err = io.ReadFull(file, keyBytes)
@@ -66,6 +68,7 @@ func readEntry(file *os.File) (*Entry, error) {
 		return nil, fmt.Errorf("读取key错误: %v", err)
 	}
 	entry.Key = string(keyBytes)
+	fmt.Printf("读取key: %s\n", entry.Key)
 	
 	valueBytes := make([]byte, valueSize)
 	_, err = io.ReadFull(file, valueBytes)
