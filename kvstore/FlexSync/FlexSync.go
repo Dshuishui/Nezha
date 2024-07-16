@@ -670,7 +670,7 @@ func main() {
 	kvs.raft.SyncTime = syncTime
 	fmt.Println("开始垃圾回收，可能不会有反应，因为磁盘文件没有超过阈值")
 	startTime := time.Now()
-	go GC.MonitorFileSize("./kvstore/FlexSync/db_key_index")	// GC处理
+	GC.MonitorFileSize("./kvstore/FlexSync/db_key_index")	// GC处理
 	fmt.Printf("垃圾回收花费了%v\n",time.Now().Sub(startTime))
 	wg.Wait()
 }
