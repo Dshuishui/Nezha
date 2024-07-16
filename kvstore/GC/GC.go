@@ -129,6 +129,7 @@ func garbageCollect(inputFilename string, outputFilename string) error{
 	for {
 		entry, err := readEntry(inputFile)
 		if err == io.EOF {
+			fmt.Println("读取entry时需要EOF了")
 			break
 		}
 		if err != nil {
@@ -136,6 +137,7 @@ func garbageCollect(inputFilename string, outputFilename string) error{
 		}
 		entries[entry.Key] = entry		// 构造一个map映射，方便后续的排序和根据key直接拿取到对应的entry实体。
 	}
+	fmt.Printf("读取出的entrys的长度为%v\n",len(entries))
 	sortedKeys := make([]string, 0, len(entries))
 	for key := range entries {
 		sortedKeys = append(sortedKeys, key)
@@ -172,6 +174,7 @@ func MonitorFileSize(path string) {
 				return
 			}
 			fmt.Println("Garbage collection completed successfully.")
+			return
 		}
 		time.Sleep(checkInterval)
 	}
