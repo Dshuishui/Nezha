@@ -231,7 +231,7 @@ func readEntry(reader *bufio.Reader) (*Entry, error) {
 }
 
 func writeTempFile(entryMap map[string]*Entry) (string, error) {
-	tempFile, err := os.CreateTemp("", "entries_*.tmp")
+	tempFile, err := os.CreateTemp("kvstore/FlexSync", "entries_*.tmp")
 	if err != nil {
 		return "", err
 	}
