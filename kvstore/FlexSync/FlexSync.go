@@ -643,15 +643,20 @@ func main() {
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
 		timeout := 38 * time.Second
+		time1 := 5*time.Second
 		for {
 			time.Sleep(timeout)
 			// if (time.Since(kvs.lastPutTime) > timeout) && (time.Since(kvs.raft.LastAppendTime) > timeout) {
 			if time.Since(kvs.lastPutTime) > timeout {
+
+				fmt.Println("开始垃圾回收，可能不会有反应，因为磁盘文件没有超过阈值")
+				GC.MonitorFileSize("./kvstore/FlexSync/db_key_index")	// 做完GC再退出
+
+				fmt.Println("等五秒再停止服务器")
+				time.Sleep(time1)
 				cancel() // 超时后取消上下文
 				fmt.Println("38秒没有请求，停止服务器")
 				wg.Done()
-
-				GC.MonitorFileSize("./kvstore/FlexSync/db_key_index")	// 做完GC再退出
 
 				kvs.raft.Kill() // 关闭Raft层
 				return          // 退出main函数
