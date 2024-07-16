@@ -61,8 +61,8 @@ func readEntry(file *os.File) (*Entry, error) {
 		return nil, fmt.Errorf("读取value错误: %v", err)
 	}
 	entry.Value = string(value)
-	fmt.Printf("成功读取 Entry: Index=%d, Key=%s, KeySize=%d, ValueSize=%d\n", 
-               entry.Index, entry.Key, len(entry.Key) , len(entry.Value))
+	fmt.Printf("成功读取 Entry: Index=%d, KeySize=%d, ValueSize=%d\n", 
+               entry.Index, len(entry.Key) , len(entry.Value))
 	
 	return entry, nil
 }
