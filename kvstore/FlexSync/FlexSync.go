@@ -31,7 +31,7 @@ import (
 	"google.golang.org/grpc"
 	// "google.golang.org/grpc/credentials/insecure"
 	"gitee.com/dong-shuishui/FlexSync/pool"
-	// "gitee.com/dong-shuishui/FlexSync/kvstore/GC"
+	"gitee.com/dong-shuishui/FlexSync/kvstore/GC"
 	"github.com/syndtr/goleveldb/leveldb"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
@@ -652,7 +652,7 @@ func main() {
 
 				fmt.Println("开始垃圾回收，可能不会有反应，因为磁盘文件没有超过阈值")
 				startTime := time.Now()
-				// GC.MonitorFileSize("./kvstore/FlexSync/db_key_index")	// GC处理
+				GC.MonitorFileSize("./kvstore/FlexSync/db_key_index")	// GC处理
 				fmt.Printf("垃圾回收完成，共花费了%v\n",time.Now().Sub(startTime))
 
 				fmt.Println("等五秒再停止服务器")
