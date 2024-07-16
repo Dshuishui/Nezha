@@ -196,11 +196,11 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 		data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value
 
 		// 将数据编码到byte slice中
-		binary.BigEndian.PutUint32(data[0:4], entry.Index)
-		binary.BigEndian.PutUint32(data[4:8], entry.CurrentTerm)
-		binary.BigEndian.PutUint32(data[8:12], entry.VotedFor)
-		binary.BigEndian.PutUint32(data[12:16], keySize)
-		binary.BigEndian.PutUint32(data[16:20], valueSize)
+		binary.LittleEndian.PutUint32(data[0:4], entry.Index)
+		binary.LittleEndian.PutUint32(data[4:8], entry.CurrentTerm)
+		binary.LittleEndian.PutUint32(data[8:12], entry.VotedFor)
+		binary.LittleEndian.PutUint32(data[12:16], keySize)
+		binary.LittleEndian.PutUint32(data[16:20], valueSize)
 
 		copy(data[20:20+keySize], paddedKey)
 		copy(data[20+keySize:], entry.Value)
