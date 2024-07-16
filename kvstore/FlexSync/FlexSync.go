@@ -31,7 +31,7 @@ import (
 	"google.golang.org/grpc"
 	// "google.golang.org/grpc/credentials/insecure"
 	"gitee.com/dong-shuishui/FlexSync/pool"
-	// "gitee.com/dong-shuishui/FlexSync/kvstore/GC"
+	"gitee.com/dong-shuishui/FlexSync/kvstore/GC"
 	"github.com/syndtr/goleveldb/leveldb"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
@@ -642,7 +642,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 3800 * time.Second
+		timeout := 38 * time.Second
 		for {
 			time.Sleep(timeout)
 			// if (time.Since(kvs.lastPutTime) > timeout) && (time.Since(kvs.raft.LastAppendTime) > timeout) {
@@ -650,6 +650,8 @@ func main() {
 				cancel() // 超时后取消上下文
 				fmt.Println("38秒没有请求，停止服务器")
 				wg.Done()
+
+				GC.MonitorFileSize("./kvstore/FlexSync/db_key_index")	// 做完GC再退出
 
 				kvs.raft.Kill() // 关闭Raft层
 				return          // 退出main函数
