@@ -127,9 +127,11 @@ func garbageCollect(inputFilename string, outputFilename string) error{
 	defer inputFile.Close()
 	
 	entries := make(map[string]*Entry)
-	
+	num:=0
 	for {
 		entry, err := readEntry(inputFile)
+		fmt.Printf("成功拿到第%v个Entry",num)
+		num++
 		if err == io.EOF {
 			fmt.Println("读取entry时遇到EOF了")
 			break
@@ -139,6 +141,7 @@ func garbageCollect(inputFilename string, outputFilename string) error{
 		}
 		entries[entry.Key] = entry		// 构造一个map映射，方便后续的排序和根据key直接拿取到对应的entry实体。
 	}
+	num=0
 	fmt.Printf("读取出的entrys的长度为%v\n",len(entries))
 	sortedKeys := make([]string, 0, len(entries))
 	for key := range entries {
