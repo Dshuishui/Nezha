@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 	"sort"
-	"strings"
+	// "strings"
 	"time"
 )
 
@@ -25,154 +25,155 @@ type Entry struct {
 	Value       string
 }
 
-func readEntries(filename string) ([]Entry, error) {
-	file, err := os.Open(filename)
+func readEntry(file *os.File) (*Entry, error) {
+	entry := &Entry{}
+	
+	err := binary.Read(file, binary.LittleEndian, &entry.Index)
 	if err != nil {
-		return nil, err
+		if err == io.EOF {
+			return nil, err
+		}
+		return nil, fmt.Errorf("读取Index错误: %v", err)
 	}
-	defer file.Close()
+	// Read函数会根据第三个参数的类型来确定读取的字节数。
+	// 会读取足够多的字节以填充entry.Index字段，
+	// 如果读取的字节不足以构成一个完整的Index字段，
+	// 或者遇到文件结束符io.EOF，binary.Read将返回相应的错误或者结束信号。
+	err = binary.Read(file, binary.LittleEndian, &entry.CurrentTerm)
+	if err != nil {
+		return nil, fmt.Errorf("读取CurrentTerm错误: %v", err)
+	}
+	
+	err = binary.Read(file, binary.LittleEndian, &entry.VotedFor)
+	if err != nil {
+		return nil, fmt.Errorf("读取VotedFor错误: %v", err)
+	}
+	
+	var keySize, valueSize uint32
+	err = binary.Read(file, binary.LittleEndian, &keySize)
+	if err != nil {
+		return nil, fmt.Errorf("读取keySize错误: %v", err)
+	}
+	
+	err = binary.Read(file, binary.LittleEndian, &valueSize)
+	if err != nil {
+		return nil, fmt.Errorf("读取valueSize错误: %v", err)
+	}
+	
+	keyBytes := make([]byte, keySize)
+	_, err = io.ReadFull(file, keyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("读取key错误: %v", err)
+	}
+	entry.Key = string(keyBytes)
+	
+	valueBytes := make([]byte, valueSize)
+	_, err = io.ReadFull(file, valueBytes)
+	if err != nil {
+		return nil, fmt.Errorf("读取value错误: %v", err)
+	}
+	entry.Value = string(valueBytes)
+	
+	return entry, nil
+}
 
-	var entries []Entry
+// func deduplicateEntries(entries []Entry) map[string]Entry {
+// 	entryMap := make(map[string]Entry)
+// 	for _, entry := range entries {
+// 		entryMap[entry.Key] = entry
+// 	}
+// 	return entryMap
+// }
 
+// func sortEntries(entryMap map[string]Entry) []Entry {	// 直接根据rntry中key进行排序。
+// 	var sortedEntries []Entry
+// 	for _, entry := range entryMap {
+// 		sortedEntries = append(sortedEntries, entry)
+// 	}
+// 	sort.Slice(sortedEntries, func(i, j int) bool {
+// 		return strings.Compare(sortedEntries[i].Key, sortedEntries[j].Key) < 0
+// 	})
+// 	return sortedEntries
+// }
+
+func writeEntry(file *os.File, entry *Entry) error {
+	err := binary.Write(file, binary.LittleEndian, entry.Index)
+	if err != nil {
+		return fmt.Errorf("写入Index错误: %v", err)
+	}
+	
+	err = binary.Write(file, binary.LittleEndian, entry.CurrentTerm)
+	if err != nil {
+		return fmt.Errorf("写入CurrentTerm错误: %v", err)
+	}
+	
+	err = binary.Write(file, binary.LittleEndian, entry.VotedFor)
+	if err != nil {
+		return fmt.Errorf("写入VotedFor错误: %v", err)
+	}
+	
+	err = binary.Write(file, binary.LittleEndian, uint32(len(entry.Key)))
+	if err != nil {
+		return fmt.Errorf("写入keySize错误: %v", err)
+	}
+	
+	err = binary.Write(file, binary.LittleEndian, uint32(len(entry.Value)))
+	if err != nil {
+		return fmt.Errorf("写入valueSize错误: %v", err)
+	}
+	
+	_, err = file.Write([]byte(entry.Key))
+	if err != nil {
+		return fmt.Errorf("写入key错误: %v", err)
+	}
+	
+	_, err = file.Write([]byte(entry.Value))
+	if err != nil {
+		return fmt.Errorf("写入value错误: %v", err)
+	}
+	
+	return nil
+}
+
+func garbageCollect(inputFilename string, outputFilename string) error{
+	inputFile, err := os.Open(inputFilename)
+	if err != nil {
+		return fmt.Errorf("打开输入文件错误: %v", err)
+	}
+	defer inputFile.Close()
+	
+	entries := make(map[string]*Entry)
+	
 	for {
-		entry := Entry{}
-		// Read函数会根据第三个参数的类型来确定读取的字节数。
-		// 会读取足够多的字节以填充entry.Index字段，
-		// 如果读取的字节不足以构成一个完整的Index字段，
-		// 或者遇到文件结束符io.EOF，binary.Read将返回相应的错误或者结束信号。
-		err = binary.Read(file, binary.LittleEndian, &entry.Index)
+		entry, err := readEntry(inputFile)
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("读取Entry错误: %v", err)
 		}
-
-		err = binary.Read(file, binary.LittleEndian, &entry.CurrentTerm)
-		if err != nil {
-			return nil, err
-		}
-
-		err = binary.Read(file, binary.LittleEndian, &entry.VotedFor)
-		if err != nil {
-			return nil, err
-		}
-
-		var keyLength uint32
-		err = binary.Read(file, binary.LittleEndian, &keyLength)
-		if err != nil {
-			return nil, err
-		}
-
-		var valueLength uint32
-		err = binary.Read(file, binary.LittleEndian, &valueLength)
-		if err != nil {
-			return nil, err
-		}
-
-		keyBytes := make([]byte, keyLength)
-		_, err = io.ReadFull(file, keyBytes)
-		if err != nil {
-			return nil, err
-		}
-		entry.Key = string(keyBytes)
-
-		valueBytes := make([]byte, valueLength)
-		_, err = io.ReadFull(file, valueBytes)
-		if err != nil {
-			return nil, err
-		}
-		entry.Value = string(valueBytes)
-
-		entries = append(entries, entry)
+		entries[entry.Key] = entry		// 构造一个map映射，方便后续的排序和根据key直接拿取到对应的entry实体。
 	}
-
-	return entries, nil
-}
-
-func deduplicateEntries(entries []Entry) map[string]Entry {
-	entryMap := make(map[string]Entry)
-	for _, entry := range entries {
-		entryMap[entry.Key] = entry
+	sortedKeys := make([]string, 0, len(entries))
+	for key := range entries {
+		sortedKeys = append(sortedKeys, key)
 	}
-	return entryMap
-}
-
-func sortEntries(entryMap map[string]Entry) []Entry {
-	var sortedEntries []Entry
-	for _, entry := range entryMap {
-		sortedEntries = append(sortedEntries, entry)
-	}
-	sort.Slice(sortedEntries, func(i, j int) bool {
-		return strings.Compare(sortedEntries[i].Key, sortedEntries[j].Key) < 0
-	})
-	return sortedEntries
-}
-
-func writeEntries(filename string, entries []Entry) error {
-	file, err := os.Create(filename)
+	sort.Strings(sortedKeys)		// 得到所有entry中key的一个排序
+	
+	outputFile, err := os.Create(outputFilename)
 	if err != nil {
-		return err
+		return fmt.Errorf("创建输出文件错误: %v", err)
 	}
-	defer file.Close()
-
-	for _, entry := range entries {
-		err = binary.Write(file, binary.LittleEndian, entry.Index)
+	defer outputFile.Close()
+	
+	for _, key := range sortedKeys {
+		err = writeEntry(outputFile, entries[key])	// 按照排好序的key，依次取出key对应的entry，同时把entry写入磁盘文件。
 		if err != nil {
-			return err
-		}
-
-		err = binary.Write(file, binary.LittleEndian, entry.CurrentTerm)
-		if err != nil {
-			return err
-		}
-
-		err = binary.Write(file, binary.LittleEndian, entry.VotedFor)
-		if err != nil {
-			return err
-		}
-
-		err = binary.Write(file, binary.LittleEndian, uint32(len(entry.Key)))
-		if err != nil {
-			return err
-		}
-
-		err = binary.Write(file, binary.LittleEndian, uint32(len(entry.Value)))
-		if err != nil {
-			return err
-		}
-
-		_, err = file.Write([]byte(entry.Key))
-		if err != nil {
-			return err
-		}
-
-		_, err = file.Write([]byte(entry.Value))
-		if err != nil {
-			return err
+			return fmt.Errorf("写入Entry错误: %v", err)
 		}
 	}
 
 	return nil
-}
-
-func handleGC(inputFilename string, outputFilename string) {
-	entries, err := readEntries(inputFilename)
-	if err != nil {
-		fmt.Printf("Error reading entries: %v\n", err)
-		return
-	}
-
-	deduplicatedEntries := deduplicateEntries(entries)
-	sortedEntries := sortEntries(deduplicatedEntries)
-
-	err = writeEntries(outputFilename, sortedEntries)
-	if err != nil {
-		fmt.Printf("Error writing entries: %v\n", err)
-		return
-	}
-
-	fmt.Println("Garbage collection completed successfully.")
 }
 
 func MonitorFileSize(path string) {
@@ -181,7 +182,12 @@ func MonitorFileSize(path string) {
 		if err != nil {
 			fmt.Printf("Error checking file size: %v\n", err)
 		} else if size > threshold {
-			handleGC(path, GCedPath)
+			garbageCollect(path, GCedPath)
+			if err != nil {
+				fmt.Printf("垃圾回收错误: %v\n", err)
+				return
+			}
+			fmt.Println("Garbage collection completed successfully.")
 		}
 		time.Sleep(checkInterval)
 	}

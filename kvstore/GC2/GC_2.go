@@ -1,4 +1,4 @@
-package GC
+package GC2
 
 import (
 	"bufio"
@@ -9,18 +9,28 @@ import (
 	"sort"
 	"container/heap"
 	"time"
+	// "math"
 	// "sync"
 	// "runtime"
 	// "path/filepath"
 )
 
-// type Entry struct {
-// 	Index       uint32
-// 	CurrentTerm uint32
-// 	VotedFor    uint32
-// 	Key         string
-// 	Value       string
-// }
+const (
+	// filePath     = "/path/to/your/file"  // 替换为您要监控的文件路径
+	threshold     = 1024 * 1024 * 1024 * 10 // 10 GB, 根据需要调整
+	checkInterval = 8 * time.Second         // 每8秒检查一次
+	GCedPath      = "./kvstore/FlexSync/db_key_index_withGC"
+	// batchSize     = 1000000 // Adjust this based on available memory
+	targetBatchSizeBytes  = 3 * 1024 * 1024 * 1024 // 4GB in bytes
+)
+
+type Entry struct {
+	Index       uint32
+	CurrentTerm uint32
+	VotedFor    uint32
+	Key         string
+	Value       string
+}
 
 type EntryHeapItem struct {
 	entry  *Entry
@@ -31,7 +41,7 @@ type EntryHeapItem struct {
 type EntryHeap []*EntryHeapItem
 
 func (h EntryHeap) Len() int           { return len(h) }
-func (h EntryHeap) Less(i, j int) bool { return h[i].entry.Key < h[j].entry.Key }
+func (h EntryHeap) Less(i, j int) bool { return h[i].entry.Key < h[j].entry.Key }	// 说明是从小到大排序，是一个最小堆
 func (h EntryHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 
 func (h *EntryHeap) Push(x interface{}) {
@@ -58,7 +68,8 @@ func mergeFiles(tempFiles []string, outputFilename string) error {
 
 	h := &EntryHeap{}
 	heap.Init(h)	// 创建堆结构体
-
+	
+	// 开启，多个临时文件以堆作为数据结构的排序。
 	// Open all temp files and read the first entry from each
 	for i, filename := range tempFiles {
 		file, err := os.Open(filename)
@@ -68,25 +79,26 @@ func mergeFiles(tempFiles []string, outputFilename string) error {
 		defer file.Close()
 
 		reader := bufio.NewReader(file)
-		entry, err := readEntry(reader)
-		if err != nil && err != io.EOF {
+		entry, err := readEntry(reader)		// 读取文件的第一个entry
+		if err != nil && err != io.EOF {	// 读取有错误，但是不是因读到文件的末尾而报错
 			return err
 		}
-		if err != io.EOF {
+		if err != io.EOF {		// 将每个文件的第一个entry push到堆结构体中
 			heap.Push(h, &EntryHeapItem{entry: entry, reader: reader, index: i})
 		}
 	}
 
+	// 多个文件依次取出entry进行堆排序。
 	// Merge entries
 	for h.Len() > 0 {
 		item := heap.Pop(h).(*EntryHeapItem)
-		err := writeEntry(writer, item.entry)
+		err := writeEntry(writer, item.entry)	// 取出堆顶entry 并写入新的磁盘文件
 		if err != nil {
 			return err
 		}
 
 		// Read next entry from the same file
-		nextEntry, err := readEntry(item.reader)
+		nextEntry, err := readEntry(item.reader)	// 取走了该文件的一个entry，需要再读取该文件的下一个entry压入堆中
 		if err == nil {
 			heap.Push(h, &EntryHeapItem{entry: nextEntry, reader: item.reader, index: item.index})
 		} else if err != io.EOF {
@@ -97,7 +109,19 @@ func mergeFiles(tempFiles []string, outputFilename string) error {
 	return nil
 }
 
-func processLargeFile(inputFilename, outputFilename string, batchSize int) error {
+func approximateMapSize(m map[string]*Entry) int {
+	size := 0
+	for k, v := range m {
+		// 估算每个 key 的大小
+		size += len(k)
+		// 估算每个 Entry 的大小
+		size += 4 * 3 // 3 个 uint32 字段
+		size += len(v.Key) + len(v.Value)
+	}
+	return size
+}
+
+func processLargeFile(inputFilename, outputFilename string) error {
 	inputFile, err := os.Open(inputFilename)
 	if err != nil {
 		return fmt.Errorf("error opening input file: %v", err)
@@ -108,7 +132,7 @@ func processLargeFile(inputFilename, outputFilename string, batchSize int) error
 
 	tempFiles := []string{}
 	entryMap := make(map[string]*Entry)
-	count := 0
+	// count := 0
 
 	for {
 		entry, err := readEntry(reader)	  // 读取一个entry
@@ -120,16 +144,22 @@ func processLargeFile(inputFilename, outputFilename string, batchSize int) error
 		}
 
 		entryMap[entry.Key] = entry
-		count++
+		// count++
 
-		if count >= batchSize {
+		// 计算 batchSize
+		// batchSize := int(math.Min(float64(maxBatchSizeBytes/averageEntrySize), math.MaxInt32))
+
+		// if count >= batchSize {
+		// 这个计算方式可能有问题。映射的实际内存占用通常比存储的元素数量要大，因为它需要额外的空间来支持高效的哈希操作。
+		if approximateMapSize(entryMap) > targetBatchSizeBytes {
 			tempFile, err := writeTempFile(entryMap)  // 取一批entry实体放入临时文件进行排序。
 			if err != nil {
 				return fmt.Errorf("error writing temp file: %v", err)
 			}
 			tempFiles = append(tempFiles, tempFile)  // 记录所有临时文件的路径
 			entryMap = make(map[string]*Entry)		// 初始化进行下一个批次
-			count = 0
+			// count = 0
+
 		}
 	}
 
@@ -159,41 +189,41 @@ func readEntry(reader *bufio.Reader) (*Entry, error) {
 	
 	err := binary.Read(reader, binary.LittleEndian, &entry.Index)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("读取Index错误: %v", err)
 	}
 
 	err = binary.Read(reader, binary.LittleEndian, &entry.CurrentTerm)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("读取CurrentTerm错误: %v", err)
 	}
 
 	err = binary.Read(reader, binary.LittleEndian, &entry.VotedFor)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("读取VotedFor错误: %v", err)
 	}
 
 	var keySize, valueSize uint32
 	err = binary.Read(reader, binary.LittleEndian, &keySize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("读取keySize错误: %v", err)
 	}
 
 	err = binary.Read(reader, binary.LittleEndian, &valueSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("读取valueSize错误: %v", err)
 	}
 
 	keyBytes := make([]byte, keySize)
 	_, err = io.ReadFull(reader, keyBytes)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("读取key错误: %v", err)
 	}
 	entry.Key = string(keyBytes)
 
 	valueBytes := make([]byte, valueSize)
 	_, err = io.ReadFull(reader, valueBytes)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("读取value错误: %v", err)
 	}
 	entry.Value = string(valueBytes)
 
@@ -215,7 +245,7 @@ func writeTempFile(entryMap map[string]*Entry) (string, error) {
 		entries = append(entries, entry)
 	}
 
-	sort.Slice(entries, func(i, j int) bool {
+	sort.Slice(entries, func(i, j int) bool {	// 直接根据entry中的key进行排序
 		return entries[i].Key < entries[j].Key
 	})
 
@@ -232,37 +262,37 @@ func writeTempFile(entryMap map[string]*Entry) (string, error) {
 func writeEntry(writer *bufio.Writer, entry *Entry) error {
 	err := binary.Write(writer, binary.LittleEndian, entry.Index)
 	if err != nil {
-		return err
+		return fmt.Errorf("写入Index错误: %v", err)
 	}
 
 	err = binary.Write(writer, binary.LittleEndian, entry.CurrentTerm)
 	if err != nil {
-		return err
+		return fmt.Errorf("写入CurrentTerm错误: %v", err)
 	}
 
 	err = binary.Write(writer, binary.LittleEndian, entry.VotedFor)
 	if err != nil {
-		return err
+		return fmt.Errorf("写入VotedFor错误: %v", err)
 	}
 
 	err = binary.Write(writer, binary.LittleEndian, uint32(len(entry.Key)))
 	if err != nil {
-		return err
+		return fmt.Errorf("写入keySize错误: %v", err)
 	}
 
 	err = binary.Write(writer, binary.LittleEndian, uint32(len(entry.Value)))
 	if err != nil {
-		return err
+		return fmt.Errorf("写入valueSize错误: %v", err)
 	}
 
 	_, err = writer.WriteString(entry.Key)
 	if err != nil {
-		return err
+		return fmt.Errorf("写入key错误: %v", err)
 	}
 
 	_, err = writer.WriteString(entry.Value)
 	if err != nil {
-		return err
+		return fmt.Errorf("写入value错误: %v", err)
 	}
 
 	return nil
@@ -324,8 +354,8 @@ func writeEntry(writer *bufio.Writer, entry *Entry) error {
 // }
 
 
-func handleGC_2(inputFilename string, outputFilename string) {
-	err := processLargeFile(inputFilename, outputFilename, threshold)
+func handleGC(inputFilename string, outputFilename string) {
+	err := processLargeFile(inputFilename, outputFilename)
 	if err != nil {
 		fmt.Printf("Error processing file: %v\n", err)
 		return
@@ -334,19 +364,19 @@ func handleGC_2(inputFilename string, outputFilename string) {
 	fmt.Println("File processed successfully.")
 }
 
-func MonitorFileSize_2(path string) {
+func MonitorFileSize(path string) {
 	for {
-		size, err := getFileSize_2(path)
+		size, err := getFileSize(path)
 		if err != nil {
 			fmt.Printf("Error checking file size: %v\n", err)
 		} else if size > threshold {
-			handleGC_2(path, GCedPath)
+			handleGC(path, GCedPath)
 		}
 		time.Sleep(checkInterval)
 	}
 }
 
-func getFileSize_2(path string) (int64, error) {
+func getFileSize(path string) (int64, error) {
 	fileInfo, err := os.Stat(path)
 	if err != nil {
 		return 0, err
