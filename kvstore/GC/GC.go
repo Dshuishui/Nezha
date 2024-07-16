@@ -88,30 +88,32 @@ func writeEntry(file *os.File, entry *Entry) error {
 	keySize := uint32(len(paddedKey))
 	valueSize := uint32(len(entry.Value))
 	
-	// 写入头部，使用小端
-	if err := binary.Write(file, binary.LittleEndian, entry.Index); err != nil {
-		return fmt.Errorf("写入Index错误: %v", err)
-	}
-	if err := binary.Write(file, binary.LittleEndian, entry.CurrentTerm); err != nil {
-		return fmt.Errorf("写入CurrentTerm错误: %v", err)
-	}
-	if err := binary.Write(file, binary.LittleEndian, entry.VotedFor); err != nil {
-		return fmt.Errorf("写入VotedFor错误: %v", err)
-	}
-	if err := binary.Write(file, binary.LittleEndian, keySize); err != nil {
-		return fmt.Errorf("写入keySize错误: %v", err)
-	}
-	if err := binary.Write(file, binary.LittleEndian, valueSize); err != nil {
-		return fmt.Errorf("写入valueSize错误: %v", err)
-	}
-	
-	// 写入key和value
-	if _, err := file.Write([]byte(paddedKey)); err != nil {
-		return fmt.Errorf("写入key错误: %v", err)
-	}
-	if _, err := file.Write([]byte(entry.Value)); err != nil {
-		return fmt.Errorf("写入value错误: %v", err)
-	}
+	data := make([]byte, 20+keySize+valueSize) // 20 bytes for 5 uint32 + key + value
+
+    // 将数据编码到byte slice中
+    binary.LittleEndian.PutUint32(data[0:4], entry.Index)
+    binary.LittleEndian.PutUint32(data[4:8], entry.CurrentTerm)
+    binary.LittleEndian.PutUint32(data[8:12], entry.VotedFor)
+    binary.LittleEndian.PutUint32(data[12:16], keySize)
+    binary.LittleEndian.PutUint32(data[16:20], valueSize)
+
+    copy(data[20:20+keySize], []byte(paddedKey))
+    copy(data[20+keySize:], entry.Value)
+
+    // 将文件指针移动到文件末尾
+    _, err := file.Seek(0, io.SeekEnd)
+    if err != nil {
+        return fmt.Errorf("移动文件指针到末尾错误: %v", err)
+    }
+
+    // 写入文件
+    n, err := file.Write(data)
+    if err != nil {
+        return fmt.Errorf("写入数据错误: %v", err)
+    }
+    if n < len(data) {
+        return fmt.Errorf("写入数据不完整: 写入 %d 字节，期望 %d 字节", n, len(data))
+    }
 	
 	return nil
 }
