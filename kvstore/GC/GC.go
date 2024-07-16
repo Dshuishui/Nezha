@@ -136,6 +136,7 @@ func writeEntry(file *os.File, entry *Entry) error {
 }
 
 func garbageCollect(inputFilename string, outputFilename string) error{
+	fmt.Println("Garbage collection started")
 	inputFile, err := os.Open(inputFilename)
 	if err != nil {
 		return fmt.Errorf("打开输入文件错误: %v", err)
@@ -179,9 +180,11 @@ func garbageCollect(inputFilename string, outputFilename string) error{
 func MonitorFileSize(path string) {
 	for {
 		size, err := getFileSize(path)
+		fmt.Println("get File Size")
 		if err != nil {
 			fmt.Printf("Error checking file size: %v\n", err)
 		} else if size > threshold {
+			fmt.Println("Garbage collection starting.")
 			err := garbageCollect(path, GCedPath)
 			if err != nil {
 				fmt.Printf("垃圾回收错误: %v\n", err)
