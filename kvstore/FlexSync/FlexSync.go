@@ -631,11 +631,11 @@ func main() {
 	kvs.reqMap = make(map[int]*OpContext)
 	kvs.seqMap = make(map[int64]int64)
 	kvs.lastAppliedIndex = 0
-	persister, err := kvs.persister.Init("./kvstore/FlexSync/db_key_index",true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
+	_, err := kvs.persister.Init("./kvstore/FlexSync/db_key_index",true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
 	if err != nil {
         log.Fatalf("Failed to initialize database: %v", err)
     }
-    defer persister.Close()
+    // defer persister.Close()
 
 	go kvs.applyLoop()
 
