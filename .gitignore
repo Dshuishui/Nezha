@@ -6,6 +6,7 @@ db
 kvstore/FlexSync/valueLog_WiscKey.log
 kvstore/FlexSync/valueLog_Leveldb.log
 kvstore/FlexSync/db_key_index
+kvstore/FlexSync/db_key_index_withGC
 kvstore/LevelDB/db_key_value
 kvstore/kvserver/db_key_index
 raft/RaftState.log
