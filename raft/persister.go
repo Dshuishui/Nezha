@@ -9,7 +9,7 @@ import (
 	"fmt"
 	 "encoding/binary"
 	 "errors"
-	 "sync"
+	//  "sync"
 	"strings"
 	"strconv"
 )
@@ -20,10 +20,10 @@ var ErrKeyNotFound = errors.New("key not found")
 type Persister struct {
 	// db *leveldb.DB
 	db *gorocksdb.DB
-	ro   *gorocksdb.ReadOptions
-	wo   *gorocksdb.WriteOptions
-    muRO sync.Mutex
-	muWO sync.Mutex
+	// ro   *gorocksdb.ReadOptions
+	// wo   *gorocksdb.WriteOptions
+    // muRO sync.Mutex
+	// muWO sync.Mutex
 }
 
 // PadKey 函数用于将给定的键填充到指定长度
@@ -58,70 +58,70 @@ func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
     }
 	// return &Persister{		// 复用读写实例
         // db: db,
-	p.wo = gorocksdb.NewDefaultWriteOptions()
-	p.ro = gorocksdb.NewDefaultReadOptions()
-	p.muRO = sync.Mutex{}
-	p.muWO = sync.Mutex{}
+	// p.wo = gorocksdb.NewDefaultWriteOptions()
+	// p.ro = gorocksdb.NewDefaultReadOptions()
+	// p.muRO = sync.Mutex{}
+	// p.muWO = sync.Mutex{}
     // },nil
 	return p,nil
 }
 
-func (p *Persister) Close() {
-	p.muRO.Lock()
-	defer p.muRO.Unlock()
-	if p.ro != nil {
-		p.ro.Destroy()
-		p.ro = nil
-	}
-	p.muWO.Lock()
-	defer p.muWO.Unlock()
-	if p.wo != nil {
-		p.wo.Destroy()
-		p.wo = nil
-	}
-	if p.db != nil {
-		p.db.Close()
-		p.db = nil
-	}
-}
+// func (p *Persister) Close() {
+// 	p.muRO.Lock()
+// 	defer p.muRO.Unlock()
+// 	if p.ro != nil {
+// 		p.ro.Destroy()
+// 		p.ro = nil
+// 	}
+// 	p.muWO.Lock()
+// 	defer p.muWO.Unlock()
+// 	if p.wo != nil {
+// 		p.wo.Destroy()
+// 		p.wo = nil
+// 	}
+// 	if p.db != nil {
+// 		p.db.Close()
+// 		p.db = nil
+// 	}
+// }
 
 func (p *Persister) Put_opt(key string, value int64) {
-	// wo := gorocksdb.NewDefaultWriteOptions()
-	// defer wo.Destroy()
+	wo := gorocksdb.NewDefaultWriteOptions()
+	defer wo.Destroy()
 	valueBytes := make([]byte, 8)
 	// for i := uint(0); i < 8; i++ {
 	// 	valueBytes[i] = byte((value >> (i * 8)) & 0xff)		// 一个字节一个字节的转换
 	// }
 	binary.LittleEndian.PutUint64(valueBytes, uint64(value))
 	paddedKey := p.PadKey(key)
-	p.muWO.Lock()
-    defer p.muWO.Unlock()
-	err := p.db.Put(p.wo, []byte(paddedKey), valueBytes)
+	// p.muWO.Lock()
+    // defer p.muWO.Unlock()
+	err := p.db.Put(wo, []byte(paddedKey), valueBytes)
 	if err != nil {
 		util.EPrintf("Put key %v value ** failed, err: %v", key, err)
 	}
 }
 
 func (p *Persister) Put(key string, value string) {
-	// wo := gorocksdb.NewDefaultWriteOptions()
-	// defer wo.Destroy()
+	wo := gorocksdb.NewDefaultWriteOptions()
+	defer wo.Destroy()
 	paddedKey := p.PadKey(key)
-	p.muWO.Lock()
-    defer p.muWO.Unlock()
-	err := p.db.Put(p.wo, []byte(paddedKey), []byte(value))
+	// p.muWO.Lock()
+    // defer p.muWO.Unlock()
+	err := p.db.Put(wo, []byte(paddedKey), []byte(value))
 	if err != nil {
 		util.EPrintf("Put key %v value ** failed, err: %v", key, err)
 	}
 }
 
 func (p *Persister) Get_opt(key string) (int64, error) {
-	// ro := gorocksdb.NewDefaultReadOptions()
-	// defer ro.Destroy()
+	ro := gorocksdb.NewDefaultReadOptions()
+	defer ro.Destroy()
 
 	paddedKey := p.PadKey(key)
-	p.muRO.Lock()
-    defer p.muRO.Unlock()
-	slice, err := p.db.Get(p.ro, []byte(paddedKey))
+	// p.muRO.Lock()
+    // defer p.muRO.Unlock()
+	slice, err := p.db.Get(ro, []byte(paddedKey))
 	if err != nil {
 		util.EPrintf("Get key %s failed, err: %s", key, err)
 		return 0, err
@@ -145,13 +145,13 @@ func (p *Persister) Get_opt(key string) (int64, error) {
 }
 
 func (p *Persister) Get(key string) (string, error) {
-	// ro := gorocksdb.NewDefaultReadOptions()
-	// defer ro.Destroy()
+	ro := gorocksdb.NewDefaultReadOptions()
+	defer ro.Destroy()
 
 	paddedKey := p.PadKey(key)
-	p.muRO.Lock()
-    defer p.muRO.Unlock()
-	slice, err := p.db.Get(p.ro, []byte(paddedKey))
+	// p.muRO.Lock()
+    // defer p.muRO.Unlock()
+	slice, err := p.db.Get(ro, []byte(paddedKey))
 	if err != nil {
 		util.EPrintf("Get key %s failed, err: %s", key, err)
 		return "", err
@@ -166,14 +166,16 @@ func (p *Persister) Get(key string) (string, error) {
 
 // ScanRange 执行范围查询，使用固定长度的string类型键
 func (p *Persister) ScanRange_opt(startKey, endKey string) (map[string]int64, error) {
-	p.muRO.Lock()
-	defer p.muRO.Unlock()
+	// p.muRO.Lock()
+	// defer p.muRO.Unlock()
+	ro := gorocksdb.NewDefaultReadOptions()
+	defer ro.Destroy()
 	result := make(map[string]int64)
 	
 	paddedStartKey := p.PadKey(startKey)
 	paddedEndKey := p.PadKey(endKey)
 	
-	it := p.db.NewIterator(p.ro)
+	it := p.db.NewIterator(ro)
 	defer it.Close()
 	
 	for it.Seek([]byte(paddedStartKey)); it.Valid(); it.Next() {	// Valid判断键是否存在，不存在就直接下一个
@@ -234,14 +236,16 @@ func parseValueInt64(value []byte) (int64, error) {
 }
 
 func (p *Persister) ScanRange(startKey, endKey string) (map[string]string, error) {
-	p.muRO.Lock()
-	defer p.muRO.Unlock()
+	// p.muRO.Lock()
+	// defer p.muRO.Unlock()
+	ro := gorocksdb.NewDefaultReadOptions()
+	defer ro.Destroy()
 	result := make(map[string]string)
 	
 	paddedStartKey := p.PadKey(startKey)
 	paddedEndKey := p.PadKey(endKey)
 	
-	it := p.db.NewIterator(p.ro)
+	it := p.db.NewIterator(ro)
 	defer it.Close()
 	
 	for it.Seek([]byte(paddedStartKey)); it.Valid(); it.Next() {
