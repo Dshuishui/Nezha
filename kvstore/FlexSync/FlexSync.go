@@ -203,7 +203,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 			positionBytes, err := kvs.persister.Get_opt(key)
 			if err != nil {
 				fmt.Println("拿取value有问题")
-				panic(err)
+				// panic(err)
 			}
 			// positionBytes := kvs.persister.Get(op.Key)
 			if positionBytes == -1 { //  说明leveldb中没有该key
