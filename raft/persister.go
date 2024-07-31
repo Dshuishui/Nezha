@@ -132,7 +132,8 @@ func (p *Persister) Get_opt(key string) (int64, error) {
 	// 	return -1, nil
 	// }
 	if !slice.Exists() {
-		return -1, ErrKeyNotFound
+		// return -1, ErrKeyNotFound
+		return -1,nil
 	}
 	if len(valueBytes) != 8 {
         return 0, errors.New("invalid value size")

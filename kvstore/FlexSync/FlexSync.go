@@ -203,7 +203,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 			positionBytes, err := kvs.persister.Get_opt(key)
 			if err != nil {
 				fmt.Println("拿取value有问题")
-				// panic(err)
+				panic(err)
 			}
 			// positionBytes := kvs.persister.Get(op.Key)
 			if positionBytes == -1 { //  说明leveldb中没有该key
@@ -643,7 +643,7 @@ func main() {
 	// ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 38 * time.Second
+		timeout := 38000 * time.Second
 		time1 := 5*time.Second
 		for {
 			time.Sleep(timeout)
