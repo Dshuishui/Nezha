@@ -142,7 +142,12 @@ func (kv *KVServer) killed() bool {
 }
 
 func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeRequest) (*kvrpc.ScanRangeResponse, error) {
-	reply := kvs.StartScan(in)
+	reply := kvs.StartScan(in)		
+	// 检查是否已经垃圾回收完毕
+		// 垃圾回收完毕再调用在已排序文件的scan方法，范围查询结果，最好用goroutine，两者同时进行scan查询
+		// 如果垃圾回收没完，需要调用在旧未排序的文件，进行范围查询
+	// 后面再合并两者的结果
+	// 返回即可
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
 	} else if reply.Err == raft.ErrNoKey {
@@ -178,7 +183,7 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 
 			// 处理查询结果
 			finalResult := make(map[string]string)
-			var mu sync.Mutex
+			// var mu sync.Mutex
 			var wg sync.WaitGroup
 
 			for key, position := range result {
@@ -187,14 +192,16 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 					defer wg.Done()
 					value, err := kvs.raft.ReadValueFromFile("./raft/RaftState.log", pos)
 					if err != nil {
-						log.Printf("Error reading value for key %s: %v", k, err)
-						mu.Lock()
-						finalResult[k] = raft.NoKey
-						mu.Unlock()
-					} else {
-						mu.Lock()
+						// log.Printf("Error reading value for key %s: %v", k, err)
+						// mu.Lock()
+						// finalResult[k] = raft.NoKey
+						// mu.Unlock()
+						fmt.Println("scan时，拿去单个key有问题")
+						panic(err)
+					} else {	// 迭代器在rocksdb中找到的key和偏移量数组，里面的key不重复，可以并发修改数组
+						// mu.Lock()
 						finalResult[k] = value
-						mu.Unlock()
+						// mu.Unlock()
 					}
 				}(key, position)
 			}
@@ -229,9 +236,10 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 			if positionBytes == -1 { //  说明leveldb中没有该key
 				reply.Err = raft.ErrNoKey
 				reply.Value = raft.NoKey
-				// 检查垃圾回收是否完成，如果完成，则再去已排序的文件进行查询。
-				// if 垃圾回收完成————————这是最简单的，后面还需要分各种情况，去已排序的文件，新文件，以及前两者文件合并后新生成的文件。
-				// 	调用在已排序的文件进行查找的函数。即getFromSortedFile()函数，然后将value返回，设置reply的value属性。
+				// 检查垃圾回收是否完成
+					// 如果完成，则再去已排序的文件进行查询，调用在已排序的文件进行查找的函数。即getFromSortedFile()函数。
+					// 如果未完成，则再去旧未排序的文件进行查询。
+				// 将value返回，设置reply的value属性。
 			} else {
 				// fmt.Printf("此时的position的字节数组的长度:%v", len(positionBytes))
 				// fmt.Printf("此时的position是:%v", positionBytes)
