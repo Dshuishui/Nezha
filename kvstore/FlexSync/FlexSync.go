@@ -146,7 +146,9 @@ func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeReq
 	// 检查是否已经垃圾回收完毕
 		// 垃圾回收完毕再调用在已排序文件的scan方法，范围查询结果，最好用goroutine，两者同时进行scan查询
 		// 如果垃圾回收没完，需要调用在旧未排序的文件，进行范围查询
-	// 后面再合并两者的结果
+		// 还有一个比较复杂的情况，针对已排序文件，继已排序文件后的新文件，以及前两者即将合并时又生成的新文件。
+		// 这三个文件就比较复杂，需要在最新文件、新文件、已排序的文件同时查询。
+	// 后面再合并两者的结果，或者合并三者的结果
 	// 返回即可
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
@@ -239,6 +241,8 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 				// 检查垃圾回收是否完成
 					// 如果完成，则再去已排序的文件进行查询，调用在已排序的文件进行查找的函数。即getFromSortedFile()函数。
 					// 如果未完成，则再去旧未排序的文件进行查询。
+					// 还有一个比较复杂的情况，针对已排序文件，继已排序文件后的新文件，以及前两者即将合并时又生成的新文件。
+					// 这三个文件就比较复杂，需要在最新文件查，没有的话再去新文件查，最后再去已排序的文件。
 				// 将value返回，设置reply的value属性。
 			} else {
 				// fmt.Printf("此时的position的字节数组的长度:%v", len(positionBytes))
