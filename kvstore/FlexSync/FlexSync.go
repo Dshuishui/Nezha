@@ -230,8 +230,8 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 				reply.Err = raft.ErrNoKey
 				reply.Value = raft.NoKey
 				// 检查垃圾回收是否完成，如果完成，则再去已排序的文件进行查询。
-				// if 垃圾回收完成
-				// 	调用在已排序的文件进行查找的函数。即getFromSortedFile()函数，然后收尾即可。
+				// if 垃圾回收完成————————这是最简单的，后面还需要分各种情况，去已排序的文件，新文件，以及前两者文件合并后新生成的文件。
+				// 	调用在已排序的文件进行查找的函数。即getFromSortedFile()函数，然后将value返回，设置reply的value属性。
 			} else {
 				// fmt.Printf("此时的position的字节数组的长度:%v", len(positionBytes))
 				// fmt.Printf("此时的position是:%v", positionBytes)
