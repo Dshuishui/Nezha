@@ -41,6 +41,11 @@ func (p *Persister)UnpadKey(paddedKey string) string {
 	return strings.TrimLeft(paddedKey, "0")
 }
 
+func NewPersister() (*Persister, error) {
+    p := &Persister{}
+    return p, nil
+}
+
 // Init 初始化 RocksDB 数据库，并根据 `disableCache` 参数设置缓存
 func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
     var err error
