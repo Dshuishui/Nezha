@@ -16,8 +16,10 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sort"
 	"time"
 	"log"
+	"bufio"
 
 	// "gitee.com/dong-shuishui/FlexSync/config"
 	"gitee.com/dong-shuishui/FlexSync/raft"
@@ -31,7 +33,7 @@ import (
 	"google.golang.org/grpc"
 	// "google.golang.org/grpc/credentials/insecure"
 	"gitee.com/dong-shuishui/FlexSync/pool"
-	// "gitee.com/dong-shuishui/FlexSync/kvstore/GC"
+	// "gitee.com/dong-shuishui/FlexSync/kvstore/GC4"
 	"github.com/syndtr/goleveldb/leveldb"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
@@ -49,6 +51,16 @@ const (
 	OP_TYPE_PUT = "Put"
 	OP_TYPE_GET = "Get"
 )
+
+type IndexEntry struct {
+    Key    string
+    Offset int64
+}
+
+type SortedFileIndex struct {
+    Entries []IndexEntry
+    FilePath string
+}
 
 type KVServer struct {
 	mu              sync.Mutex
@@ -70,6 +82,13 @@ type KVServer struct {
 	lastAppliedIndex int // 已持久化存储的日志index
 	kvrpc.UnimplementedKVServer
 	// resultCh  chan *kvrpc.PutInRaftResponse
+
+	sortedFilePath string        // 用于存储已排序文件的位置
+	sortedFileIndex		*SortedFileIndex
+	currentLog     *os.File			// 
+	// currentPersister *raft.Persister
+	getFromFile     func(string) (string, error)			// 对应与垃圾分离前后的两种查询方法。
+	scanFromFile    func(string, string) (map[string]string, error)
 }
 
 // ValueLog represents the Value Log file for storing values.
@@ -195,6 +214,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	commitindex, isleader := kvs.raft.GetReadIndex()
 	if !isleader {
 		reply.Err = raft.ErrWrongLeader
+		reply.LeaderId = kvs.raft.GetLeaderId()
 		return reply // 不是leader，拿不到commitindex直接退出，找其它leader
 	}
 	for { // 证明了此服务器就是leader
@@ -209,6 +229,9 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 			if positionBytes == -1 { //  说明leveldb中没有该key
 				reply.Err = raft.ErrNoKey
 				reply.Value = raft.NoKey
+				// 检查垃圾回收是否完成，如果完成，则再去已排序的文件进行查询。
+				// if 垃圾回收完成
+				// 	调用在已排序的文件进行查找的函数。即getFromSortedFile()函数，然后收尾即可。
 			} else {
 				// fmt.Printf("此时的position的字节数组的长度:%v", len(positionBytes))
 				// fmt.Printf("此时的position是:%v", positionBytes)
@@ -330,6 +353,242 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 		reply.Err = "defeat"
 	}
 	return reply
+}
+
+func CreateSortedFileIndex(filePath string, indexInterval int) (*SortedFileIndex, error) {
+    file, err := os.Open(filePath)
+    if err != nil {
+        return nil, err
+    }
+    defer file.Close()
+
+    reader := bufio.NewReader(file)
+    var index []IndexEntry
+    var offset int64 = 0
+    entryCount := 0
+
+    for {
+        entry, entrySize, err := readEntry(reader)
+        if err != nil {
+            if err == io.EOF {
+                break
+            }
+            return nil, err
+        }
+
+        if entryCount % indexInterval == 0 {
+            index = append(index, IndexEntry{Key: entry.Key, Offset: offset})
+        }
+
+        offset += int64(entrySize)
+        entryCount++
+    }
+
+    return &SortedFileIndex{Entries: index, FilePath: filePath}, nil
+}
+
+func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
+    // 假设我们已经创建了索引并存储在 kvs.sortedFileIndex 中
+    index := kvs.sortedFileIndex
+
+    // 二分查找找到小于等于目标key的最大索引项
+    i := sort.Search(len(index.Entries), func(i int) bool {
+        return index.Entries[i].Key > key
+    }) - 1
+
+    if i < 0 {
+        return "", raft.ErrNoKey
+    }
+
+    // 打开文件并移动到索引位置
+    file, err := os.Open(index.FilePath)
+    if err != nil {
+        return "", err
+    }
+    defer file.Close()
+
+    _, err = file.Seek(index.Entries[i].Offset, 0)
+    if err != nil {
+        return "", err
+    }
+
+    reader := bufio.NewReader(file)
+
+    // 从索引位置开始线性搜索
+    for {
+        entry, _, err := readEntry(reader)
+        if err != nil {
+            if err == io.EOF {
+                return "", raft.ErrNoKey
+            }
+            return "", err
+        }
+
+        if entry.Key == key {
+            return entry.Value, nil
+        }
+
+        if entry.Key > key {
+            return "", raft.ErrNoKey
+        }
+    }
+}
+
+func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]string, error) {
+    // 先从排序文件中获取结果
+    result, err := kvs.scanFromSortedFile(startKey, endKey)
+    if err != nil {
+        return nil, err
+    }
+
+    // 然后检查新文件，更新或添加新的entries
+    newEntries, err := kvs.scanFromNewFile(startKey, endKey)
+    if err != nil {
+        return nil, err
+    }
+
+    // 合并结果
+    for k, v := range newEntries {
+        result[k] = v
+    }
+
+    return result, nil
+}
+
+func (kvs *KVServer) updateQueryMethods(sortedFilePath string) {
+    kvs.mu.Lock()
+    defer kvs.mu.Unlock()
+
+    kvs.sortedFilePath = sortedFilePath
+    
+    // 创建索引，假设每1000个条目记录一次索引，稀疏索引，间隔一部分创建一个索引，找到第一个合适的，再进行线性查询
+    index, err := CreateSortedFileIndex(sortedFilePath, 1000)
+    if err != nil {
+        // 处理错误
+        return
+    }
+    kvs.sortedFileIndex = index
+
+    kvs.getFromFile = kvs.getFromSortedOrNew
+    kvs.scanFromFile = kvs.scanFromSortedOrNew
+}
+
+func (kvs *KVServer) switchToNewFiles(newLog *os.File, newPersister *raft.Persister) {
+    kvs.mu.Lock()
+    defer kvs.mu.Unlock()
+    
+	// 更新两个路径，使得垃圾回收与客户端请求并行执行
+    // kvs.currentLog = newLog
+	kvs.raft.currentLog = newLog		// 存储value的磁盘文件由raft操作
+    kvs.persister = newPersister		// 存储key和偏移量的rocksdb文件由kvs操作
+    // 可能还需要更新其他相关的状态
+}
+
+func (kvs *KVServer) GarbageCollection() error {
+    fmt.Println("Starting garbage collection...")
+    startTime := time.Now()
+
+    // 创建新的文件用于接收新的写入
+	currentLog = "./raft/RaftState_new.log"
+    // newRaftStateLog, err := os.Create("./raft/RaftState_new.log")
+    // if err != nil {
+    //     return fmt.Errorf("failed to create new RaftState log: %v", err)
+    // }
+    // defer newRaftStateLog.Close()
+
+    // 创建新的RocksDB实例
+    newPersister, err := raft.NewPersister()
+    if err != nil {
+        return fmt.Errorf("failed to create new persister: %v", err)
+    }
+    _, err = newPersister.Init("./kvstore/FlexSync/db_key_index_new", true)
+    if err != nil {
+        return fmt.Errorf("failed to initialize new RocksDB: %v", err)
+    }
+
+    // 切换到新的文件和RocksDB
+    kvs.switchToNewFiles(currentLog, newPersister)
+
+    // 开始处理旧文件
+    sortedEntries, err := kvs.processSortedFile()
+    if err != nil {
+        return fmt.Errorf("failed to process old file: %v", err)
+    }
+
+    // 写入新的排序文件
+    sortedFilePath := "./raft/RaftState_sorted.log"
+    err = GC4.writeEntriesToNewFile(sortedEntries, sortedFilePath)
+    if err != nil {
+        return fmt.Errorf("failed to write sorted file: %v", err)
+    }
+
+    // 删除旧的RaftState.log文件
+    err = os.Remove("./raft/RaftState.log")
+    if err != nil {
+        return fmt.Errorf("failed to remove old RaftState.log: %v", err)
+    }
+
+    // 删除旧的RocksDB数据
+    err = os.RemoveAll("./kvstore/FlexSync/db_key_index")
+    if err != nil {
+        return fmt.Errorf("failed to remove old RocksDB data: %v", err)
+    }
+
+    // 更新KVServer的查询方法
+    // kvs.updateQueryMethods(sortedFilePath)
+
+    fmt.Printf("Garbage collection completed in %v\n", time.Since(startTime))
+    return nil
+}
+
+func (kvs *KVServer) processSortedFile() ([]*Entry, error) {
+	// 创建LRU缓存
+    // 假设我们允许缓存占用 100MB 内存，每个条目占 20B
+    // 100MB / 20B = 5,000,000 个条目
+    cache, _ := lru.New(5000000)
+
+    // 打开原始文件
+    file, err := os.Open("./raft/RaftState.log")
+    if err != nil {
+        return nil, fmt.Errorf("failed to open file: %v", err)
+    }
+    defer file.Close()
+
+    // 创建一个map来存储最新的entries
+    latestEntries := make(map[string]*Entry)
+
+    // 读取文件并处理entries
+    reader := bufio.NewReader(file)
+    var currentOffset int64 = 0
+    for {
+        entry, entryOffset, err := readEntry(reader, currentOffset)
+        if err != nil {
+            if err == io.EOF {
+                break
+            }
+            return nil, fmt.Errorf("error reading entry: %v", err)
+        }
+
+        // 更新当前偏移量
+        currentOffset = entryOffset + int64(binary.Size(entry.Index) + binary.Size(entry.CurrentTerm) + 
+                        binary.Size(entry.VotedFor) + 8 + len(entry.Key) + len(entry.Value))
+
+		// 验证entry是否有效
+        if GC4.IsValidEntry(kvs, entry, entryOffset, cache) {
+            latestEntries[entry.Key] = entry
+        }
+    }
+
+    // 将map转换为slice并排序
+    sortedEntries := make([]*Entry, 0, len(latestEntries))
+    for _, entry := range latestEntries {
+        sortedEntries = append(sortedEntries, entry)
+    }
+    sort.Slice(sortedEntries, func(i, j int) bool {
+        return sortedEntries[i].Key < sortedEntries[j].Key
+    })
+
+    return sortedEntries, nil
 }
 
 func (kvs *KVServer) RegisterKVServer(ctx context.Context, address string) { // 传入的是客户端与服务器之间的代理服务器的地址

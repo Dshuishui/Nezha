@@ -114,6 +114,7 @@ type Raft struct {
 	SyncChans      []chan string
 	batchLog       []*Entry
 	batchLogSize   int64
+	currentLog      string  // 存储value的磁盘文件路径
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -341,15 +342,15 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 // }
 
 // ReadValueFromFile 从指定的偏移量读取value
-func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, error) {
+func (rf *Raft) ReadValueFromFile(file *os.File, offset int64) (string, error) {
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
 	// 打开文件
-	file, err := os.Open(filename)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
+	// file, err := os.Open(filename)
+	// if err != nil {
+	// 	return "", err
+	// }
+	// defer file.Close()
 
 	if offset == -1 {
 		return "NOKEY",nil
@@ -705,14 +706,17 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// fmt.Println("到这了嘛4")
 	index = rf.lastIndex()
 	term = rf.currentTerm
-	entry_global = Entry{
-		Index:       uint32(index),
-		CurrentTerm: uint32(term),
-		VotedFor:    uint32(rf.leaderId),
-		Key:         command.(*raftrpc.DetailCod).Key,
-		Value:       command.(*raftrpc.DetailCod).Value,
+	if Command.OpType != "TermLog" {		// 除去上任leader后的空指令
+		entry_global = Entry{
+			Index:       uint32(index),
+			CurrentTerm: uint32(term),
+			VotedFor:    uint32(rf.leaderId),
+			Key:         command.(*raftrpc.DetailCod).Key,
+			Value:       command.(*raftrpc.DetailCod).Value,
+		}
+		arrEntry := []*Entry{&entry_global}
+		rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	}
-	arrEntry := []*Entry{&entry_global}
 	// rf.batchLog = append(rf.batchLog, &entry)
 	// if err := enc.Encode(entry); err != nil {
 	// 	util.EPrintf("Encode error in Start()：%v", err)
@@ -730,7 +734,6 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// 	buffer.Reset()
 	// 	rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
 	// }
-	rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	rf.log = append(rf.log, &logEntry) // 确保日志落盘之后，再更新log
 	rf.mu.Unlock()
 	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
