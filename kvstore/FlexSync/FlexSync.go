@@ -142,7 +142,29 @@ func (kv *KVServer) killed() bool {
 }
 
 func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeRequest) (*kvrpc.ScanRangeResponse, error) {
-	reply := kvs.StartScan(in)		
+	reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
+    
+    commitIndex, isLeader := kvs.raft.GetReadIndex()
+    if !isLeader {
+        reply.Err = raft.ErrWrongLeader
+        reply.LeaderId = kvs.raft.GetLeaderId()
+        return reply, nil
+    }
+
+    for {
+        if kvs.raft.GetApplyIndex() >= commitIndex {
+            result, err := kvs.scanFromSortedOrNew(in.StartKey, in.EndKey)
+            if err != nil {
+                reply.Err = "error in scan"
+                return reply, nil
+            }
+            reply.KeyValuePairs = result
+            return reply, nil
+        }
+        time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
+    }
+	// ————以下是之前的scan查询————
+	// reply := kvs.StartScan(in)		
 	// 检查是否已经垃圾回收完毕
 		// 垃圾回收完毕再调用在已排序文件的scan方法，范围查询结果，最好用goroutine，两者同时进行scan查询
 		// 如果垃圾回收没完，需要调用在旧未排序的文件，进行范围查询
@@ -150,16 +172,137 @@ func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeReq
 		// 这三个文件就比较复杂，需要在最新文件、新文件、已排序的文件同时查询。
 	// 后面再合并两者的结果，或者合并三者的结果
 	// 返回即可
-	if reply.Err == raft.ErrWrongLeader {
-		reply.LeaderId = kvs.raft.GetLeaderId()
-	} else if reply.Err == raft.ErrNoKey {
+	// if reply.Err == raft.ErrWrongLeader {
+		// reply.LeaderId = kvs.raft.GetLeaderId()
+	// } else if reply.Err == raft.ErrNoKey {
 		// 返回客户端没有该key即可，这里先不做操作
 		// fmt.Println("server端没有client查询的key")
-	} else if reply.Err == "error in scan" {
-		reply.Err = "error in scan"
+	// } else if reply.Err == "error in scan" {
+		// reply.Err = "error in scan"
+	// }
+	// return reply, nil
+}
 
-	}
-	return reply, nil
+func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]string, error) {
+    var wg sync.WaitGroup
+    wg.Add(2)
+
+    type scanResult struct {
+        data map[string]string
+        err  error
+    }
+
+    sortedChan := make(chan scanResult, 1)
+    newChan := make(chan scanResult, 1)
+
+    // 并发查询排序文件
+    go func() {
+        defer wg.Done()
+        result, err := kvs.scanFromSortedFile(startKey, endKey)
+        sortedChan <- scanResult{data: result, err: err}
+    }()
+
+    // 并发查询新文件
+    go func() {
+        defer wg.Done()
+        result, err := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey})
+        if err != nil {
+            newChan <- scanResult{data: nil, err: err}
+            return
+        }
+        newChan <- scanResult{data: result.KeyValuePairs, err: nil}
+    }()
+
+    // 等待两个查询都完成
+    wg.Wait()
+    close(sortedChan)
+    close(newChan)
+
+    // 获取结果
+    sortedResult := <-sortedChan
+    newResult := <-newChan
+
+    // 检查错误
+    if sortedResult.err != nil {
+        return nil, fmt.Errorf("error scanning sorted file: %v", sortedResult.err)
+    }
+    if newResult.err != nil {
+        return nil, fmt.Errorf("error scanning new file: %v", newResult.err)
+    }
+
+    // 合并结果
+    result := make(map[string]string)
+    for k, v := range sortedResult.data {
+        result[k] = v
+    }
+    for k, v := range newResult.data {
+        result[k] = v // 新文件的数据会覆盖排序文件中的旧数据
+    }
+
+    return result, nil
+}
+
+func (kvs *KVServer) StartScan_opt(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeResponse {
+    startKey := args.GetStartKey()
+    endKey := args.GetEndKey()
+    reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
+
+    // 执行范围查询
+    result, err := kvs.scanNewFile(startKey, endKey)
+    if err != nil {
+        log.Printf("Scan error: %v", err)
+        reply.Err = "error in scan"
+        return reply
+    }
+
+    // 构造响应并返回
+    reply.KeyValuePairs = result
+    return reply
+}
+
+func (kvs *KVServer) scanNewFile(startKey, endKey string) (map[string]string, error) {
+    kvs.mu.Lock()
+    defer kvs.mu.Unlock()
+
+    result := make(map[string]string)
+
+    // 从RocksDB中获取范围内的key-value对
+    iter := kvs.currentPersister.NewIterator()
+    defer iter.Close()
+
+    for iter.Seek([]byte(startKey)); iter.Valid(); iter.Next() {
+        key := string(iter.Key())
+        if key > endKey {
+            break
+        }
+
+        // 从新的日志文件中读取实际的value
+        value, err := kvs.readValueFromNewFile(iter.Value())
+        if err != nil {
+            return nil, err
+        }
+
+        result[key] = value
+    }
+
+    return result, nil
+}
+
+func (kvs *KVServer) readValueFromNewFile(positionBytes []byte) (string, error) {
+    position := int64(binary.LittleEndian.Uint64(positionBytes))
+    
+    _, err := kvs.currentLog.Seek(position, 0)
+    if err != nil {
+        return "", err
+    }
+
+    reader := bufio.NewReader(kvs.currentLog)
+    entry, _, err := readEntry(reader)
+    if err != nil {
+        return "", err
+    }
+
+    return entry.Value, nil
 }
 
 func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeResponse {
@@ -170,6 +313,7 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 	commitIndex, isLeader := kvs.raft.GetReadIndex()
 	if !isLeader {
 		reply.Err = raft.ErrWrongLeader
+		reply.LeaderId = kvs.raft.GetLeaderId()
 		return reply // 不是leader，拿不到commitindex直接退出，找其它leader
 	}
 
@@ -447,21 +591,51 @@ func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
 }
 
 func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]string, error) {
-    // 先从排序文件中获取结果
-    result, err := kvs.scanFromSortedFile(startKey, endKey)
+    index := kvs.sortedFileIndex
+
+    // 找到大于等于 startKey 的最小索引项
+    startIndex := sort.Search(len(index.Entries), func(i int) bool {
+        return index.Entries[i].Key >= startKey
+    })
+
+    if startIndex == len(index.Entries) {
+        return nil, nil // startKey 大于所有索引项，返回空结果
+    }
+
+    // 打开文件并移动到起始位置
+    file, err := os.Open(index.FilePath)
+    if err != nil {
+        return nil, err
+    }
+    defer file.Close()
+
+    var seekOffset int64
+    if startIndex > 0 {
+        seekOffset = index.Entries[startIndex-1].Offset
+    }
+    _, err = file.Seek(seekOffset, 0)
     if err != nil {
         return nil, err
     }
 
-    // 然后检查新文件，更新或添加新的entries
-    newEntries, err := kvs.scanFromNewFile(startKey, endKey)
-    if err != nil {
-        return nil, err
-    }
+    reader := bufio.NewReader(file)
+    result := make(map[string]string)
 
-    // 合并结果
-    for k, v := range newEntries {
-        result[k] = v
+    for {
+        entry, _, err := readEntry(reader)
+        if err != nil {
+            if err == io.EOF {
+                break
+            }
+            return nil, err
+        }
+
+        if entry.Key >= startKey {
+            if entry.Key > endKey {
+                break // 已经超过了endKey，结束扫描
+            }
+            result[entry.Key] = entry.Value
+        }
     }
 
     return result, nil
