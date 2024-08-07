@@ -265,14 +265,16 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string) (map[string]string, er
     defer kvs.mu.Unlock()
 
     result := make(map[string]string)
+	paddedStartKey = persister.PadKey(startKey)
+	paddedEndKey = persister.PadKey(endKey)
 
     // 从RocksDB中获取范围内的key-value对
-    iter := kvs.currentPersister.NewIterator()
+    iter := kvs.persister.NewIterator()
     defer iter.Close()
 
-    for iter.Seek([]byte(startKey)); iter.Valid(); iter.Next() {
+    for iter.Seek([]byte(paddedStartKey)); iter.Valid(); iter.Next() {
         key := string(iter.Key())
-        if key > endKey {
+        if key > paddedEndKey {
             break
         }
 
@@ -281,8 +283,8 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string) (map[string]string, er
         if err != nil {
             return nil, err
         }
-
-        result[key] = value
+		originalKey := persister.UnpadKey(string(key))
+        result[originalKey] = value
     }
 
     return result, nil
@@ -531,9 +533,9 @@ func CreateSortedFileIndex(filePath string, indexInterval int) (*SortedFileIndex
             }
             return nil, err
         }
-
+		UnpadKey := persister.UnpadKey(entry.Key)
         if entryCount % indexInterval == 0 {
-            index = append(index, IndexEntry{Key: entry.Key, Offset: offset})
+            index = append(index, IndexEntry{Key: UnpadKey, Offset: offset})
         }
 
         offset += int64(entrySize)
@@ -546,10 +548,11 @@ func CreateSortedFileIndex(filePath string, indexInterval int) (*SortedFileIndex
 func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
     // 假设我们已经创建了索引并存储在 kvs.sortedFileIndex 中
     index := kvs.sortedFileIndex
+	paddedKey := persister.PadKey(key)
 
     // 二分查找找到小于等于目标key的最大索引项
     i := sort.Search(len(index.Entries), func(i int) bool {
-        return index.Entries[i].Key > key
+        return index.Entries[i].Key > paddedKey
     }) - 1
 
     if i < 0 {
@@ -580,11 +583,11 @@ func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
             return "", err
         }
 
-        if entry.Key == key {
+        if entry.Key == paddedKey {
             return entry.Value, nil
         }
 
-        if entry.Key > key {
+        if entry.Key > paddedKey {
             return "", raft.ErrNoKey
         }
     }
@@ -592,10 +595,12 @@ func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
 
 func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]string, error) {
     index := kvs.sortedFileIndex
+	paddedStartKey := persister.PadKey(startKey)
+	paddedEndKey := persister.PadKey(endKey)
 
     // 找到大于等于 startKey 的最小索引项
     startIndex := sort.Search(len(index.Entries), func(i int) bool {
-        return index.Entries[i].Key >= startKey
+        return index.Entries[i].Key >= paddedStartKey
     })
 
     if startIndex == len(index.Entries) {
@@ -630,11 +635,12 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]str
             return nil, err
         }
 
-        if entry.Key >= startKey {
-            if entry.Key > endKey {
+        if entry.Key >= paddedStartKey {
+            if entry.Key > paddedEndKey {
                 break // 已经超过了endKey，结束扫描
             }
-            result[entry.Key] = entry.Value
+			UnpadKey := persister.UnpadKey(entry.Key)
+            result[UnpadKey] = entry.Value
         }
     }
 
