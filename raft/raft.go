@@ -114,7 +114,7 @@ type Raft struct {
 	SyncChans      []chan string
 	batchLog       []*Entry
 	batchLogSize   int64
-	currentLog      string  // 存储value的磁盘文件路径
+	currentLog     string // 存储value的磁盘文件路径
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -189,10 +189,10 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 	}
 
 	for i, entry := range e {
-		
+
 		valueSize := uint32(len(entry.Value))
-		
-		paddedKey := rf.persister.PadKey(entry.Key)		// 存入valuelog里面也用
+
+		paddedKey := rf.persister.PadKey(entry.Key) // 存入valuelog里面也用
 		keySize := uint32(len(paddedKey))
 		data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value
 
@@ -342,7 +342,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 // }
 
 // ReadValueFromFile 从指定的偏移量读取value
-func (rf *Raft) ReadValueFromFile(file *os.File, offset int64) (string, error) {
+func (rf *Raft) ReadValueFromFile(file *os.File, offset int64) (string, string, error) {
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
 	// 打开文件
@@ -353,14 +353,14 @@ func (rf *Raft) ReadValueFromFile(file *os.File, offset int64) (string, error) {
 	// defer file.Close()
 
 	if offset == -1 {
-		return "NOKEY",nil
+		return "NOKEY","", nil
 	}
 
 	// 移动到指定偏移量
-	_, err = file.Seek(offset, os.SEEK_SET)
+	_, err := file.Seek(offset, os.SEEK_SET)
 	if err != nil {
 		fmt.Println("get时，seek文件的位置有问题")
-		return "", err
+		return "","", err
 	}
 
 	// 获取文件信息
@@ -378,12 +378,12 @@ func (rf *Raft) ReadValueFromFile(file *os.File, offset int64) (string, error) {
 	// fmt.Printf("读取了几个字节的数据%v\n",n)
 	if err != nil {
 		fmt.Println("get时，读取key和value的前20个固定字节时有问题")
-		return "", err
+		return "","", err
 	}
 	// 确保读取的字节数足够
 	if n < 20 {
 		fmt.Printf("not enough data: expected 20 bytes, got %d\n", n)
-		return "", err
+		return "","", err
 	}
 
 	// 解析固定长度的字段
@@ -393,13 +393,15 @@ func (rf *Raft) ReadValueFromFile(file *os.File, offset int64) (string, error) {
 	// 读取Key和Value
 	keyValueBuffer := make([]byte, keySize+valueSize)
 	if _, err := file.Read(keyValueBuffer); err != nil {
-		return "", err
+		return "","", err
 	}
 
+	// Key是从buffer的开始部分
+	key := string(keyValueBuffer[:keySize])
 	// Value是紧跟在Key后面的部分
 	value := string(keyValueBuffer[keySize:])
 
-	return value, nil
+	return key, value, nil
 }
 
 // save Raft's persistent state to stable storage
@@ -706,7 +708,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// fmt.Println("到这了嘛4")
 	index = rf.lastIndex()
 	term = rf.currentTerm
-	if Command.OpType != "TermLog" {		// 除去上任leader后的空指令
+	if logEntry.Command.OpType != "TermLog" { // 除去上任leader后的空指令
 		entry_global = Entry{
 			Index:       uint32(index),
 			CurrentTerm: uint32(term),
