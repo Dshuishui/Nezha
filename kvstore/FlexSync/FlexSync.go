@@ -93,7 +93,8 @@ type KVServer struct {
 
 	sortedFilePath string        // 用于存储已排序文件的位置
 	sortedFileIndex		*SortedFileIndex
-	currentLog     *os.File			// 
+	currentLog     *os.File			// 排序后
+	oldLog		   *os.File         // 排序前
 	// currentPersister *raft.Persister
 	getFromFile     func(string) (string, error)			// 对应与垃圾分离前后的两种查询方法。
 	scanFromFile    func(string, string) (map[string]string, error)
@@ -290,7 +291,7 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string) (map[string]string, er
         }
 
         // 从新的日志文件中读取实际的value
-        value, err := kvs.readValueFromNewFile(iter.Value().Data())
+        value, err := kvs.readValueFromNewFile(iter.Value().Data(),kvs.currentLog)	// 读取新文件就是currentLog
         if err != nil {
             return nil, err
         }
@@ -301,15 +302,15 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string) (map[string]string, er
     return result, nil
 }
 
-func (kvs *KVServer) readValueFromNewFile(positionBytes []byte) (string, error) {
+func (kvs *KVServer) readValueFromNewFile(positionBytes []byte, logLocation *os.File) (string, error) {
     position := int64(binary.LittleEndian.Uint64(positionBytes))
     
-    _, err := kvs.currentLog.Seek(position, 0)
+    _, err := logLocation.Seek(position, 0)
     if err != nil {
         return "", err
     }
 
-    reader := bufio.NewReader(kvs.currentLog)
+    reader := bufio.NewReader(logLocation)
     entry, _, err := readEntry(reader,0)		// 是0嘛，不是很确定，有点忘了
     if err != nil {
         return "", err
@@ -689,6 +690,7 @@ func (kvs *KVServer) switchToNewFiles(newLog *os.File, newPersister *raft.Persis
 	// 更新两个路径，使得垃圾回收与客户端请求并行执行
     // kvs.currentLog = newLog
 	kvs.currentLog = newLog
+	kvs.raft.SetCurrentLog(kvs.currentLog)
 	// kvs.raft.currentLog = newLog		// 存储value的磁盘文件由raft操作
     kvs.persister = newPersister		// 存储key和偏移量的rocksdb文件由kvs操作
     // 可能还需要更新其他相关的状态
@@ -732,17 +734,17 @@ func (kvs *KVServer) GarbageCollection() error {
         return fmt.Errorf("failed to write sorted file: %v", err)
     }
 
-    // 删除旧的RaftState.log文件
-    err = os.Remove("./raft/RaftState.log")
-    if err != nil {
-        return fmt.Errorf("failed to remove old RaftState.log: %v", err)
-    }
+    // // 删除旧的RaftState.log文件
+    // err = os.Remove("./raft/RaftState.log")
+    // if err != nil {
+    //     return fmt.Errorf("failed to remove old RaftState.log: %v", err)
+    // }
 
-    // 删除旧的RocksDB数据
-    err = os.RemoveAll("./kvstore/FlexSync/db_key_index")
-    if err != nil {
-        return fmt.Errorf("failed to remove old RocksDB data: %v", err)
-    }
+    // // 删除旧的RocksDB数据
+    // err = os.RemoveAll("./kvstore/FlexSync/db_key_index")
+    // if err != nil {
+    //     return fmt.Errorf("failed to remove old RocksDB data: %v", err)
+    // }
 
     // 更新KVServer的查询方法
     // kvs.updateQueryMethods(sortedFilePath)
