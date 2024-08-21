@@ -114,11 +114,15 @@ type Raft struct {
 	SyncChans      []chan string
 	batchLog       []*Entry
 	batchLogSize   int64
-	currentLog     string // 存储value的磁盘文件路径
+	currentLog     *os.File // 存储value的磁盘文件的描述符
 }
 
 func (rf *Raft) GetOffsets() []int64 {
 	return rf.Offsets
+}
+
+func (rf *Raft) SetCurrentLog(currentLog *os.File) {
+	rf.currentLog = currentLog
 }
 
 // func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
@@ -156,15 +160,15 @@ func (rf *Raft) GetOffsets() []int64 {
 // }
 
 // WriteEntryToFile 将条目写入指定的文件，并返回写入的起始偏移量。
-func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
+func (rf *Raft) WriteEntryToFile(e []*Entry, file *os.File, startPos int64) {
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
 	// 打开文件，如果文件不存在则创建
-	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-	if err != nil {
-		log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
-	}
-	defer file.Close()
+	// file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	// if err != nil {
+	// 	log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
+	// }
+	// defer file.Close()
 
 	// 包装文件对象以进行缓冲写入
 	writer := bufio.NewWriter(file)
@@ -172,6 +176,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 	// 获取当前写入位置，即为返回的偏移量
 	var offset int64
 	var offsets []int64
+	var err error
 
 	// 预分配足够大的偏移量切片，避免了在循环中动态扩容偏移量切片的操作
 	offsets = make([]int64, len(e))
@@ -592,7 +597,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			if index == rf.lastIndex() { // 已经将日志补足后，开始批量写入
 				// offsets1, err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
 				// rf.mu.Unlock()
-				rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
+				rf.WriteEntryToFile(rf.batchLog, rf.currentLog, 0)
 				rf.batchLog = rf.batchLog[:0] // 清空暂存日志的数组
 				// go func() {
 				// 	err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
@@ -620,7 +625,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				arrEntry := []*Entry{&entry}                   // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
 				// offsets2, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
 				// rf.mu.Unlock()
-				rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
+				rf.WriteEntryToFile(arrEntry, rf.currentLog, offset)
 				// go func() {
 				// 	err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
 				// 	if err != nil {
@@ -717,7 +722,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 			Value:       command.(*raftrpc.DetailCod).Value,
 		}
 		arrEntry := []*Entry{&entry_global}
-		rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
+		rf.WriteEntryToFile(arrEntry, rf.currentLog, 0)
 	}
 	// rf.batchLog = append(rf.batchLog, &entry)
 	// if err := enc.Encode(entry); err != nil {
