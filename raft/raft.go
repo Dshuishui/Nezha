@@ -122,6 +122,8 @@ func (rf *Raft) GetOffsets() []int64 {
 }
 
 func (rf *Raft) SetCurrentLog(currentLog string) {
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
 	rf.currentLog = currentLog
 }
 

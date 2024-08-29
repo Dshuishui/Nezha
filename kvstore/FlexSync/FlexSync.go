@@ -1189,14 +1189,6 @@ func main() {
         log.Fatalf("Failed to initialize database: %v", err)
     }
     // defer persister.Close()
-	// 初始化存储value的文件
-	InitialRaftStateLog := "./raft/RaftState.log"
-	// InitialRaftStateLog, err := os.Create(currentLog)
-	// if err != nil {
-	// 	log.Fatalf("Failed to create new RaftState log: %v", err)
-	// }
-	// defer newRaftStateLog.Close()
-	kvs.raft.SetCurrentLog(InitialRaftStateLog)
 
 	go kvs.applyLoop()
 
@@ -1230,6 +1222,14 @@ func main() {
 	}()
 	wg.Add(1+1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
+	// 初始化存储value的文件
+	InitialRaftStateLog := "./raft/RaftState.log"
+	// InitialRaftStateLog, err := os.Create(currentLog)
+	// if err != nil {
+	// 	log.Fatalf("Failed to create new RaftState log: %v", err)
+	// }
+	// defer newRaftStateLog.Close()
+	kvs.raft.SetCurrentLog(InitialRaftStateLog)
 	kvs.raft.Gap = gap
 	kvs.raft.SyncTime = syncTime
 
