@@ -114,14 +114,14 @@ type Raft struct {
 	SyncChans      []chan string
 	batchLog       []*Entry
 	batchLogSize   int64
-	currentLog     *os.File // 存储value的磁盘文件的描述符
+	currentLog     string // 存储value的磁盘文件的描述符
 }
 
 func (rf *Raft) GetOffsets() []int64 {
 	return rf.Offsets
 }
 
-func (rf *Raft) SetCurrentLog(currentLog *os.File) {
+func (rf *Raft) SetCurrentLog(currentLog string) {
 	rf.currentLog = currentLog
 }
 
@@ -160,15 +160,15 @@ func (rf *Raft) SetCurrentLog(currentLog *os.File) {
 // }
 
 // WriteEntryToFile 将条目写入指定的文件，并返回写入的起始偏移量。
-func (rf *Raft) WriteEntryToFile(e []*Entry, file *os.File, startPos int64) {
+func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
 	// 打开文件，如果文件不存在则创建
-	// file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-	// if err != nil {
-	// 	log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
-	// }
-	// defer file.Close()
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
+	}
+	defer file.Close()
 
 	// 包装文件对象以进行缓冲写入
 	writer := bufio.NewWriter(file)
@@ -176,7 +176,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, file *os.File, startPos int64) {
 	// 获取当前写入位置，即为返回的偏移量
 	var offset int64
 	var offsets []int64
-	var err error
+	// var err error
 
 	// 预分配足够大的偏移量切片，避免了在循环中动态扩容偏移量切片的操作
 	offsets = make([]int64, len(e))
@@ -347,22 +347,22 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, file *os.File, startPos int64) {
 // }
 
 // ReadValueFromFile 从指定的偏移量读取value
-func (rf *Raft) ReadValueFromFile(file *os.File, offset int64) (string, string, error) {
+func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, string, error) {
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
 	// 打开文件
-	// file, err := os.Open(filename)
-	// if err != nil {
-	// 	return "", err
-	// }
-	// defer file.Close()
+	file, err := os.Open(filename)
+	if err != nil {
+		return "","", err
+	}
+	defer file.Close()
 
 	if offset == -1 {
 		return "NOKEY","", nil
 	}
 
 	// 移动到指定偏移量
-	_, err := file.Seek(offset, os.SEEK_SET)
+	_, err = file.Seek(offset, os.SEEK_SET)
 	if err != nil {
 		fmt.Println("get时，seek文件的位置有问题")
 		return "","", err
