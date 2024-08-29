@@ -872,6 +872,7 @@ func (rf *Raft) AppendMonitor() {
 	for {
 		time.Sleep(2 * time.Second)
 		if (time.Since(rf.LastAppendTime) > timeout) && rf.GetLeaderId() != int32(rf.me) {
+			//  排在第一的服务器和后面的服务器，打印的内容是不一样的。因为排在第一个的默认就是满足第二个条件了。
 			fmt.Println("3秒没有收到来自leader的同步或者心跳信息！")
 			continue
 		}

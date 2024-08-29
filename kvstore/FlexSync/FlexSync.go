@@ -688,10 +688,9 @@ func (kvs *KVServer) switchToNewFiles(newLog *os.File, newPersister *raft.Persis
     defer kvs.mu.Unlock()
     
 	// 更新两个路径，使得垃圾回收与客户端请求并行执行
-    // kvs.currentLog = newLog
 	kvs.currentLog = newLog
 	kvs.raft.SetCurrentLog(kvs.currentLog)
-	// kvs.raft.currentLog = newLog		// 存储value的磁盘文件由raft操作
+	// kvs.raft.currentLog = newLog		// 存储value的磁盘文件由raft操作，raft接触到的只有存储value的log文件
     kvs.persister = newPersister		// 存储key和偏移量的rocksdb文件由kvs操作
     // 可能还需要更新其他相关的状态
 }
@@ -1182,6 +1181,14 @@ func main() {
         log.Fatalf("Failed to initialize database: %v", err)
     }
     // defer persister.Close()
+	// 初始化存储value的文件
+	currentLog := "./raft/RaftState.log"
+	InitialRaftStateLog, err := os.Create(currentLog)
+	if err != nil {
+		log.Fatalf("Failed to create new RaftState log: %v", err)
+	}
+	// defer newRaftStateLog.Close()
+	kvs.raft.SetCurrentLog(InitialRaftStateLog)
 
 	go kvs.applyLoop()
 
@@ -1199,6 +1206,7 @@ func main() {
 				fmt.Println("开始垃圾回收，可能不会有反应，因为磁盘文件没有超过阈值")
 				startTime := time.Now()
 				// GC.MonitorFileSize("raft/RaftState.log")	// GC处理
+				// kvs.GarbageCollection()    //  暂时确定为一段时间没有收到来自客户端的请求就进行GC处理。
 				fmt.Printf("垃圾回收完成，共花费了%v\n",time.Since(startTime))
 
 				fmt.Println("等五秒再停止服务器")
