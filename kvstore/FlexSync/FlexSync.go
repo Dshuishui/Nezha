@@ -93,8 +93,8 @@ type KVServer struct {
 
 	sortedFilePath string        // 用于存储已排序文件的位置
 	sortedFileIndex		*SortedFileIndex
-	currentLog     *os.File			// 排序后
-	oldLog		   *os.File         // 排序前
+	currentLog     string			// 排序后
+	oldLog		   string        // 排序前
 	// currentPersister *raft.Persister
 	getFromFile     func(string) (string, error)			// 对应与垃圾分离前后的两种查询方法。
 	scanFromFile    func(string, string) (map[string]string, error)
@@ -302,18 +302,26 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string) (map[string]string, er
     return result, nil
 }
 
-func (kvs *KVServer) readValueFromNewFile(positionBytes []byte, logLocation *os.File) (string, error) {
+func (kvs *KVServer) readValueFromNewFile(positionBytes []byte, logLocation string) (string, error) {
     position := int64(binary.LittleEndian.Uint64(positionBytes))
     
-    _, err := logLocation.Seek(position, 0)
+    // Open the file
+    file, err := os.Open(logLocation)
     if err != nil {
-        return "", err
+        return "", fmt.Errorf("failed to open log file: %v", err)
+    }
+    defer file.Close()
+
+    // Seek to the position
+    _, err = file.Seek(position, 0)
+    if err != nil {
+        return "", fmt.Errorf("failed to seek in file: %v", err)
     }
 
-    reader := bufio.NewReader(logLocation)
-    entry, _, err := readEntry(reader,0)		// 是0嘛，不是很确定，有点忘了
+    reader := bufio.NewReader(file)
+    entry, _, err := readEntry(reader, 0)  // 保留了 0，但你可能需要根据 readEntry 函数的实际需求调整这个值
     if err != nil {
-        return "", err
+        return "", fmt.Errorf("failed to read entry: %v", err)
     }
 
     return entry.Value, nil
@@ -683,7 +691,7 @@ func (kvs *KVServer) updateQueryMethods(sortedFilePath string) {
     kvs.scanFromFile = kvs.scanFromSortedOrNew
 }
 
-func (kvs *KVServer) switchToNewFiles(newLog *os.File, newPersister *raft.Persister) {
+func (kvs *KVServer) switchToNewFiles(newLog string, newPersister *raft.Persister) {
     kvs.mu.Lock()
     defer kvs.mu.Unlock()
     
@@ -701,11 +709,11 @@ func (kvs *KVServer) GarbageCollection() error {
 
     // 创建新的文件用于接收新的写入
 	currentLog := "./raft/RaftState_new.log"
-    newRaftStateLog, err := os.Create(currentLog)
-    if err != nil {
-        return fmt.Errorf("failed to create new RaftState log: %v", err)
-    }
-    defer newRaftStateLog.Close()
+    // newRaftStateLog, err := os.Create(currentLog)
+    // if err != nil {
+    //     return fmt.Errorf("failed to create new RaftState log: %v", err)
+    // }
+    // defer newRaftStateLog.Close()
 
     // 创建新的RocksDB实例
     persister_new, err := NewPersister()	// 创建一个新的用于保存key和index的persister
@@ -718,7 +726,7 @@ func (kvs *KVServer) GarbageCollection() error {
     }
 
     // 切换到新的文件和RocksDB
-    kvs.switchToNewFiles(newRaftStateLog, newPersister)
+    kvs.switchToNewFiles(currentLog, newPersister)
 
     // 开始处理旧文件
     sortedEntries, err := kvs.processSortedFile()
@@ -1182,11 +1190,11 @@ func main() {
     }
     // defer persister.Close()
 	// 初始化存储value的文件
-	currentLog := "./raft/RaftState.log"
-	InitialRaftStateLog, err := os.Create(currentLog)
-	if err != nil {
-		log.Fatalf("Failed to create new RaftState log: %v", err)
-	}
+	InitialRaftStateLog := "./raft/RaftState.log"
+	// InitialRaftStateLog, err := os.Create(currentLog)
+	// if err != nil {
+	// 	log.Fatalf("Failed to create new RaftState log: %v", err)
+	// }
 	// defer newRaftStateLog.Close()
 	kvs.raft.SetCurrentLog(InitialRaftStateLog)
 
