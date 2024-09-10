@@ -412,6 +412,40 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 				// 还有一个比较复杂的情况，针对已排序文件，继已排序文件后的新文件，以及前两者即将合并时又生成的新文件。
 				// 这三个文件就比较复杂，需要在最新文件查，没有的话再去新文件查，最后再去已排序的文件。
 				// 将value返回，设置reply的value属性。
+
+				// 在新文件中的rocksdb中没找到key
+				if kvs.startGC && kvs.endGC {				// 去排序好的文件查询，没有就是没有
+					value, err = kvs.getFromSortedFile(key)
+					if err != nil {
+						reply.Value = value 				// 找到了，赋值
+					} else {
+						reply.Err = raft.ErrNoKey 			// 已排序的文件中没有就是没有
+						reply.Value = raft.NoKey
+					}
+				}
+				if kvs.startGC && !kvs.endGC {
+					positionBytesInOld, err := kvs.oldPersister.Get_opt(key)	// 根据oldPersister和oldLog去旧文件查询，没有就是没有
+					if err != nil {
+						fmt.Println("拿取key对应的index有问题")
+						panic(err)
+					}
+					if positionBytesInOld == -1 { 			//  说明leveldb中没有该key
+						reply.Err = raft.ErrNoKey
+						reply.Value = raft.NoKey			// 旧文件中，数据库中都没有，那就是没有
+					}else {
+						read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
+						if err != nil {
+							fmt.Println("拿取value有问题")
+							panic(err)
+						}
+						if read_key == key {
+							reply.Value = value				// 找到了，赋值
+						}else {
+							reply.Err = raft.ErrNoKey		 // 旧的文件中没有就是没有
+							reply.Value = raft.NoKey
+						}
+					}
+				}
 			} else {
 				read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
 				if err != nil {
@@ -420,7 +454,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 				}
 				if read_key == key {
 					reply.Value = value
-				} else {
+				} else {		// 这个好像不存在这种情况，因为rocksdb中有的，在存储value的文件中肯定能找到
 					if kvs.startGC && kvs.endGC {				// 去排序好的文件查询，没有就是没有
 						value, err = kvs.getFromSortedFile(key)
 						if err != nil {
