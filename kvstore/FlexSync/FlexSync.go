@@ -415,7 +415,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 
 				// 在新文件中的rocksdb中没找到key
 				if kvs.startGC && kvs.endGC {				// 去排序好的文件查询，没有就是没有
-					value, err = kvs.getFromSortedFile(key)
+					value, err := kvs.getFromSortedFile(key)
 					if err != nil {
 						reply.Value = value 				// 找到了，赋值
 					} else {
