@@ -1269,7 +1269,7 @@ func main() {
 				fmt.Println("开始垃圾回收，可能不会有反应，因为磁盘文件没有超过阈值")
 				startTime := time.Now()
 				// GC.MonitorFileSize("raft/RaftState.log")	// GC处理
-				// kvs.GarbageCollection()    //  暂时确定为一段时间没有收到来自客户端的请求就进行GC处理。
+				kvs.GarbageCollection()    //  暂时确定为一段时间没有收到来自客户端的请求就进行GC处理。
 				fmt.Printf("垃圾回收完成，共花费了%v\n", time.Since(startTime))
 
 				fmt.Println("等五秒再停止服务器")
