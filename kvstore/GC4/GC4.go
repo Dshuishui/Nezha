@@ -2,14 +2,16 @@
 package GC4
 
 import (
-    "bufio"
-    "encoding/binary"
-    // "fmt"
-    "os"
-    // "sort"
-    // "time"
-    "gitee.com/dong-shuishui/FlexSync/raft"
-    // lru "github.com/hashicorp/golang-lru"
+	"bufio"
+	"encoding/binary"
+	"fmt"
+
+	// "fmt"
+	"os"
+	// "sort"
+	// "time"
+	"gitee.com/dong-shuishui/FlexSync/raft"
+	// lru "github.com/hashicorp/golang-lru"
 )
 
 // Entry 结构体定义（如果在其他地方已定义，可以删除这部分）
@@ -156,18 +158,25 @@ func readEntry(reader *bufio.Reader, currentOffset int64) (*Entry, int64, error)
 func WriteEntriesToNewFile(entries []*raft.Entry, newFilePath string) error {
     file, err := os.Create(newFilePath)		// 后续可能需要换成动态的更改文件名，动态在后续加一个_GC
     if err != nil {
-        return err
+        return fmt.Errorf("failed to create file: %v",err)
     }
     defer file.Close()
 
     writer := bufio.NewWriter(file)
+    entriesWritten := 0
     for _, entry := range entries {
         if err := writeEntry(writer, entry); err != nil {
-            return err
+            return fmt.Errorf("failed to write entry: %v",err)
         }
+        entriesWritten++
     }
+    fmt.Println("将排序后的数组写入RaftState_sorted文件")
 
-    return writer.Flush()
+    if err := writer.Flush();err!=nil {
+        return fmt.Errorf("failed to flush writer: %v",err)
+    }
+    fmt.Printf("Successfully wrote %d entries to %s\n", entriesWritten, newFilePath)
+    return nil
 }
 
 func writeEntry(writer *bufio.Writer, entry *raft.Entry) error {
