@@ -6,12 +6,12 @@ db
 kvstore/FlexSync/valueLog_WiscKey.log
 kvstore/FlexSync/valueLog_Leveldb.log
 kvstore/FlexSync/db_key_index
-kvstore/FlexSync/db_key_index_withGC
+kvstore/FlexSync/db_key_index_new
 kvstore/LevelDB/db_key_value
 kvstore/kvserver/db_key_index
 kvstore/kvserver/db_key_index_new
 raft/RaftState.log
-raft/RaftState_new.log
+raft/RaftState_sorted.log
 run_server.sh
 run_client.sh
 error.log
