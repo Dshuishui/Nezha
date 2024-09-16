@@ -27,11 +27,20 @@ type Persister struct {
 }
 
 // PadKey 函数用于将给定的键填充到指定长度
-func (p *Persister)PadKey(key string) string {
+func (p *Persister) PadKey(key string) string {
+    // 检查键是否已经被填充：
+	// 1、首先检查键的长度是否已经等于 KeyLength。
+	// 2、如果长度相等，再检查是否以足够数量的 "0" 开头，这表明键可能已经被填充过。
+    if len(key) == KeyLength && strings.HasPrefix(key, strings.Repeat("0", KeyLength-4)) {
+        // 键已经被填充，直接返回
+        return key
+    }
+
     if len(key) > KeyLength {
         // 如果键长度超过指定长度，进行截断
         return key[:KeyLength]
     }
+
     // 使用0在左侧填充
     return fmt.Sprintf("%0*s", KeyLength, key)
 }
@@ -119,6 +128,7 @@ func (p *Persister) Get_opt(key string) (int64, error) {
 	defer ro.Destroy()
 
 	paddedKey := p.PadKey(key)
+	fmt.Printf("Attempting to get key: %s (padded: %s)\n", key, paddedKey)
 	// p.muRO.Lock()
     // defer p.muRO.Unlock()
 	slice, err := p.db.Get(ro, []byte(paddedKey))

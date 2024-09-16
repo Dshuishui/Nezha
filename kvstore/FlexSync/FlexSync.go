@@ -982,6 +982,7 @@ func (kvs *KVServer) processSortedFile() ([]*raft.Entry, error) {
 		// if GC4.IsValidEntry(kvs, entry, entryOffset, cache) {
 		if IsValidEntry(kvs, entry, entryOffset, cache) {
 			latestEntries[entry.Key] = entry
+			fmt.Println("一个有效的都没有？？？？？")
 		}
 		if entryCount%5000 == 1 {
 			fmt.Printf("Processed %d entries, current offset: %d\n", entryCount, currentOffset)
@@ -1004,21 +1005,28 @@ func (kvs *KVServer) processSortedFile() ([]*raft.Entry, error) {
 
 func IsValidEntry(kvs *KVServer, entry *raft.Entry, entryOffset int64, cache *lru.Cache) bool {
 	if cachedOffset, ok := cache.Get(entry.Key); ok {
+		// rocksdb中存在，说明已经查找过，并且rocksdb中有该key
 		return cachedOffset.(int64) == entryOffset
 	}
-
 	position, err := kvs.persister.Get_opt(entry.Key)
 	if err != nil {
 		fmt.Printf("Error getting position for key %s: %v\n", entry.Key, err)
 		return false
 	}
-
+	// if position == -1 {
+	// 	// 说明rocksdb中没有该key，说明肯定无效
+	// 	// fmt.Printf("rocksdb中没有key:%v\n", entry.Key)
+	// 	fmt.Printf("rocksdb中没有key: key=%s, file offset=%d, db position=%d\n", entry.Key, entryOffset, position)
+	// 	return false
+	// } else {
+	// 说明rocksdb中有该key，以rocksdb中的为主
 	cache.Add(entry.Key, position)
 	isValid := position == entryOffset
 	if !isValid {
-		fmt.Printf("Invalid entry: key=%s, file offset=%d, db position=%d\n", entry.Key, entryOffset, position)
+		fmt.Printf("无效 entry: key=%s, file offset=%d, db position=%d\n", entry.Key, entryOffset, position)
 	}
 	return isValid
+	// }
 }
 
 func readEntry(reader *bufio.Reader, currentOffset int64) (*raft.Entry, int64, error) {
