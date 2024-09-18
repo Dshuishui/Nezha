@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+
+	// "io"
 	"os"
 	"sort"
 	"time"
@@ -19,7 +21,7 @@ func (kvs *KVServer) GarbageCollection() error {
 	startTime := time.Now()
 
 	// Create a new file for sorted entries
-	sortedFilePath := "./raft/RaftState_sorted.log"
+	sortedFilePath := "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
 	sortedFile, err := os.Create(sortedFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to create sorted file: %v", err)
@@ -34,17 +36,17 @@ func (kvs *KVServer) GarbageCollection() error {
 	defer oldFile.Close()
 
 	// 创建新的RocksDB实例
-	persister_new, err := NewPersister() // 创建一个新的用于保存key和index的persister
+	persister_new, err := kvs.NewPersister() // 创建一个新的用于保存key和index的persister
 	if err != nil {
 		return fmt.Errorf("failed to create new persister: %v", err)
 	}
-	newPersister, err := persister_new.Init("./kvstore/FlexSync/db_key_index_new", true)
+	newPersister, err := persister_new.Init("/home/DYC/Gitee/FlexSync/kvstore/FlexSync/db_key_index_new", true)
 	if err != nil {
 		return fmt.Errorf("failed to initialize new RocksDB: %v", err)
 	}
 
 	// 切换到新的文件和RocksDB
-	kvs.switchToNewFiles(sortedFilePath, newPersister)
+	kvs.SwitchToNewFiles(sortedFilePath, newPersister)
 
 	// Create a buffered writer for the sorted file
 	writer := bufio.NewWriter(sortedFile)
@@ -65,18 +67,18 @@ func (kvs *KVServer) GarbageCollection() error {
 		index := binary.LittleEndian.Uint64(value.Data())
 
 		// Read the entry from RaftState.log
-		entry, _, err := readEntryAtIndex(oldFile, int64(index))
+		entry, _, err := kvs.ReadEntryAtIndex(oldFile, int64(index))
 		if err != nil {
 			return fmt.Errorf("failed to read entry at index %d: %v", index, err)
 		}
 
 		// Write the entry to the sorted file
-		err = writeEntryToSortedFile(writer, entry)
+		err = kvs.WriteEntryToSortedFile(writer, entry)
 		if err != nil {
 			return fmt.Errorf("failed to write entry to sorted file: %v", err)
 		}
-		writeNum ++
-		if writeNum % 3000 == 0{
+		writeNum++
+		if writeNum%30 == 0 {
 			fmt.Printf("成功写入 %d个entry \n", writeNum)
 		}
 	}
@@ -87,75 +89,37 @@ func (kvs *KVServer) GarbageCollection() error {
 	}
 
 	// Update KVServer to use the new sorted file
-	kvs.createIndex(sortedFilePath)
+	err = kvs.CreateIndex(sortedFilePath)
+	if err != nil {
+		fmt.Println("创建索引有问题：", err)
+	}
+
+	// 添加验证步骤
+	err = VerifySortedFile(sortedFilePath)
+	if err != nil {
+		return fmt.Errorf("verification of sorted file failed: %v", err)
+	}
 
 	fmt.Printf("Garbage collection completed in %v\n", time.Since(startTime))
 	return nil
 }
 
-
-func NewPersister() (*raft.Persister, error) {
+func (kvs *KVServer) NewPersister() (*raft.Persister, error) {
 	p := &raft.Persister{}
 	return p, nil
 }
 
-func readEntryAtIndex(file *os.File, index int64) (*raft.Entry, int64, error) {
+func (kvs *KVServer) ReadEntryAtIndex(file *os.File, index int64) (*raft.Entry, int64, error) {
 	_, err := file.Seek(index, 0)
 	if err != nil {
 		return nil, -1, err
 	}
 
 	reader := bufio.NewReader(file)
-	return readEntry(reader, index)
+	return ReadEntry(reader, index)
 }
 
-func readEntry(reader *bufio.Reader, currentOffset int64) (*raft.Entry, int64, error) {
-	var entry raft.Entry
-	var keySize, valueSize uint32
-
-	entryStartOffset := currentOffset
-
-	// 读取固定大小的字段
-	if err := binary.Read(reader, binary.LittleEndian, &entry.Index); err != nil {
-		return nil, 0, fmt.Errorf("failed to read Index: %v", err)
-	}
-	if err := binary.Read(reader, binary.LittleEndian, &entry.CurrentTerm); err != nil {
-		return nil, 0, fmt.Errorf("failed to read CurrentTerm: %v", err)
-	}
-	if err := binary.Read(reader, binary.LittleEndian, &entry.VotedFor); err != nil {
-		return nil, 0, fmt.Errorf("failed to read VotedFor: %v", err)
-	}
-	if err := binary.Read(reader, binary.LittleEndian, &keySize); err != nil {
-		return nil, 0, fmt.Errorf("failed to read keySize: %v", err)
-	}
-	if err := binary.Read(reader, binary.LittleEndian, &valueSize); err != nil {
-		return nil, 0, fmt.Errorf("failed to read valueSize: %v", err)
-	}
-
-	// fmt.Printf("Reading entry at offset %d: Index=%d, CurrentTerm=%d, VotedFor=%d, KeySize=%d, ValueSize=%d\n",
-	// 	entryStartOffset, entry.Index, entry.CurrentTerm, entry.VotedFor, keySize, valueSize)
-
-	// 读取key和value
-	keyBytes := make([]byte, keySize)
-	if _, err := io.ReadFull(reader, keyBytes); err != nil {
-		return nil, 0, fmt.Errorf("failed to read key: %v", err)
-	}
-	entry.Key = string(keyBytes)
-
-	valueBytes := make([]byte, valueSize)
-	if _, err := io.ReadFull(reader, valueBytes); err != nil {
-		return nil, 0, fmt.Errorf("failed to read value: %v", err)
-	}
-	entry.Value = string(valueBytes)
-
-	currentOffset += int64(20 + keySize + valueSize) // 16 是固定字段的总大小
-
-	// fmt.Printf("Read entry: Key='%s', Value='暂时不显示'\n", entry.Key)
-
-	return &entry, entryStartOffset, nil
-}
-
-func writeEntryToSortedFile(writer *bufio.Writer, entry *raft.Entry) error {
+func (kvs *KVServer) WriteEntryToSortedFile(writer *bufio.Writer, entry *raft.Entry) error {
 	keySize := uint32(len(entry.Key))
 	valueSize := uint32(len(entry.Value))
 	data := make([]byte, 20+keySize+valueSize)
@@ -173,7 +137,7 @@ func writeEntryToSortedFile(writer *bufio.Writer, entry *raft.Entry) error {
 	return err
 }
 
-func (kvs *KVServer) createIndex(sortedFilePath string) {
+func (kvs *KVServer) CreateIndex(sortedFilePath string) error {
 	kvs.mu.Lock()
 	defer kvs.mu.Unlock()
 
@@ -183,10 +147,12 @@ func (kvs *KVServer) createIndex(sortedFilePath string) {
 	index, err := kvs.CreateSortedFileIndex(sortedFilePath, 1000)
 	if err != nil {
 		// 处理错误
-		return
+		return err
 	}
 	kvs.sortedFileIndex = index
 	fmt.Println("建立了索引，得到了针对已排序文件的稀疏索引")
+
+	return nil
 
 	// kvs.getFromFile = kvs.getFromSortedOrNew
 	// kvs.scanFromFile = kvs.scanFromSortedOrNew
@@ -205,9 +171,9 @@ func (kvs *KVServer) CreateSortedFileIndex(filePath string, indexInterval int) (
 	entryCount := 0
 
 	for {
-		entry, entrySize, err := readEntry(reader, 0)
+		entry, entrySize, err := ReadEntry(reader, 0)
 		if err != nil {
-			if err.Error() == "EOF" {
+			if err == io.EOF {
 				break
 			}
 			return nil, err
@@ -231,7 +197,7 @@ func (kvs *KVServer) processSortedFile() ([]*raft.Entry, error) {
 	cache, _ := lru.New(5000000)
 
 	// 打开原始文件
-	file, err := os.Open("./raft/RaftState.log")
+	file, err := os.Open("/home/DYC/Gitee/FlexSync/raft/RaftState.log")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %v", err)
 	}
@@ -245,9 +211,9 @@ func (kvs *KVServer) processSortedFile() ([]*raft.Entry, error) {
 	var currentOffset int64 = 0
 	entryCount := 1
 	for {
-		entry, entryOffset, err := readEntry(reader, currentOffset)
+		entry, entryOffset, err := ReadEntry(reader, currentOffset)
 		if err != nil {
-			if err.Error() == "failed to read Index: EOF" {
+			if err == io.EOF {
 				break
 			}
 			return nil, fmt.Errorf("error reading entry: %v", err)
@@ -310,15 +276,15 @@ func IsValidEntry(kvs *KVServer, entry *raft.Entry, entryOffset int64, cache *lr
 	// }
 }
 
-func (kvs *KVServer) checkDatabaseContent() error {
-	if kvs.oldPersister == nil || kvs.oldPersister.GetDb() == nil {
+func (kvs *KVServer) CheckDatabaseContent() error {
+	if kvs.persister == nil || kvs.persister.GetDb() == nil {
 		return fmt.Errorf("database is not initialized")
 	}
 
 	ro := gorocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
-	iter := kvs.oldPersister.GetDb().NewIterator(ro)
+	iter := kvs.persister.GetDb().NewIterator(ro)
 	if iter == nil {
 		return fmt.Errorf("failed to create iterator")
 	}
@@ -391,7 +357,7 @@ func (kvs *KVServer) checkLogDBConsistency() error {
 		dbOffset := int64(binary.LittleEndian.Uint64(value.Data()))
 
 		// 读取日志文件中的对应条目
-		entry, entryOffset, err := readEntry(reader, currentOffset)
+		entry, entryOffset, err := ReadEntry(reader, currentOffset)
 		if err != nil {
 			return fmt.Errorf("error reading log entry: %v", err)
 		}
@@ -436,7 +402,7 @@ func (kvs *KVServer) checkLogDBConsistency() error {
 // 	}
 
 // 	// 切换到新的文件和RocksDB
-// 	kvs.switchToNewFiles(currentLog, newPersister)
+// 	kvs.SwitchToNewFiles(currentLog, newPersister)
 
 // 	err = kvs.checkDatabaseContent()
 // 	if err != nil {
@@ -488,7 +454,7 @@ func (kvs *KVServer) checkLogDBConsistency() error {
 // 	return nil
 // }
 
-func (kvs *KVServer) switchToNewFiles(newLog string, newPersister *raft.Persister) {
+func (kvs *KVServer) SwitchToNewFiles(newLog string, newPersister *raft.Persister) {
 	kvs.mu.Lock()
 	defer kvs.mu.Unlock()
 
@@ -498,4 +464,37 @@ func (kvs *KVServer) switchToNewFiles(newLog string, newPersister *raft.Persiste
 	// kvs.raft.currentLog = newLog		// 存储value的磁盘文件由raft操作，raft接触到的只有存储value的log文件
 	kvs.persister = newPersister // 存储key和偏移量的rocksdb文件由kvs操作
 	// 可能还需要更新其他相关的状态
+}
+
+func VerifySortedFile(filePath string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open sorted file: %v", err)
+	}
+	defer file.Close()
+
+	reader := bufio.NewReader(file)
+	var prevKey string
+	var entryCount int
+
+	for {
+		entry, _, err := ReadEntry(reader, 0) // 使用之前定义的 readEntryHelper 函数
+		if err != nil {
+			if err == io.EOF {
+				break // 文件读取结束
+			}
+			return fmt.Errorf("error reading entry: %v", err)
+		}
+
+		if prevKey != "" && entry.Key <= prevKey {
+			return fmt.Errorf("file is not sorted: key %s comes after %s", entry.Key, prevKey)
+		}
+		fmt.Printf("当前读出的key为: %s\n", entry.Key)
+
+		prevKey = entry.Key
+		entryCount++
+	}
+
+	fmt.Printf("Verification complete. File is correctly sorted. Total entries: %d\n", entryCount)
+	return nil
 }
