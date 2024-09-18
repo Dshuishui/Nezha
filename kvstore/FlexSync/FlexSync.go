@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
+
 	// "io"
 	"strconv"
 
@@ -44,7 +46,6 @@ import (
 	"github.com/tecbot/gorocksdb"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
-
 	// lru "github.com/hashicorp/golang-lru"
 )
 
@@ -295,7 +296,7 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string) (map[string]string, er
 		}
 
 		// 从新的日志文件中读取实际的value
-		value, err := kvs.readValueFromNewFile(iter.Value().Data(), kvs.currentLog) // 读取新文件就是currentLog
+		value, err := ReadValueFromNewFile(iter.Value().Data(), kvs.currentLog) // 读取新文件就是currentLog
 		if err != nil {
 			return nil, err
 		}
@@ -306,7 +307,8 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string) (map[string]string, er
 	return result, nil
 }
 
-func (kvs *KVServer) readValueFromNewFile(positionBytes []byte, logLocation string) (string, error) {
+// ==================================================
+func ReadValueFromNewFile(positionBytes []byte, logLocation string) (string, error) {
 	position := int64(binary.LittleEndian.Uint64(positionBytes))
 
 	// Open the file
@@ -323,13 +325,82 @@ func (kvs *KVServer) readValueFromNewFile(positionBytes []byte, logLocation stri
 	}
 
 	reader := bufio.NewReader(file)
-	entry, _, err := readEntry(reader, 0) // 保留了 0，但你可能需要根据 readEntry 函数的实际需求调整这个值
+	entry, _, err := ReadEntry(reader, 0) // 保留了 0，但你可能需要根据 ReadEntry 函数的实际需求调整这个值
 	if err != nil {
 		return "", fmt.Errorf("failed to read entry: %v", err)
 	}
 
 	return entry.Value, nil
 }
+
+func ReadEntry(reader *bufio.Reader, currentOffset int64) (*raft.Entry, int64, error) {
+	var entry raft.Entry
+	var keySize, valueSize uint32
+
+	entryStartOffset := currentOffset
+
+	// 读取固定大小的字段
+	if err := binary.Read(reader, binary.LittleEndian, &entry.Index); err != nil {
+		if err == io.EOF {
+			return nil, 0, err
+		}
+		return nil, 0, fmt.Errorf("failed to read Index: %v", err)
+	}
+	if err := binary.Read(reader, binary.LittleEndian, &entry.CurrentTerm); err != nil {
+		if err == io.EOF {
+			return nil, 0, err
+		}
+		return nil, 0, fmt.Errorf("failed to read CurrentTerm: %v", err)
+	}
+	if err := binary.Read(reader, binary.LittleEndian, &entry.VotedFor); err != nil {
+		if err == io.EOF {
+			return nil, 0, err
+		}
+		return nil, 0, fmt.Errorf("failed to read VotedFor: %v", err)
+	}
+	if err := binary.Read(reader, binary.LittleEndian, &keySize); err != nil {
+		if err == io.EOF {
+			return nil, 0, err
+		}
+		return nil, 0, fmt.Errorf("failed to read keySize: %v", err)
+	}
+	if err := binary.Read(reader, binary.LittleEndian, &valueSize); err != nil {
+		if err == io.EOF {
+			return nil, 0, err
+		}
+		return nil, 0, fmt.Errorf("failed to read valueSize: %v", err)
+	}
+
+	// fmt.Printf("Reading entry at offset %d: Index=%d, CurrentTerm=%d, VotedFor=%d, KeySize=%d, ValueSize=%d\n",
+	// 	entryStartOffset, entry.Index, entry.CurrentTerm, entry.VotedFor, keySize, valueSize)
+
+	// 读取key和value
+	keyBytes := make([]byte, keySize)
+	if _, err := io.ReadFull(reader, keyBytes); err != nil {
+		if err == io.EOF {
+			return nil, 0, err
+		}
+		return nil, 0, fmt.Errorf("failed to read key: %v", err)
+	}
+	entry.Key = string(keyBytes)
+
+	valueBytes := make([]byte, valueSize)
+	if _, err := io.ReadFull(reader, valueBytes); err != nil {
+		if err == io.EOF {
+			return nil, 0, err
+		}
+		return nil, 0, fmt.Errorf("failed to read value: %v", err)
+	}
+	entry.Value = string(valueBytes)
+
+	currentOffset += int64(20 + keySize + valueSize) // 16 是固定字段的总大小
+
+	// fmt.Printf("Read entry: Key='%s', Value='暂时不显示'\n", entry.Key)
+
+	return &entry, entryStartOffset, nil
+}
+
+// ==================================================
 
 func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeResponse {
 	startKey := args.GetStartKey()
@@ -625,9 +696,9 @@ func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
 
 	// 从索引位置开始线性搜索
 	for {
-		entry, _, err := readEntry(reader, 0)
+		entry, _, err := ReadEntry(reader, 0)
 		if err != nil {
-			if err.Error() == "EOF" {
+			if err == io.EOF {
 				return "", errors.New(raft.ErrNoKey)
 			}
 			return "", err
@@ -677,9 +748,9 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]str
 	result := make(map[string]string)
 
 	for {
-		entry, _, err := readEntry(reader, 0)
+		entry, _, err := ReadEntry(reader, 0)
 		if err != nil {
-			if err.Error() == "EOF" {
+			if err == io.EOF {
 				break
 			}
 			return nil, err
@@ -696,7 +767,6 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]str
 
 	return result, nil
 }
-
 
 func (kvs *KVServer) RegisterKVServer(ctx context.Context, address string) { // 传入的是客户端与服务器之间的代理服务器的地址
 	defer wg.Done()
@@ -997,7 +1067,7 @@ func main() {
 	kvs.reqMap = make(map[int]*OpContext)
 	kvs.seqMap = make(map[int64]int64)
 	kvs.lastAppliedIndex = 0
-	InitialPersister := "./kvstore/FlexSync/db_key_index"
+	InitialPersister := "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/db_key_index"
 	_, err := kvs.persister.Init(InitialPersister, true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
@@ -1015,7 +1085,7 @@ func main() {
 	// ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 18 * time.Second
+		timeout := 10 * time.Second
 		time1 := 5 * time.Second
 		for {
 			time.Sleep(timeout)
@@ -1031,6 +1101,11 @@ func main() {
 				}
 				fmt.Printf("垃圾回收完成，共花费了%v\n", time.Since(startTime))
 
+				// err = kvs.CheckDatabaseContent() //	检查GC之后的数据库的数据
+				// if err != nil {
+				// 	fmt.Println("检查GC后的数据库出现了错误: ", err)
+				// }
+
 				fmt.Println("等五秒再停止服务器")
 				time.Sleep(time1)
 				cancel() // 超时后取消上下文
@@ -1045,7 +1120,7 @@ func main() {
 	wg.Add(1 + 1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
 	// 初始化存储value的文件
-	InitialRaftStateLog := "./raft/RaftState.log"
+	InitialRaftStateLog := "/home/DYC/Gitee/FlexSync/raft/RaftState.log"
 	// InitialRaftStateLog, err := os.Create(currentLog)
 	// if err != nil {
 	// 	log.Fatalf("Failed to create new RaftState log: %v", err)
