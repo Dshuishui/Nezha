@@ -1085,7 +1085,7 @@ func main() {
 	// ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 20 * time.Second
+		timeout := 10 * time.Second
 		time1 := 5 * time.Second
 		for {
 			time.Sleep(timeout)
@@ -1120,7 +1120,7 @@ func main() {
 	wg.Add(1 + 1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
 	// 初始化存储value的文件
-	InitialRaftStateLog := "/raft/RaftState.log"
+	InitialRaftStateLog := "/home/DYC/Gitee/FlexSync/raft/RaftState.log"
 	// InitialRaftStateLog, err := os.Create(currentLog)
 	// if err != nil {
 	// 	log.Fatalf("Failed to create new RaftState log: %v", err)
