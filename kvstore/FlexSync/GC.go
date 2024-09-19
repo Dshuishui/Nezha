@@ -277,14 +277,14 @@ func IsValidEntry(kvs *KVServer, entry *raft.Entry, entryOffset int64, cache *lr
 }
 
 func (kvs *KVServer) CheckDatabaseContent() error {
-	if kvs.persister == nil || kvs.persister.GetDb() == nil {
+	if kvs.oldPersister == nil || kvs.oldPersister.GetDb() == nil {
 		return fmt.Errorf("database is not initialized")
 	}
 
 	ro := gorocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
-	iter := kvs.persister.GetDb().NewIterator(ro)
+	iter := kvs.oldPersister.GetDb().NewIterator(ro)
 	if iter == nil {
 		return fmt.Errorf("failed to create iterator")
 	}
