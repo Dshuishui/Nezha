@@ -234,7 +234,7 @@ func GenerateFixedSizeKey(size int) string {
 	// 确保第一个字符不是 '0'
 
 	lettersLength := len(nonZeroLetters)
-	for i := 1; i < size; i++ {
+	for i := 0; i < size; i++ {
 		randomLetter := nonZeroLetters[rand.Intn(lettersLength)]
 		buffer.WriteByte(randomLetter)
 	}
