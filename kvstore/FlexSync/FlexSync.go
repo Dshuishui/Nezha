@@ -1101,10 +1101,10 @@ func main() {
 				}
 				fmt.Printf("垃圾回收完成，共花费了%v\n", time.Since(startTime))
 
-				// err = kvs.CheckDatabaseContent() //	检查GC之后的数据库的数据
-				// if err != nil {
-				// 	fmt.Println("检查GC后的数据库出现了错误: ", err)
-				// }
+				err = kvs.CheckDatabaseContent() //	检查GC之后的数据库的数据
+				if err != nil {
+					fmt.Println("检查GC后的数据库出现了错误: ", err)
+				}
 
 				fmt.Println("等五秒再停止服务器")
 				time.Sleep(time1)
