@@ -1106,6 +1106,11 @@ func main() {
 					fmt.Println("检查GC后的数据库出现了错误: ", err)
 				}
 
+				err = CompareLeaderAndFollowerLogs() //	检查GC之后的数据库的数据
+				if err != nil {
+					fmt.Println("检查log文件出现了错误: ", err)
+				}
+
 				fmt.Println("等五秒再停止服务器")
 				time.Sleep(time1)
 				cancel() // 超时后取消上下文
