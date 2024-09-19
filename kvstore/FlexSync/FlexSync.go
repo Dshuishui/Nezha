@@ -1120,7 +1120,7 @@ func main() {
 	wg.Add(1 + 1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
 	// 初始化存储value的文件
-	InitialRaftStateLog := "/home/DYC/Gitee/FlexSync/raft/RaftState.log"
+	InitialRaftStateLog := "/raft/RaftState.log"
 	// InitialRaftStateLog, err := os.Create(currentLog)
 	// if err != nil {
 	// 	log.Fatalf("Failed to create new RaftState log: %v", err)
