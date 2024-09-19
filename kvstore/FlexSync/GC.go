@@ -277,14 +277,14 @@ func IsValidEntry(kvs *KVServer, entry *raft.Entry, entryOffset int64, cache *lr
 }
 
 func (kvs *KVServer) CheckDatabaseContent() error {
-	if kvs.persister == nil || kvs.persister.GetDb() == nil {
+	if kvs.oldPersister == nil || kvs.oldPersister.GetDb() == nil {
 		return fmt.Errorf("database is not initialized")
 	}
 
 	ro := gorocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
-	iter := kvs.persister.GetDb().NewIterator(ro)
+	iter := kvs.oldPersister.GetDb().NewIterator(ro)
 	if iter == nil {
 		return fmt.Errorf("failed to create iterator")
 	}
@@ -497,4 +497,42 @@ func VerifySortedFile(filePath string) error {
 
 	fmt.Printf("Verification complete. File is correctly sorted. Total entries: %d\n", entryCount)
 	return nil
+}
+
+func CheckLogFileStart(filename string, bytesToRead int) error {
+    file, err := os.Open(filename)
+    if err != nil {
+        return fmt.Errorf("failed to open file: %v", err)
+    }
+    defer file.Close()
+
+    data := make([]byte, bytesToRead)
+    n, err := file.Read(data)
+    if err != nil && err != io.EOF {
+        return fmt.Errorf("failed to read file: %v", err)
+    }
+
+    fmt.Printf("First %d bytes of %s:\n", n, filename)
+    fmt.Printf("As hex: %x\n", data[:n])
+    fmt.Printf("As string: %s\n", string(data[:n]))
+
+    return nil
+}
+
+// 使用示例
+func CompareLeaderAndFollowerLogs() error {
+    leaderLogFile := "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
+    // followerLogFile := "./follower/raft/RaftState.log"
+
+    fmt.Println("Checking Leader log:")
+    if err := CheckLogFileStart(leaderLogFile, 1000); err != nil {
+        return err
+    }
+
+    // fmt.Println("\nChecking Follower log:")
+    // if err := CheckLogFileStart(followerLogFile, 1000); err != nil {
+    //     return err
+    // }
+
+    return nil
 }
