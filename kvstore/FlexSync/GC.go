@@ -114,9 +114,16 @@ func (kvs *KVServer) ReadEntryAtIndex(file *os.File, index int64) (*raft.Entry, 
 	if err != nil {
 		return nil, -1, err
 	}
-
 	reader := bufio.NewReader(file)
-	return ReadEntry(reader, index)
+
+	// 既然有一个规律，follower的偏移量统一比leader的偏移量小一个vsize的距离，那就手动补充这个差值
+	// 具体问题有时间再去解决，问题的位置应该就是发生在raft层面向服务器层传输偏移量的那里
+	if kvs.raft.GetLeaderId() == int32(kvs.me) {
+		return ReadEntry(reader, index)
+	}
+	indexCorrct := index+int64(kvs.valueSize)
+	return ReadEntry(reader, indexCorrct) // 暂时给64000
+	// 如果GC成功证明是这个问题，那就改为拿到客户端的值后，判断value的大小，自动计算value大小并且补上差值
 }
 
 func (kvs *KVServer) WriteEntryToSortedFile(writer *bufio.Writer, entry *raft.Entry) error {

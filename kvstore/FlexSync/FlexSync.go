@@ -100,6 +100,7 @@ type KVServer struct {
 	oldPersister    *raft.Persister // 排序前
 	startGC         bool            // GC是否开始
 	endGC           bool            // GC是否结束
+	valueSize       int         // valuesize
 	// currentPersister *raft.Persister
 	// getFromFile     func(string) (string, error)			// 对应与垃圾分离前后的两种查询方法。
 	// scanFromFile    func(string, string) (map[string]string, error)
@@ -623,6 +624,8 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 		reply.Err = raft.ErrWrongLeader
 		return reply // 如果收到客户端put请求的不是leader，需要将leader的id返回给客户端的reply中
 	}
+	value := op.Value
+	kvs.valueSize = len(value)
 
 	opCtx := newOpContext(&op)
 
