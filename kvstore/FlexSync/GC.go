@@ -121,8 +121,10 @@ func (kvs *KVServer) ReadEntryAtIndex(file *os.File, index int64) (*raft.Entry, 
 	if kvs.raft.GetLeaderId() == int32(kvs.me) {
 		return ReadEntry(reader, index)
 	}
-	indexCorrct := index+int64(kvs.valueSize)
-	return ReadEntry(reader, indexCorrct) // 暂时给64000
+	// indexCorrct := index+int64(kvs.valueSize)
+	// return ReadEntry(reader, indexCorrct) // 暂时给64000
+	return ReadEntry(reader, index+64000) // 暂时给64000
+
 	// 如果GC成功证明是这个问题，那就改为拿到客户端的值后，判断value的大小，自动计算value大小并且补上差值
 }
 

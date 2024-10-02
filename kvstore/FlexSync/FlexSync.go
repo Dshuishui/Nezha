@@ -100,7 +100,7 @@ type KVServer struct {
 	oldPersister    *raft.Persister // 排序前
 	startGC         bool            // GC是否开始
 	endGC           bool            // GC是否结束
-	valueSize       int         // valuesize
+	valueSize       int             // valuesize
 	// currentPersister *raft.Persister
 	// getFromFile     func(string) (string, error)			// 对应与垃圾分离前后的两种查询方法。
 	// scanFromFile    func(string, string) (map[string]string, error)
@@ -210,23 +210,65 @@ func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]st
 	sortedChan := make(chan scanResult, 1)
 	newChan := make(chan scanResult, 1)
 
-	// 并发查询排序文件
-	go func() {
-		defer wg.Done()
-		result, err := kvs.scanFromSortedFile(startKey, endKey)
-		sortedChan <- scanResult{data: result, err: err}
-	}()
+	if kvs.startGC || !kvs.endGC {
+		// 并发查询旧文件
+		go func() {
+			defer wg.Done()
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.oldPersister)
+			sortedChan <- scanResult{data: result.KeyValuePairs, err: nil}
+		}()
 
-	// 并发查询新文件
-	go func() {
-		defer wg.Done()
-		result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey})
-		// if err != nil {
-		//     newChan <- scanResult{data: nil, err: err}
-		//     return
-		// }
-		newChan <- scanResult{data: result.KeyValuePairs, err: nil}
-	}()
+		// 并发查询新文件
+		go func() {
+			defer wg.Done()
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister)
+			// if err != nil {
+			//     newChan <- scanResult{data: nil, err: err}
+			//     return
+			// }
+			newChan <- scanResult{data: result.KeyValuePairs, err: nil}
+		}()
+	}
+	if kvs.startGC || kvs.endGC {
+		// 并发查询排序文件
+		go func() {
+			defer wg.Done()
+			result, err := kvs.scanFromSortedFile(startKey, endKey)
+			sortedChan <- scanResult{data: result, err: err}
+		}()
+
+		// 并发查询新文件
+		go func() {
+			defer wg.Done()
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister)
+			// if err != nil {
+			//     newChan <- scanResult{data: nil, err: err}
+			//     return
+			// }
+			newChan <- scanResult{data: result.KeyValuePairs, err: nil}
+		}()
+	}
+	if !kvs.startGC {
+		// 并发查询旧文件
+		go func() {
+			defer wg.Done()
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.oldPersister)
+			sortedChan <- scanResult{data: result.KeyValuePairs, err: nil}
+		}()
+		wg.Done()
+		wg.Wait()
+		close(sortedChan)
+		close(newChan)
+		sortedResult := <-sortedChan
+		if sortedResult.err != nil {
+			return nil, fmt.Errorf("error scanning sorted file: %v", sortedResult.err)
+		}
+		result := make(map[string]string)
+		for k, v := range sortedResult.data {
+			result[k] = v
+		}
+		return result, nil
+	}
 
 	// 等待两个查询都完成
 	wg.Wait()
@@ -257,13 +299,13 @@ func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]st
 	return result, nil
 }
 
-func (kvs *KVServer) StartScan_opt(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeResponse {
+func (kvs *KVServer) StartScan_opt(args *kvrpc.ScanRangeRequest, persister *raft.Persister) *kvrpc.ScanRangeResponse {
 	startKey := args.GetStartKey()
 	endKey := args.GetEndKey()
 	reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
 
 	// 执行范围查询
-	result, err := kvs.scanNewFile(startKey, endKey)
+	result, err := kvs.scanNewFile(startKey, endKey, persister)
 	if err != nil {
 		log.Printf("Scan error: %v", err)
 		reply.Err = "error in scan"
@@ -275,7 +317,7 @@ func (kvs *KVServer) StartScan_opt(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRang
 	return reply
 }
 
-func (kvs *KVServer) scanNewFile(startKey, endKey string) (map[string]string, error) {
+func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persister) (map[string]string, error) {
 	kvs.mu.Lock()
 	defer kvs.mu.Unlock()
 	ro := gorocksdb.NewDefaultReadOptions()
