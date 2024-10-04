@@ -1117,6 +1117,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
+	kvs.startGC = false
+	kvs.endGC = false	// 测试效果
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
 	// _, err := kvs.oldPersister.Init(InitialPersister, true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
 	// if err != nil {
@@ -1141,6 +1143,7 @@ func main() {
 				startTime := time.Now()
 				// GC.MonitorFileSize("raft/RaftState.log")	// GC处理
 				err := kvs.GarbageCollection() //  暂时确定为一段时间没有收到来自客户端的请求就进行GC处理。
+				// kvs.endGC = true
 				if err != nil {
 					fmt.Println("垃圾回收出现了错误: ", err)
 				}

@@ -45,6 +45,8 @@ func (kvs *KVServer) GarbageCollection() error {
 		return fmt.Errorf("failed to initialize new RocksDB: %v", err)
 	}
 
+	// kvs.startGC = true
+
 	// 切换到新的文件和RocksDB
 	kvs.SwitchToNewFiles(sortedFilePath, newPersister)
 
