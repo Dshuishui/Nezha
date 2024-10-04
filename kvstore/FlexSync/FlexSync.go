@@ -1120,6 +1120,15 @@ func main() {
 	kvs.startGC = false
 	kvs.endGC = false	// 测试效果
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
+
+	// kvs.oldLog = "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
+	// kvs.currentLog = kvs.oldLog
+	err = kvs.GarbageCollection() //  暂时确定为一段时间没有收到来自客户端的请求就进行GC处理。
+	// kvs.endGC = true
+	if err != nil {
+		fmt.Println("垃圾回收出现了错误: ", err)
+	}
+	
 	// _, err := kvs.oldPersister.Init(InitialPersister, true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
 	// if err != nil {
 	// 	log.Fatalf("Failed to initialize database: %v", err)
@@ -1132,7 +1141,7 @@ func main() {
 	// ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 25 * time.Second
+		timeout := 250 * time.Second
 		time1 := 5 * time.Second
 		for {
 			time.Sleep(timeout)
