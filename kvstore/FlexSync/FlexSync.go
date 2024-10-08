@@ -513,7 +513,9 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	for { // 证明了此服务器就是leader
 		if kvs.raft.GetApplyIndex() >= commitindex {
 			key := args.GetKey()
-			positionBytes, err := kvs.persister.Get_opt(key)
+			// positionBytes, err := kvs.persister.Get_opt(key)
+			positionBytes, err := kvs.oldPersister.Get_opt(key)
+
 			if err != nil {
 				fmt.Println("拿取key对应的index有问题")
 				panic(err)
@@ -562,9 +564,13 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 					}
 				}
 			} else {
-				read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
+				// read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
+				read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
+
 				if err != nil {
 					fmt.Println("拿取value有问题")
+					// fmt.Println("当前的currentLog为: ",kvs.currentLog)
+					fmt.Println("当前的currentLog为: ",kvs.oldLog)
 					panic(err)
 				}
 				if read_key == key {
@@ -1123,12 +1129,6 @@ func main() {
 
 	// kvs.oldLog = "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
 	// kvs.currentLog = kvs.oldLog
-	err = kvs.GarbageCollection() //  暂时确定为一段时间没有收到来自客户端的请求就进行GC处理。
-	// kvs.endGC = true
-	if err != nil {
-		fmt.Println("垃圾回收出现了错误: ", err)
-	}
-	
 	// _, err := kvs.oldPersister.Init(InitialPersister, true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
 	// if err != nil {
 	// 	log.Fatalf("Failed to initialize database: %v", err)
@@ -1141,8 +1141,8 @@ func main() {
 	// ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 250 * time.Second
-		time1 := 5 * time.Second
+		timeout := 25 * time.Second
+		time1 := 500000 * time.Second
 		for {
 			time.Sleep(timeout)
 			// if (time.Since(kvs.lastPutTime) > timeout) && (time.Since(kvs.raft.LastAppendTime) > timeout) {
