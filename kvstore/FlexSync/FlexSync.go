@@ -504,14 +504,14 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 
 func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResponse {
 	reply := &kvrpc.GetInRaftResponse{Err: raft.OK}
-	commitindex, isleader := kvs.raft.GetReadIndex()
-	if !isleader {
-		reply.Err = raft.ErrWrongLeader
-		reply.LeaderId = kvs.raft.GetLeaderId()
-		return reply // 不是leader，拿不到commitindex直接退出，找其它leader
-	}
-	for { // 证明了此服务器就是leader
-		if kvs.raft.GetApplyIndex() >= commitindex {
+	// commitindex, isleader := kvs.raft.GetReadIndex()
+	// if !isleader {
+	// 	reply.Err = raft.ErrWrongLeader
+	// 	reply.LeaderId = kvs.raft.GetLeaderId()
+	// 	return reply // 不是leader，拿不到commitindex直接退出，找其它leader
+	// }
+	// for { // 证明了此服务器就是leader
+		// if kvs.raft.GetApplyIndex() >= commitindex {
 			key := args.GetKey()
 			// positionBytes, err := kvs.persister.Get_opt(key)
 			positionBytes, err := kvs.oldPersister.Get_opt(key)
@@ -611,9 +611,9 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 				}
 			}
 			return reply
-		}
-		time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
-	}
+		// }
+		// time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
+	// }
 }
 
 func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
