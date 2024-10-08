@@ -858,7 +858,7 @@ func (rf *Raft) sendHeartbeat(address string, args *raftrpc.AppendEntriesInRaftR
 	}
 	defer conn.Close()
 	client := raftrpc.NewRaftClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*4)
 	defer cancel()
 	reply, err := client.HeartbeatInRaft(ctx, args)
 
