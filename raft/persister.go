@@ -128,7 +128,7 @@ func (p *Persister) Get_opt(key string) (int64, error) {
 	defer ro.Destroy()
 
 	paddedKey := p.PadKey(key)
-	fmt.Printf("Attempting to get key: %s (padded: %s)\n", key, paddedKey)
+	// fmt.Printf("Attempting to get key: %s (padded: %s)\n", key, paddedKey)
 	// p.muRO.Lock()
     // defer p.muRO.Unlock()
 	slice, err := p.db.Get(ro, []byte(paddedKey))
