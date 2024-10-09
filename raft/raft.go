@@ -1322,7 +1322,7 @@ func (rf *Raft) appendEntriesLoop() {
 				First = false
 			}
 			now := time.Now() // 心跳
-			if now.Sub(rf.LastAppendTime) > 10000*time.Millisecond {
+			if now.Sub(rf.LastAppendTime) > 1000*time.Millisecond {
 				for peerId := 0; peerId < len(rf.peers); peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
 					if peerId == rf.me {
 						continue

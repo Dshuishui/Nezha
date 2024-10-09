@@ -575,6 +575,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 				}
 				if read_key == key {
 					reply.Value = value
+					fmt.Println("rocksdb中读取的key与磁盘文件中对应index位置中的entry中的key不一样？？？？？？")
 				} else { // 这个好像不存在这种情况，因为rocksdb中有的，在存储value的文件中肯定能找到
 					if kvs.startGC && kvs.endGC { // 去排序好的文件查询，没有就是没有
 						value, err = kvs.getFromSortedFile(key)
