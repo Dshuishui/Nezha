@@ -514,6 +514,20 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 		// if kvs.raft.GetApplyIndex() >= commitindex {
 			key := args.GetKey()
 			// positionBytes, err := kvs.persister.Get_opt(key)
+
+			// 测试直接去排序后的log点查询的速度=======================
+			if kvs.startGC && kvs.endGC { // 去排序好的文件查询，没有就是没有
+				value, err := kvs.getFromSortedFile(key)
+				if err != nil {
+					reply.Value = value // 找到了，赋值
+				} else {
+					reply.Err = raft.ErrNoKey // 已排序的文件中没有就是没有
+					reply.Value = raft.NoKey
+				}
+				return reply
+			}
+			// =====================================================
+
 			positionBytes, err := kvs.oldPersister.Get_opt(key)
 
 			if err != nil {
@@ -1124,8 +1138,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
-	kvs.startGC = false
-	kvs.endGC = false	// 测试效果
+	kvs.startGC = true
+	kvs.endGC = true	// 测试效果
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
 
 	// kvs.oldLog = "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
