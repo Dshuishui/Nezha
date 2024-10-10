@@ -80,7 +80,7 @@ func (kvs *KVServer) GarbageCollection() error {
 			return fmt.Errorf("failed to write entry to sorted file: %v", err)
 		}
 		writeNum++
-		if writeNum%30 == 0 {
+		if writeNum%200000 == 0 {
 			fmt.Printf("成功写入 %d个entry \n", writeNum)
 		}
 	}
@@ -500,7 +500,7 @@ func VerifySortedFile(filePath string) error {
 		if prevKey != "" && entry.Key <= prevKey {
 			return fmt.Errorf("file is not sorted: key %s comes after %s", entry.Key, prevKey)
 		}
-		fmt.Printf("当前读出的key为: %s\n", entry.Key)
+		// fmt.Printf("当前读出的key为: %s\n", entry.Key)
 
 		prevKey = entry.Key
 		entryCount++
@@ -524,8 +524,8 @@ func CheckLogFileStart(filename string, bytesToRead int) error {
     }
 
     fmt.Printf("First %d bytes of %s:\n", n, filename)
-    fmt.Printf("As hex: %x\n", data[:n])
-    fmt.Printf("As string: %s\n", string(data[:n]))
+    // fmt.Printf("As hex: %x\n", data[:n])
+    // fmt.Printf("As string: %s\n", string(data[:n]))
 
     return nil
 }
