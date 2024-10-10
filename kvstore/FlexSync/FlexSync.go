@@ -159,15 +159,15 @@ func (kv *KVServer) killed() bool {
 func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeRequest) (*kvrpc.ScanRangeResponse, error) {
 	reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
 
-	commitIndex, isLeader := kvs.raft.GetReadIndex()
-	if !isLeader {
-		reply.Err = raft.ErrWrongLeader
-		reply.LeaderId = kvs.raft.GetLeaderId()
-		return reply, nil
-	}
+	// commitIndex, isLeader := kvs.raft.GetReadIndex()
+	// if !isLeader {
+	// 	reply.Err = raft.ErrWrongLeader
+	// 	reply.LeaderId = kvs.raft.GetLeaderId()
+	// 	return reply, nil
+	// }
 
-	for {
-		if kvs.raft.GetApplyIndex() >= commitIndex {
+	// for {
+	// 	if kvs.raft.GetApplyIndex() >= commitIndex {
 			result, err := kvs.scanFromSortedOrNew(in.StartKey, in.EndKey)
 			if err != nil {
 				reply.Err = "error in scan"
@@ -175,9 +175,9 @@ func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeReq
 			}
 			reply.KeyValuePairs = result
 			return reply, nil
-		}
-		time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
-	}
+		// }
+	// 	time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
+	// }
 	// ————以下是之前的scan查询————
 	// reply := kvs.StartScan(in)
 	// 检查是否已经垃圾回收完毕

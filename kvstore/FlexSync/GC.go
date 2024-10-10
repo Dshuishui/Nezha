@@ -22,6 +22,10 @@ func (kvs *KVServer) GarbageCollection() error {
 
 	// Create a new file for sorted entries
 	sortedFilePath := "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
+	if _, err := os.Stat(sortedFilePath); err == nil {
+		fmt.Println("Sorted file already exists. Skipping garbage collection.")
+		return nil
+	}
 	sortedFile, err := os.Create(sortedFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to create sorted file: %v", err)
