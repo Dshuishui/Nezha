@@ -520,17 +520,18 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 		value, err := kvs.getFromSortedFile(key)
 		if err != nil {
 			reply.Value = value // 找到了，赋值
+			// fmt.Println("找到了找到了，通过索引找到的，key为: ",key)
 		} else {
 			reply.Err = raft.ErrNoKey // 已排序的文件中没有就是没有
 			reply.Value = raft.NoKey
 		}
-		keyInt, err := strconv.Atoi(key)
-		if err != nil {
-			fmt.Println("转换错误:", err)
-		}
-		if keyInt%4 == 0 {
-			fmt.Println("成功去排序的log文件进行点查询了")
-		}
+		// keyInt, err := strconv.Atoi(key)
+		// if err != nil {
+		// 	fmt.Println("转换错误:", err)
+		// }
+		// if keyInt%4 == 0 {
+		// 	fmt.Println("成功去排序的log文件进行点查询了")
+		// }
 		return reply
 	}
 	// =====================================================
