@@ -214,14 +214,14 @@ func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]st
 		// 并发查询旧文件
 		go func() {
 			defer wg.Done()
-			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.oldPersister)
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.oldPersister,kvs.oldLog)
 			sortedChan <- scanResult{data: result.KeyValuePairs, err: nil}
 		}()
 
 		// 并发查询新文件
 		go func() {
 			defer wg.Done()
-			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister)
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister,kvs.currentLog)
 			// if err != nil {
 			//     newChan <- scanResult{data: nil, err: err}
 			//     return
@@ -240,7 +240,7 @@ func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]st
 		// 并发查询新文件
 		go func() {
 			defer wg.Done()
-			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister)
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister,kvs.currentLog)
 			// if err != nil {
 			//     newChan <- scanResult{data: nil, err: err}
 			//     return
@@ -252,7 +252,7 @@ func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]st
 		// 并发查询旧文件
 		go func() {
 			defer wg.Done()
-			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.oldPersister)
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.oldPersister,kvs.oldLog)
 			sortedChan <- scanResult{data: result.KeyValuePairs, err: nil}
 		}()
 		wg.Done()
@@ -299,13 +299,13 @@ func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]st
 	return result, nil
 }
 
-func (kvs *KVServer) StartScan_opt(args *kvrpc.ScanRangeRequest, persister *raft.Persister) *kvrpc.ScanRangeResponse {
+func (kvs *KVServer) StartScan_opt(args *kvrpc.ScanRangeRequest, persister *raft.Persister,logLocation string) *kvrpc.ScanRangeResponse {
 	startKey := args.GetStartKey()
 	endKey := args.GetEndKey()
 	reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
 
 	// 执行范围查询
-	result, err := kvs.scanNewFile(startKey, endKey, persister)
+	result, err := kvs.scanNewFile(startKey, endKey, persister,logLocation)
 	if err != nil {
 		log.Printf("Scan error: %v", err)
 		reply.Err = "error in scan"
@@ -317,7 +317,7 @@ func (kvs *KVServer) StartScan_opt(args *kvrpc.ScanRangeRequest, persister *raft
 	return reply
 }
 
-func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persister) (map[string]string, error) {
+func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persister,logLocation string) (map[string]string, error) {
 	kvs.mu.Lock()
 	defer kvs.mu.Unlock()
 	ro := gorocksdb.NewDefaultReadOptions()
@@ -328,7 +328,7 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persis
 	paddedEndKey := kvs.persister.PadKey(endKey)
 
 	// 从RocksDB中获取范围内的key-value对
-	rdb := kvs.persister.GetDb()
+	rdb := persister.GetDb()
 	iter := rdb.NewIterator(ro)
 	defer iter.Close()
 
@@ -339,7 +339,7 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persis
 		}
 
 		// 从新的日志文件中读取实际的value
-		value, err := ReadValueFromNewFile(iter.Value().Data(), kvs.currentLog) // 读取新文件就是currentLog
+		value, err := ReadValueFromNewFile(iter.Value().Data(), logLocation) // 读取与rocksdb对应的log
 		if err != nil {
 			return nil, err
 		}

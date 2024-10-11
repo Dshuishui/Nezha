@@ -49,10 +49,18 @@ func (kvs *KVServer) GarbageCollection() error {
 		return fmt.Errorf("failed to initialize new RocksDB: %v", err)
 	}
 
+	// 创建新的RaftState日志文件
+	newRaftStateLogPath := "/home/DYC/Gitee/FlexSync/raft/RaftState_new.log"
+	newRaftStateLog, err := os.Create(newRaftStateLogPath)
+	if err != nil {
+		return fmt.Errorf("failed to create new RaftState log: %v", err)
+	}
+	defer newRaftStateLog.Close()
+
 	// kvs.startGC = true
 
 	// 切换到新的文件和RocksDB
-	kvs.SwitchToNewFiles(sortedFilePath, newPersister)
+	kvs.SwitchToNewFiles(newRaftStateLogPath, newPersister)
 
 	// Create a buffered writer for the sorted file
 	writer := bufio.NewWriter(sortedFile)
@@ -475,6 +483,7 @@ func (kvs *KVServer) SwitchToNewFiles(newLog string, newPersister *raft.Persiste
 
 	// 更新两个路径，使得垃圾回收与客户端请求并行执行
 	kvs.currentLog = newLog
+	fmt.Println("设置kvs.currentLog为", newLog)
 	kvs.raft.SetCurrentLog(kvs.currentLog)
 	// kvs.raft.currentLog = newLog		// 存储value的磁盘文件由raft操作，raft接触到的只有存储value的log文件
 	kvs.persister = newPersister // 存储key和偏移量的rocksdb文件由kvs操作
@@ -515,39 +524,39 @@ func VerifySortedFile(filePath string) error {
 }
 
 func CheckLogFileStart(filename string, bytesToRead int) error {
-    file, err := os.Open(filename)
-    if err != nil {
-        return fmt.Errorf("failed to open file: %v", err)
-    }
-    defer file.Close()
+	file, err := os.Open(filename)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %v", err)
+	}
+	defer file.Close()
 
-    data := make([]byte, bytesToRead)
-    n, err := file.Read(data)
-    if err != nil && err != io.EOF {
-        return fmt.Errorf("failed to read file: %v", err)
-    }
+	data := make([]byte, bytesToRead)
+	n, err := file.Read(data)
+	if err != nil && err != io.EOF {
+		return fmt.Errorf("failed to read file: %v", err)
+	}
 
-    fmt.Printf("First %d bytes of %s:\n", n, filename)
-    // fmt.Printf("As hex: %x\n", data[:n])
-    // fmt.Printf("As string: %s\n", string(data[:n]))
+	fmt.Printf("First %d bytes of %s:\n", n, filename)
+	// fmt.Printf("As hex: %x\n", data[:n])
+	// fmt.Printf("As string: %s\n", string(data[:n]))
 
-    return nil
+	return nil
 }
 
 // 使用示例
 func CompareLeaderAndFollowerLogs() error {
-    leaderLogFile := "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
-    // followerLogFile := "./follower/raft/RaftState.log"
+	leaderLogFile := "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
+	// followerLogFile := "./follower/raft/RaftState.log"
 
-    fmt.Println("Checking Leader log:")
-    if err := CheckLogFileStart(leaderLogFile, 1000); err != nil {
-        return err
-    }
+	fmt.Println("Checking Leader log:")
+	if err := CheckLogFileStart(leaderLogFile, 1000); err != nil {
+		return err
+	}
 
-    // fmt.Println("\nChecking Follower log:")
-    // if err := CheckLogFileStart(followerLogFile, 1000); err != nil {
-    //     return err
-    // }
+	// fmt.Println("\nChecking Follower log:")
+	// if err := CheckLogFileStart(followerLogFile, 1000); err != nil {
+	//     return err
+	// }
 
-    return nil
+	return nil
 }
