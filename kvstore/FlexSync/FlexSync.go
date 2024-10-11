@@ -210,7 +210,7 @@ func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]st
 	sortedChan := make(chan scanResult, 1)
 	newChan := make(chan scanResult, 1)
 
-	if kvs.startGC || !kvs.endGC {
+	if kvs.startGC && !kvs.endGC {
 		// 并发查询旧文件
 		go func() {
 			defer wg.Done()
@@ -229,7 +229,7 @@ func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]st
 			newChan <- scanResult{data: result.KeyValuePairs, err: nil}
 		}()
 	}
-	if kvs.startGC || kvs.endGC {
+	if kvs.startGC && kvs.endGC {
 		// 并发查询排序文件
 		go func() {
 			defer wg.Done()
