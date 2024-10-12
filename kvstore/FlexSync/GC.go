@@ -173,7 +173,7 @@ func (kvs *KVServer) CreateIndex(sortedFilePath string) error {
 	kvs.sortedFilePath = sortedFilePath
 
 	// 创建索引，假设每1000个条目记录一次索引，稀疏索引，间隔一部分创建一个索引，找到第一个合适的，再进行线性查询
-	index, err := kvs.CreateSortedFileIndex(sortedFilePath, 100)
+	index, err := kvs.CreateSortedFileIndex(sortedFilePath, 90)
 	if err != nil {
 		// 处理错误
 		return err
@@ -200,7 +200,8 @@ func (kvs *KVServer) CreateSortedFileIndex(filePath string, indexInterval int) (
 	entryCount := 0
 
 	for {
-		entry, entrySize, err := ReadEntry(reader, 0)
+		// 下面的offset为起始位置，entrysize为读取了一个entry之后要移动的距离大小
+		entry, entrySize, err := ReadEntry(reader, offset)
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -210,10 +211,14 @@ func (kvs *KVServer) CreateSortedFileIndex(filePath string, indexInterval int) (
 		UnpadKey := kvs.persister.UnpadKey(entry.Key)
 		if entryCount%indexInterval == 0 {
 			index = append(index, IndexEntry{Key: UnpadKey, Offset: offset})
+			// fmt.Printf("Added index entry: Key=%s, Offset=%d\n", UnpadKey, offset)
 		}
 
-		offset += int64(entrySize)
+		offset += entrySize
 		entryCount++
+		// if entryCount % 10000 == 0 {
+        //     fmt.Printf("Processed %d entries, current offset: %d\n", entryCount, offset)
+        // }
 	}
 
 	return &SortedFileIndex{Entries: index, FilePath: filePath}, nil
