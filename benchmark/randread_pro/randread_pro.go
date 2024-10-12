@@ -5,37 +5,26 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
-
-	// "strconv"
 	"context"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	// kvc "gitee.com/dong-shuishui/FlexSync/kvstore/kvclient"
 	"gitee.com/dong-shuishui/FlexSync/pool"
 	"gitee.com/dong-shuishui/FlexSync/raft"
-
-	// raftrpc "gitee.com/dong-shuishui/FlexSync/rpc/Raftrpc"
 	"gitee.com/dong-shuishui/FlexSync/rpc/kvrpc"
 	"gitee.com/dong-shuishui/FlexSync/util"
-
 	crand "crypto/rand"
 	"math/big"
-	// "google.golang.org/grpc"
 )
 
-// go run ./benchmark/randread/randread.go -cnums 400 -dnums 100000 -servers 192.168.1.62:3088,192.168.1.100:3088,192.168.1.104:3088
+// 保留原有的标志定义
 var (
-	ser = flag.String("servers", "", "the Server, Client Connects to")
-	// mode     = flag.String("mode", "RequestRatio", "Read or Put and so on")
+	ser   = flag.String("servers", "", "the Server, Client Connects to")
 	cnums = flag.Int("cnums", 1, "Client Threads Number")
 	dnums = flag.Int("dnums", 1000000, "data num")
-	// getratio = flag.Int("getratio", 1, "Get Times per Put Times")
-	key = flag.Int("key", 6, "target key")
+	key   = flag.Int("key", 6, "target key")
 )
-
 type KVClient struct {
 	Kvservers []string
 	mu        sync.Mutex
@@ -47,7 +36,6 @@ type KVClient struct {
 	goodPut int // 有效吞吐量
 }
 
-// randread
 func (kvc *KVClient) randRead() {
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
@@ -66,7 +54,7 @@ func (kvc *KVClient) randRead() {
 				// key := fmt.Sprintf("key_%d", k)
 				targetkey := strconv.Itoa(key)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				// time.Sleep(100 * time.Millisecond)
+				time.Sleep(300 * time.Millisecond)
 				_, keyExist, err := kvc.Get(targetkey) // 先随机传入一个地址的连接池
 				// fmt.Println("after putinraft , j:",j)
 				if err == nil {
@@ -106,7 +94,7 @@ func (kvc *KVClient) SendGetInRaft(targetId int, request *kvrpc.GetInRaftRequest
 	}
 	defer conn.Close()
 	client := kvrpc.NewKVClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 	reply, err := client.GetInRaft(ctx, request)
 	if err != nil {
@@ -176,7 +164,7 @@ func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftRespon
 		reply, err := client.PutInRaft(ctx, request)
 		if err != nil {
 			// fmt.Println("客户端调用PutInRaft有问题")
-			// util.EPrintf("err in PutInRaft-调用了服务器的put方法: %v", err)
+			util.EPrintf("err in PutInRaft-调用了服务器的put方法: %v", err)
 			// 这里防止服务器是宕机了，所以要change leader
 			return nil, err
 		}
@@ -230,23 +218,42 @@ func nrand() int64 { //随机生成clientId
 	return x
 }
 
-func main() {
+func runTest() float64 {
 	flag.Parse()
-	// dataNum := *dnums
-	// key := *key
 	servers := strings.Split(*ser, ",")
-	// fmt.Printf("servers:%v\n",servers)
 	kvc := new(KVClient)
 	kvc.Kvservers = servers
 	kvc.clientId = nrand()
 
-	kvc.InitPool() // 初始化grpc连接池
+	kvc.InitPool()
 	startTime := time.Now()
-	// 开始发送请求
 	kvc.randRead()
-	valuesize := 1000
+	valuesize := 64000
 
 	sum_Size_MB := float64(kvc.goodPut*valuesize) / 1000000
-	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, total %v, goodPut %v, value %v, client %v, Size %vMB\n",
-		time.Since(startTime), float64(sum_Size_MB)/time.Since(startTime).Seconds(), *dnums, kvc.goodPut, valuesize, *cnums, sum_Size_MB)
+	throughput := float64(sum_Size_MB) / time.Since(startTime).Seconds()
+	
+	fmt.Printf("Elapse: %v, Throughput: %.4f MB/S, Total: %v, GoodPut: %v, Value: %v, Client: %v, Size: %.2f MB\n",
+		time.Since(startTime), throughput, *dnums, kvc.goodPut, valuesize, *cnums, sum_Size_MB)
+
+	return throughput
+}
+
+func main() {
+	numTests := 20
+	var totalThroughput float64
+
+	for i := 0; i < numTests; i++ {
+		fmt.Printf("\nRunning test %d of %d\n", i+1, numTests)
+		throughput := runTest()
+		totalThroughput += throughput
+
+		if i < numTests-1 {
+			fmt.Println("Waiting 5 seconds before next test...")
+			time.Sleep(5 * time.Second)
+		}
+	}
+
+	averageThroughput := totalThroughput / float64(numTests)
+	fmt.Printf("\nAverage throughput over %d tests: %.4f MB/S\n", numTests, averageThroughput)
 }

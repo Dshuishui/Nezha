@@ -1,0 +1,10 @@
+go run ./benchmark/randwrite/randwrite.go -cnums 300 -dnums 40000 -vsize 16000 -servers 192.168.1.62:3088,192.168.1.104:3088
+
+go run ./benchmark/seqwrite/seqwrite.go -cnums 300 -dnums 100000 -vsize 64000 -servers 192.168.1.62:3088,192.168.1.104:3088
+
+go run ./benchmark/randread/randread.go -cnums 400 -dnums 15000 -servers 192.168.1.62:3088,192.168.1.100:3088,192.168.1.104:3088
+
+go run ./benchmark/scan/scan.go -cnums 100 -dnums 2500 -servers 192.168.1.104:3088,192.168.1.100:3088
+
+go run . -address 192.168.1.104:3088 -internalAddress 192.168.1.104:30881 -peers 192.168.1.104:30881,192.168.1.100:30881 -gap 40000
+

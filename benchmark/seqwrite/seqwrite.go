@@ -70,7 +70,7 @@ func (kvc *KVClient) batchRawPut(value string) {
 				strkey := strconv.Itoa(key)
 
 				// 添加重试逻辑
-				maxRetries := 3                      // 最大重试次数
+				maxRetries := 1                      // 最大重试次数
 				retryDelay := time.Millisecond * 500 // 重试间隔
 
 				for retry := 0; retry < maxRetries; retry++ {
