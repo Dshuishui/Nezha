@@ -71,7 +71,7 @@ func (kvc *KVClient) batchRawPut(value string) {
 				// k := rand.Intn(*dnums)
 				//k := base*i + j
 				// key := fmt.Sprintf("key_%d", k)
-				key := util.GenerateFixedSizeKey(3)
+				key := util.GenerateFixedSizeKey(5)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
 				reply, err := kvc.PutInRaft(key, value) // 先随机传入一个地址的连接池
 				// fmt.Println("after putinraft , j:",j)
