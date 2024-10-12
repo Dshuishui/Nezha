@@ -760,8 +760,57 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 	return reply
 }
 
+// 普通的
+// func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
+// 	// 假设我们已经创建了索引并存储在 kvs.sortedFileIndex 中
+// 	index := kvs.sortedFileIndex
+// 	paddedKey := kvs.persister.PadKey(key)
+
+// 	// 二分查找找到小于等于目标key的最大索引项
+// 	i := sort.Search(len(index.Entries), func(i int) bool {
+// 		return index.Entries[i].Key > paddedKey
+// 	}) - 1
+
+// 	if i < 0 {
+// 		return "", errors.New(raft.ErrNoKey)
+// 	}
+
+// 	// 打开文件并移动到索引位置
+// 	file, err := os.Open(index.FilePath)
+// 	if err != nil {
+// 		return "", err
+// 	}
+// 	defer file.Close()
+
+// 	_, err = file.Seek(index.Entries[i].Offset, 0)
+// 	if err != nil {
+// 		return "", err
+// 	}
+
+// 	reader := bufio.NewReader(file)
+
+// 	// 从索引位置开始线性搜索
+// 	for {
+// 		entry, _, err := ReadEntry(reader, 0)
+// 		if err != nil {
+// 			if err == io.EOF {
+// 				return "", errors.New(raft.ErrNoKey)
+// 			}
+// 			return "", err
+// 		}
+
+// 		if entry.Key == paddedKey {
+// 			return entry.Value, nil
+// 		}
+
+// 		if entry.Key > paddedKey {
+// 			return "", errors.New(raft.ErrNoKey)
+// 		}
+// 	}
+// }
+
+// 带内存映射的
 func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
-	// 假设我们已经创建了索引并存储在 kvs.sortedFileIndex 中
 	index := kvs.sortedFileIndex
 	paddedKey := kvs.persister.PadKey(key)
 
@@ -774,23 +823,33 @@ func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
 		return "", errors.New(raft.ErrNoKey)
 	}
 
-	// 打开文件并移动到索引位置
+	// 打开文件
 	file, err := os.Open(index.FilePath)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
 
-	_, err = file.Seek(index.Entries[i].Offset, 0)
+	// 获取文件信息
+	fileInfo, err := file.Stat()
 	if err != nil {
 		return "", err
 	}
+	fileSize := fileInfo.Size()
 
-	reader := bufio.NewReader(file)
+	// 创建内存映射
+	mmap, err := mmap.Map(file, mmap.RDONLY, 0)
+	if err != nil {
+		return "", err
+	}
+	defer mmap.Unmap()
+
+	// 确定起始位置
+	startOffset := index.Entries[i].Offset
 
 	// 从索引位置开始线性搜索
-	for {
-		entry, _, err := ReadEntry(reader, 0)
+	for offset := startOffset; offset < fileSize; {
+		entry, entrySize, err := ReadEntryFromMMap(mmap[offset:])
 		if err != nil {
 			if err == io.EOF {
 				return "", errors.New(raft.ErrNoKey)
@@ -805,124 +864,129 @@ func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
 		if entry.Key > paddedKey {
 			return "", errors.New(raft.ErrNoKey)
 		}
+
+		offset += int64(entrySize)
 	}
+
+	return "", errors.New(raft.ErrNoKey)
 }
 
-func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]string, error) {
-	index := kvs.sortedFileIndex
-	paddedStartKey := kvs.persister.PadKey(startKey)
-	paddedEndKey := kvs.persister.PadKey(endKey)
-	// fmt.Printf("Padded start key: %s\n", paddedStartKey)
-	// fmt.Printf("Padded end key: %s\n", paddedEndKey)
-	// fmt.Printf("First index key: %s\n", index.Entries[0].Key)
-	// fmt.Printf("Last index key: %s\n", index.Entries[len(index.Entries)-1].Key)
+// 内存映射，并行索引区间查询
+// func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]string, error) {
+// 	index := kvs.sortedFileIndex
+// 	paddedStartKey := kvs.persister.PadKey(startKey)
+// 	paddedEndKey := kvs.persister.PadKey(endKey)
+// 	// fmt.Printf("Padded start key: %s\n", paddedStartKey)
+// 	// fmt.Printf("Padded end key: %s\n", paddedEndKey)
+// 	// fmt.Printf("First index key: %s\n", index.Entries[0].Key)
+// 	// fmt.Printf("Last index key: %s\n", index.Entries[len(index.Entries)-1].Key)
 
-	// 1. 使用二分查找找到开始和结束的索引
-	// （注意下面index中的entrys中的key没有填充，且下面的kvs.persister没有什么特殊含义，就是为了调用PadKey函数）
-	startIndex := sort.Search(len(index.Entries), func(i int) bool {
-		return kvs.persister.PadKey(index.Entries[i].Key) >= paddedStartKey
-	})
-	endIndex := sort.Search(len(index.Entries), func(i int) bool {
-		return kvs.persister.PadKey(index.Entries[i].Key) > paddedEndKey
-	})
+// 	// 1. 使用二分查找找到开始和结束的索引
+// 	// （注意下面index中的entrys中的key没有填充，且下面的kvs.persister没有什么特殊含义，就是为了调用PadKey函数）
+// 	startIndex := sort.Search(len(index.Entries), func(i int) bool {
+// 		return kvs.persister.PadKey(index.Entries[i].Key) >= paddedStartKey
+// 	})
+// 	endIndex := sort.Search(len(index.Entries), func(i int) bool {
+// 		return kvs.persister.PadKey(index.Entries[i].Key) > paddedEndKey
+// 	})
 
-	if startIndex == len(index.Entries) {
-		return nil, nil // startKey 大于所有索引项，返回空结果
-	}
+// 	if startIndex == len(index.Entries) {
+// 		return nil, nil // startKey 大于所有索引项，返回空结果
+// 	}
 
-	// 2. 使用内存映射文件
-	file, err := os.Open(index.FilePath)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
+// 	// 2. 使用内存映射文件
+// 	file, err := os.Open(index.FilePath)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer file.Close()
 
-	_, err = file.Stat()
-	if err != nil {
-		return nil, err
-	}
+// 	_, err = file.Stat()
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	mmap, err := mmap.Map(file, mmap.RDONLY, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer mmap.Unmap()
-	// log.Printf("File size: %d", len(mmap))
+// 	mmap, err := mmap.Map(file, mmap.RDONLY, 0)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer mmap.Unmap()
+// 	// log.Printf("File size: %d", len(mmap))
 
-	result := make(map[string]string)
+// 	result := make(map[string]string)
 
-	// 3. 并行处理索引区间
-	var wg sync.WaitGroup
-	resultChan := make(chan map[string]string, endIndex-startIndex)
-	errorChan := make(chan error, endIndex-startIndex)
-	// fmt.Printf("startIndex为%v，endIndex为%v\n ",startIndex,endIndex)
-	// 优化：避免两个index同样的时候，不进行查询，但是这可能索引的间隔数量比scan范围查询的范围大造成的
-	if startIndex == endIndex && startIndex > 0 {
-		// 检查前一个索引项
-		prevIndex := startIndex - 1
-		if index.Entries[prevIndex].Key <= paddedEndKey {
-			startIndex = prevIndex
-		}
-	}
-	for i := startIndex; i < endIndex; i++ {
-		// fmt.Println("走到这里了？？1111")
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			localResult := make(map[string]string)
+// 	// 3. 并行处理索引区间
+// 	var wg sync.WaitGroup
+// 	resultChan := make(chan map[string]string, endIndex-startIndex)
+// 	errorChan := make(chan error, endIndex-startIndex)
+// 	// fmt.Printf("startIndex为%v，endIndex为%v\n ",startIndex,endIndex)
+// 	// 优化：避免两个index同样的时候，不进行查询，但是这可能索引的间隔数量比scan范围查询的范围大造成的
+// 	if startIndex == endIndex && startIndex > 0 {
+// 		// 检查前一个索引项
+// 		prevIndex := startIndex - 1
+// 		if index.Entries[prevIndex].Key <= paddedEndKey {
+// 			startIndex = prevIndex
+// 		}
+// 	}
+// 	for i := startIndex; i < endIndex; i++ {
+// 		// fmt.Println("走到这里了？？1111")
+// 		wg.Add(1)
+// 		go func(idx int) {
+// 			defer wg.Done()
+// 			localResult := make(map[string]string)
 
-			startOffset := index.Entries[idx].Offset
-			endOffset := int64(len(mmap))
-			if idx < len(index.Entries)-1 {
-				endOffset = index.Entries[idx+1].Offset
-			}
-			// fmt.Println("走到这里了？？2222")
-			// fmt.Printf("startOffset为%v，endOffset为%v, idx为：%v\n ",startOffset,endOffset,idx)
-			for offset := startOffset; offset < endOffset; {
-				entry, entrySize, err := ReadEntryFromMMap(mmap[offset:])
-				// fmt.Printf("Read entry: key=%s\n", entry.Key)
-				if err != nil {
-					errorChan <- err
-					return
-				}
+// 			startOffset := index.Entries[idx].Offset
+// 			endOffset := int64(len(mmap))
+// 			if idx < len(index.Entries)-1 {
+// 				endOffset = index.Entries[idx+1].Offset
+// 			}
+// 			// fmt.Println("走到这里了？？2222")
+// 			// fmt.Printf("startOffset为%v，endOffset为%v, idx为：%v\n ",startOffset,endOffset,idx)
+// 			for offset := startOffset; offset < endOffset; {
+// 				entry, entrySize, err := ReadEntryFromMMap(mmap[offset:])
+// 				// fmt.Printf("Read entry: key=%s\n", entry.Key)
+// 				if err != nil {
+// 					errorChan <- err
+// 					return
+// 				}
 
-				if entry.Key >= paddedStartKey && entry.Key <= paddedEndKey {
-					unpadKey := kvs.persister.UnpadKey(entry.Key)
-					localResult[unpadKey] = entry.Value
-				} else if entry.Key > paddedEndKey {
-					break
-				}
+// 				if entry.Key >= paddedStartKey && entry.Key <= paddedEndKey {
+// 					unpadKey := kvs.persister.UnpadKey(entry.Key)
+// 					localResult[unpadKey] = entry.Value
+// 				} else if entry.Key > paddedEndKey {
+// 					break
+// 				}
 
-				offset += int64(entrySize)
-			}
+// 				offset += int64(entrySize)
+// 			}
 
-			resultChan <- localResult
-		}(i)
-	}
+// 			resultChan <- localResult
+// 		}(i)
+// 	}
 
-	// 等待所有goroutine完成
-	go func() {
-		wg.Wait()
-		close(resultChan)
-		close(errorChan)
-	}()
+// 	// 等待所有goroutine完成
+// 	go func() {
+// 		wg.Wait()
+// 		close(resultChan)
+// 		close(errorChan)
+// 	}()
 
-	// 收集结果和错误
-	for localResult := range resultChan {
-		for k, v := range localResult {
-			result[k] = v
-		}
-	}
-	fmt.Printf("Total entries collected: %d\n", len(result))
+// 	// 收集结果和错误
+// 	for localResult := range resultChan {
+// 		for k, v := range localResult {
+// 			result[k] = v
+// 		}
+// 	}
+// 	// fmt.Printf("Total entries collected: %d\n", len(result))
 
-	for err := range errorChan {
-		if err != nil {
-			return nil, err
-		}
-	}
+// 	for err := range errorChan {
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 	}
 
-	return result, nil
-}
+// 	return result, nil
+// }
 
 // ReadEntryFromMMap 从内存映射中读取条目
 func ReadEntryFromMMap(data []byte) (*raft.Entry, int, error) {
@@ -1006,6 +1070,74 @@ func ReadEntryFromMMap(data []byte) (*raft.Entry, int, error) {
 
 // 	return result, nil
 // }
+
+// 带内存映射的
+func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]string, error) {
+	index := kvs.sortedFileIndex
+	paddedStartKey := kvs.persister.PadKey(startKey)
+	paddedEndKey := kvs.persister.PadKey(endKey)
+
+	// 找到大于等于 startKey 的最小索引项，比较string大小需要给index中的key进行填充
+	startIndex := sort.Search(len(index.Entries), func(i int) bool {
+		return kvs.persister.PadKey(index.Entries[i].Key) >= paddedStartKey
+	})
+
+	if startIndex == len(index.Entries) {
+		return nil, nil // startKey 大于所有索引项，返回空结果
+	}
+
+	// 打开文件并移动到起始位置
+	file, err := os.Open(index.FilePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	// 获取文件信息
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	fileSize := fileInfo.Size()
+
+	// 创建内存映射
+	mmap, err := mmap.Map(file, mmap.RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer mmap.Unmap()
+
+	// 确定起始位置
+	var startOffset int64
+	if startIndex > 0 {
+		startOffset = index.Entries[startIndex-1].Offset
+	}
+
+	result := make(map[string]string)
+
+	// 读取和处理数据
+	for offset := startOffset; offset < fileSize; {
+		entry, entrySize, err := ReadEntryFromMMap(mmap[offset:])
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+
+		if entry.Key >= paddedStartKey {
+			if entry.Key > paddedEndKey {
+				break // 已经超过了endKey，结束扫描
+			}
+			UnpadKey := kvs.persister.UnpadKey(entry.Key)
+			result[UnpadKey] = entry.Value
+		}
+
+		offset += int64(entrySize)
+	}
+
+	return result, nil
+}
 
 func (kvs *KVServer) RegisterKVServer(ctx context.Context, address string) { // 传入的是客户端与服务器之间的代理服务器的地址
 	defer wg.Done()
@@ -1311,8 +1443,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
-	kvs.startGC = true
-	kvs.endGC = true                // 测试效果
+	kvs.startGC = false
+	kvs.endGC = false                // 测试效果
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
 
 	// kvs.oldLog = "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
