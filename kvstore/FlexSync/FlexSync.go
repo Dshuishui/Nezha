@@ -168,14 +168,14 @@ func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeReq
 
 	// for {
 	// 	if kvs.raft.GetApplyIndex() >= commitIndex {
-			result, err := kvs.scanFromSortedOrNew(in.StartKey, in.EndKey)
-			if err != nil {
-				reply.Err = "error in scan"
-				return reply, nil
-			}
-			reply.KeyValuePairs = result
-			return reply, nil
-		// }
+	result, err := kvs.scanFromSortedOrNew(in.StartKey, in.EndKey)
+	if err != nil {
+		reply.Err = "error in scan"
+		return reply, nil
+	}
+	reply.KeyValuePairs = result
+	return reply, nil
+	// }
 	// 	time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
 	// }
 	// ————以下是之前的scan查询————
@@ -214,14 +214,14 @@ func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]st
 		// 并发查询旧文件
 		go func() {
 			defer wg.Done()
-			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.oldPersister,kvs.oldLog)
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.oldPersister, kvs.oldLog)
 			sortedChan <- scanResult{data: result.KeyValuePairs, err: nil}
 		}()
 
 		// 并发查询新文件
 		go func() {
 			defer wg.Done()
-			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister,kvs.currentLog)
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister, kvs.currentLog)
 			// if err != nil {
 			//     newChan <- scanResult{data: nil, err: err}
 			//     return
@@ -240,7 +240,7 @@ func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]st
 		// 并发查询新文件
 		go func() {
 			defer wg.Done()
-			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister,kvs.currentLog)
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister, kvs.currentLog)
 			// if err != nil {
 			//     newChan <- scanResult{data: nil, err: err}
 			//     return
@@ -252,7 +252,7 @@ func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]st
 		// 并发查询旧文件
 		go func() {
 			defer wg.Done()
-			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.oldPersister,kvs.oldLog)
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.oldPersister, kvs.oldLog)
 			sortedChan <- scanResult{data: result.KeyValuePairs, err: nil}
 		}()
 		wg.Done()
@@ -299,13 +299,13 @@ func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]st
 	return result, nil
 }
 
-func (kvs *KVServer) StartScan_opt(args *kvrpc.ScanRangeRequest, persister *raft.Persister,logLocation string) *kvrpc.ScanRangeResponse {
+func (kvs *KVServer) StartScan_opt(args *kvrpc.ScanRangeRequest, persister *raft.Persister, logLocation string) *kvrpc.ScanRangeResponse {
 	startKey := args.GetStartKey()
 	endKey := args.GetEndKey()
 	reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
 
 	// 执行范围查询
-	result, err := kvs.scanNewFile(startKey, endKey, persister,logLocation)
+	result, err := kvs.scanNewFile(startKey, endKey, persister, logLocation)
 	if err != nil {
 		log.Printf("Scan error: %v", err)
 		reply.Err = "error in scan"
@@ -317,7 +317,7 @@ func (kvs *KVServer) StartScan_opt(args *kvrpc.ScanRangeRequest, persister *raft
 	return reply
 }
 
-func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persister,logLocation string) (map[string]string, error) {
+func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persister, logLocation string) (map[string]string, error) {
 	kvs.mu.Lock()
 	defer kvs.mu.Unlock()
 	ro := gorocksdb.NewDefaultReadOptions()
@@ -1147,7 +1147,7 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	kvs.startGC = false
-	kvs.endGC = false              // 测试效果
+	kvs.endGC = false                // 测试效果
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
 
 	// kvs.oldLog = "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"

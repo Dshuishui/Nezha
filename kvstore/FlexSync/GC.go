@@ -51,11 +51,17 @@ func (kvs *KVServer) GarbageCollection() error {
 
 	// 创建新的RaftState日志文件
 	newRaftStateLogPath := "/home/DYC/Gitee/FlexSync/raft/RaftState_new.log"
-	newRaftStateLog, err := os.Create(newRaftStateLogPath)
-	if err != nil {
-		return fmt.Errorf("failed to create new RaftState log: %v", err)
+	if _, err := os.Stat(newRaftStateLogPath); err == nil {
+		fmt.Println("New RaftState log file already exists. Skipping creation.")
+	} else if os.IsNotExist(err) {
+		newRaftStateLog, err := os.Create(newRaftStateLogPath)
+		if err != nil {
+			return fmt.Errorf("failed to create new RaftState log: %v", err)
+		}
+		defer newRaftStateLog.Close()
+	} else {
+		return fmt.Errorf("error checking new RaftState log file: %v", err)
 	}
-	defer newRaftStateLog.Close()
 
 	// kvs.startGC = true
 

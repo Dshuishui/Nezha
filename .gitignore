@@ -12,6 +12,7 @@ kvstore/kvserver/db_key_index
 kvstore/kvserver/db_key_index_new
 raft/RaftState.log
 raft/RaftState_sorted.log
+raft/RaftState_new.log
 run_server.sh
 run_client.sh
 error.log
