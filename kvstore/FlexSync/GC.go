@@ -173,7 +173,7 @@ func (kvs *KVServer) CreateIndex(sortedFilePath string) error {
 	kvs.sortedFilePath = sortedFilePath
 
 	// 创建索引，假设每1000个条目记录一次索引，稀疏索引，间隔一部分创建一个索引，找到第一个合适的，再进行线性查询
-	index, err := kvs.CreateSortedFileIndex(sortedFilePath, 1000)
+	index, err := kvs.CreateSortedFileIndex(sortedFilePath, 100)
 	if err != nil {
 		// 处理错误
 		return err
