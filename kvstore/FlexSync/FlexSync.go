@@ -255,17 +255,35 @@ func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]st
 			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.oldPersister, kvs.oldLog)
 			sortedChan <- scanResult{data: result.KeyValuePairs, err: nil}
 		}()
-		wg.Done()
+		// 并发查询新文件
+		go func() {
+			defer wg.Done()
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister, kvs.currentLog)
+			// if err != nil {
+			//     newChan <- scanResult{data: nil, err: err}
+			//     return
+			// }
+			newChan <- scanResult{data: result.KeyValuePairs, err: nil}
+		}()
+		// wg.Done()
 		wg.Wait()
 		close(sortedChan)
 		close(newChan)
 		sortedResult := <-sortedChan
+		newResult := <-newChan
 		if sortedResult.err != nil {
 			return nil, fmt.Errorf("error scanning sorted file: %v", sortedResult.err)
 		}
+		if newResult.err != nil {
+			return nil, fmt.Errorf("error scanning new file: %v", newResult.err)
+		}
+		// 合并结果
 		result := make(map[string]string)
 		for k, v := range sortedResult.data {
 			result[k] = v
+		}
+		for k, v := range newResult.data {
+			result[k] = v // 新文件的数据会覆盖排序文件中的旧数据
 		}
 		return result, nil
 	}
