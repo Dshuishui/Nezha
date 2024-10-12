@@ -399,7 +399,7 @@ func ReadEntry(reader *bufio.Reader, currentOffset int64) (*raft.Entry, int64, e
 	var entry raft.Entry
 	var keySize, valueSize uint32
 
-	entryStartOffset := currentOffset
+	// entryStartOffset := currentOffset
 
 	// 读取固定大小的字段
 	if err := binary.Read(reader, binary.LittleEndian, &entry.Index); err != nil {
@@ -455,11 +455,12 @@ func ReadEntry(reader *bufio.Reader, currentOffset int64) (*raft.Entry, int64, e
 	}
 	entry.Value = string(valueBytes)
 
-	currentOffset += int64(20 + keySize + valueSize) // 16 是固定字段的总大小
+	entrySize := int64(20 + keySize + valueSize) // 16 是固定字段的总大小
 
 	// fmt.Printf("Read entry: Key='%s', Value='暂时不显示'\n", entry.Key)
 
-	return &entry, entryStartOffset, nil
+	// return &entry, entryStartOffset, nil
+	return &entry, entrySize, nil
 }
 
 // ==================================================
@@ -811,13 +812,18 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]str
 	index := kvs.sortedFileIndex
 	paddedStartKey := kvs.persister.PadKey(startKey)
 	paddedEndKey := kvs.persister.PadKey(endKey)
+	// fmt.Printf("Padded start key: %s\n", paddedStartKey)
+	// fmt.Printf("Padded end key: %s\n", paddedEndKey)
+	// fmt.Printf("First index key: %s\n", index.Entries[0].Key)
+	// fmt.Printf("Last index key: %s\n", index.Entries[len(index.Entries)-1].Key)
 
 	// 1. 使用二分查找找到开始和结束的索引
+	// （注意下面index中的entrys中的key没有填充，且下面的kvs.persister没有什么特殊含义，就是为了调用PadKey函数）
 	startIndex := sort.Search(len(index.Entries), func(i int) bool {
-		return index.Entries[i].Key >= paddedStartKey
+		return kvs.persister.PadKey(index.Entries[i].Key) >= paddedStartKey
 	})
 	endIndex := sort.Search(len(index.Entries), func(i int) bool {
-		return index.Entries[i].Key > paddedEndKey
+		return kvs.persister.PadKey(index.Entries[i].Key) > paddedEndKey
 	})
 
 	if startIndex == len(index.Entries) {
@@ -841,6 +847,7 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]str
 		return nil, err
 	}
 	defer mmap.Unmap()
+	// log.Printf("File size: %d", len(mmap))
 
 	result := make(map[string]string)
 
@@ -848,8 +855,17 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]str
 	var wg sync.WaitGroup
 	resultChan := make(chan map[string]string, endIndex-startIndex)
 	errorChan := make(chan error, endIndex-startIndex)
-
+	// fmt.Printf("startIndex为%v，endIndex为%v\n ",startIndex,endIndex)
+	// 优化：避免两个index同样的时候，不进行查询，但是这可能索引的间隔数量比scan范围查询的范围大造成的
+	if startIndex == endIndex && startIndex > 0 {
+		// 检查前一个索引项
+		prevIndex := startIndex - 1
+		if index.Entries[prevIndex].Key <= paddedEndKey {
+			startIndex = prevIndex
+		}
+	}
 	for i := startIndex; i < endIndex; i++ {
+		// fmt.Println("走到这里了？？1111")
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -860,9 +876,11 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]str
 			if idx < len(index.Entries)-1 {
 				endOffset = index.Entries[idx+1].Offset
 			}
-
+			// fmt.Println("走到这里了？？2222")
+			// fmt.Printf("startOffset为%v，endOffset为%v, idx为：%v\n ",startOffset,endOffset,idx)
 			for offset := startOffset; offset < endOffset; {
 				entry, entrySize, err := ReadEntryFromMMap(mmap[offset:])
+				// fmt.Printf("Read entry: key=%s\n", entry.Key)
 				if err != nil {
 					errorChan <- err
 					return
@@ -895,6 +913,7 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]str
 			result[k] = v
 		}
 	}
+	fmt.Printf("Total entries collected: %d\n", len(result))
 
 	for err := range errorChan {
 		if err != nil {
@@ -939,9 +958,9 @@ func ReadEntryFromMMap(data []byte) (*raft.Entry, int, error) {
 // 	paddedStartKey := kvs.persister.PadKey(startKey)
 // 	paddedEndKey := kvs.persister.PadKey(endKey)
 
-// 	// 找到大于等于 startKey 的最小索引项
+// 	// 找到大于等于 startKey 的最小索引项，比较string大小需要给index中的key进行填充
 // 	startIndex := sort.Search(len(index.Entries), func(i int) bool {
-// 		return index.Entries[i].Key >= paddedStartKey
+// 		return kvs.persister.PadKey(index.Entries[i].Key) >= paddedStartKey
 // 	})
 
 // 	if startIndex == len(index.Entries) {
