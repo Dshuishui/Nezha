@@ -47,6 +47,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
 	// lru "github.com/hashicorp/golang-lru"
+	"github.com/edsrzf/mmap-go"
 )
 
 var (
@@ -811,54 +812,181 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]str
 	paddedStartKey := kvs.persister.PadKey(startKey)
 	paddedEndKey := kvs.persister.PadKey(endKey)
 
-	// 找到大于等于 startKey 的最小索引项
+	// 1. 使用二分查找找到开始和结束的索引
 	startIndex := sort.Search(len(index.Entries), func(i int) bool {
 		return index.Entries[i].Key >= paddedStartKey
+	})
+	endIndex := sort.Search(len(index.Entries), func(i int) bool {
+		return index.Entries[i].Key > paddedEndKey
 	})
 
 	if startIndex == len(index.Entries) {
 		return nil, nil // startKey 大于所有索引项，返回空结果
 	}
 
-	// 打开文件并移动到起始位置
+	// 2. 使用内存映射文件
 	file, err := os.Open(index.FilePath)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	var seekOffset int64
-	if startIndex > 0 {
-		seekOffset = index.Entries[startIndex-1].Offset
-	}
-	_, err = file.Seek(seekOffset, 0)
+	_, err = file.Stat()
 	if err != nil {
 		return nil, err
 	}
 
-	reader := bufio.NewReader(file)
+	mmap, err := mmap.Map(file, mmap.RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer mmap.Unmap()
+
 	result := make(map[string]string)
 
-	for {
-		entry, _, err := ReadEntry(reader, 0)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
+	// 3. 并行处理索引区间
+	var wg sync.WaitGroup
+	resultChan := make(chan map[string]string, endIndex-startIndex)
+	errorChan := make(chan error, endIndex-startIndex)
 
-		if entry.Key >= paddedStartKey {
-			if entry.Key > paddedEndKey {
-				break // 已经超过了endKey，结束扫描
+	for i := startIndex; i < endIndex; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			localResult := make(map[string]string)
+
+			startOffset := index.Entries[idx].Offset
+			endOffset := int64(len(mmap))
+			if idx < len(index.Entries)-1 {
+				endOffset = index.Entries[idx+1].Offset
 			}
-			UnpadKey := kvs.persister.UnpadKey(entry.Key)
-			result[UnpadKey] = entry.Value
+
+			for offset := startOffset; offset < endOffset; {
+				entry, entrySize, err := ReadEntryFromMMap(mmap[offset:])
+				if err != nil {
+					errorChan <- err
+					return
+				}
+
+				if entry.Key >= paddedStartKey && entry.Key <= paddedEndKey {
+					unpadKey := kvs.persister.UnpadKey(entry.Key)
+					localResult[unpadKey] = entry.Value
+				} else if entry.Key > paddedEndKey {
+					break
+				}
+
+				offset += int64(entrySize)
+			}
+
+			resultChan <- localResult
+		}(i)
+	}
+
+	// 等待所有goroutine完成
+	go func() {
+		wg.Wait()
+		close(resultChan)
+		close(errorChan)
+	}()
+
+	// 收集结果和错误
+	for localResult := range resultChan {
+		for k, v := range localResult {
+			result[k] = v
+		}
+	}
+
+	for err := range errorChan {
+		if err != nil {
+			return nil, err
 		}
 	}
 
 	return result, nil
 }
+
+// ReadEntryFromMMap 从内存映射中读取条目
+func ReadEntryFromMMap(data []byte) (*raft.Entry, int, error) {
+	var entry raft.Entry
+	var entrySize int
+
+	// 读取固定长度的字段
+	if len(data) < 20 {
+		return nil, 0, errors.New("insufficient data")
+	}
+
+	entry.Index = binary.LittleEndian.Uint32(data[0:4])
+	entry.CurrentTerm = binary.LittleEndian.Uint32(data[4:8])
+	entry.VotedFor = binary.LittleEndian.Uint32(data[8:12])
+	keySize := binary.LittleEndian.Uint32(data[12:16])
+	valueSize := binary.LittleEndian.Uint32(data[16:20])
+
+	entrySize = 20 + int(keySize) + int(valueSize)
+
+	if len(data) < entrySize {
+		return nil, 0, errors.New("insufficient data")
+	}
+
+	entry.Key = string(data[20 : 20+keySize])
+	entry.Value = string(data[20+keySize : entrySize])
+
+	return &entry, entrySize, nil
+}
+
+// 普通的scan读取磁盘文件
+// func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]string, error) {
+// 	index := kvs.sortedFileIndex
+// 	paddedStartKey := kvs.persister.PadKey(startKey)
+// 	paddedEndKey := kvs.persister.PadKey(endKey)
+
+// 	// 找到大于等于 startKey 的最小索引项
+// 	startIndex := sort.Search(len(index.Entries), func(i int) bool {
+// 		return index.Entries[i].Key >= paddedStartKey
+// 	})
+
+// 	if startIndex == len(index.Entries) {
+// 		return nil, nil // startKey 大于所有索引项，返回空结果
+// 	}
+
+// 	// 打开文件并移动到起始位置
+// 	file, err := os.Open(index.FilePath)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer file.Close()
+
+// 	var seekOffset int64
+// 	if startIndex > 0 {
+// 		seekOffset = index.Entries[startIndex-1].Offset
+// 	}
+// 	_, err = file.Seek(seekOffset, 0)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	reader := bufio.NewReader(file)
+// 	result := make(map[string]string)
+
+// 	for {
+// 		entry, _, err := ReadEntry(reader, 0)
+// 		if err != nil {
+// 			if err == io.EOF {
+// 				break
+// 			}
+// 			return nil, err
+// 		}
+
+// 		if entry.Key >= paddedStartKey {
+// 			if entry.Key > paddedEndKey {
+// 				break // 已经超过了endKey，结束扫描
+// 			}
+// 			UnpadKey := kvs.persister.UnpadKey(entry.Key)
+// 			result[UnpadKey] = entry.Value
+// 		}
+// 	}
+
+// 	return result, nil
+// }
 
 func (kvs *KVServer) RegisterKVServer(ctx context.Context, address string) { // 传入的是客户端与服务器之间的代理服务器的地址
 	defer wg.Done()
