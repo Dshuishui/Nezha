@@ -379,9 +379,9 @@ func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, string
 	// fmt.Printf("当前的offset: %v===filesize: %v\n", offset, fileSize)
 
 	// 读取数据到buffer中，首先是固定长度的20字节
-	data := make([]byte, 20)
+	header := make([]byte, 20)
 
-	n, err := file.Read(data)
+	n, err := file.Read(header)
 	// fmt.Printf("读取了几个字节的数据%v\n",n)
 	if err != nil {
 		fmt.Println("get时，读取key和value的前20个固定字节时有问题")
@@ -394,8 +394,8 @@ func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, string
 	}
 
 	// 解析固定长度的字段
-	keySize := binary.BigEndian.Uint32(data[12:16])
-	valueSize := binary.BigEndian.Uint32(data[16:20])
+	keySize := binary.LittleEndian.Uint32(header[12:16])
+	valueSize := binary.LittleEndian.Uint32(header[16:20])
 
 	// 读取Key和Value
 	keyValueBuffer := make([]byte, keySize+valueSize)
