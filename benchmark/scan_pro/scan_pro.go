@@ -88,10 +88,13 @@ func (kvc *KVClient) scan(gapkey int) float64 {
 	}()
 
 	totalGoodPut := 0
+	tag := 0
 	for result := range results {
 		// 保证拿去一个valuesize即可，以免全部读取重复的valuesize引起不必要的开销
-		if result.valueSize != 0 && totalGoodPut == 0 {
+		if result.valueSize != 0 && tag == 0 {
 			kvc.valuesize = result.valueSize
+			tag = 1
+
 		}
 		totalGoodPut += result.count
 	}
