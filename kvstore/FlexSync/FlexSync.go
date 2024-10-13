@@ -503,7 +503,7 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 						// mu.Lock()
 						// finalResult[k] = raft.NoKey
 						// mu.Unlock()
-						fmt.Println("scan时，拿去单个key有问题")
+						fmt.Println("scan时，拿取单个key有问题")
 						panic(err)
 					} else { // 迭代器在rocksdb中找到的key和偏移量数组，里面的key不重复，可以并发修改数组
 						// mu.Lock()
@@ -534,7 +534,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	// for { // 证明了此服务器就是leader
 	// if kvs.raft.GetApplyIndex() >= commitindex {
 	key := args.GetKey()
-	fmt.Printf("此时的key为%v\n", key)
+	// fmt.Printf("此时的key为%v\n", key)
 	// positionBytes, err := kvs.persister.Get_opt(key)
 
 	// 测试直接去排序后的log点查询的速度=======================
@@ -559,7 +559,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	// =====================================================
 
 	positionBytes, err := kvs.oldPersister.Get_opt(key)
-	fmt.Printf("此时的偏移量为:%v\n",positionBytes)
+	// fmt.Printf("此时的偏移量为:%v\n",positionBytes)
 	if err != nil {
 		fmt.Println("拿取key对应的index有问题")
 		panic(err)
@@ -567,7 +567,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	if positionBytes == -1 { //  说明leveldb中没有该key
 		reply.Err = raft.ErrNoKey
 		reply.Value = raft.NoKey
-		fmt.Println("没有该key:", key)
+		// fmt.Println("没有该key:", key)
 		// 检查垃圾回收是否完成
 		// 如果完成，则再去已排序的文件进行查询，调用在已排序的文件进行查找的函数。即getFromSortedFile()函数。
 		// 如果未完成，则再去旧未排序的文件进行查询。
@@ -611,17 +611,18 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	} else {
 		// read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
 		read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
-		fmt.Println("此处——读完了磁盘文件")
+		// fmt.Println("此处——读完了磁盘文件")
 		if err != nil {
 			fmt.Println("拿取value有问题")
 			// fmt.Println("当前的currentLog为: ",kvs.currentLog)
-			fmt.Println("当前的currentLog为: ", kvs.oldLog)
+			// fmt.Println("当前的currentLog为: ", kvs.oldLog)
 			panic(err)
 		}
-		fmt.Printf("此时read_key的长度为%v,key为%v\n", len([]byte(read_key)), key)
-		if read_key == key {
+		// fmt.Printf("此时read_key的长度为%v,key为%v\n", len([]byte(read_key)), key)
+		// 注意下面的read_key是填充的，key为填充的，所以要填充
+		if read_key == kvs.persister.PadKey(key) {
 			reply.Value = value
-			fmt.Println("找到了key", key)
+			// fmt.Println("找到了key", key)
 		} else { // 这个好像不存在这种情况，因为rocksdb中有的，在存储value的文件中肯定能找到
 			fmt.Println("rocksdb中读取的key与磁盘文件中对应index位置中的entry中的key不一样？？？？？？")
 			if kvs.startGC && kvs.endGC { // 去排序好的文件查询，没有就是没有

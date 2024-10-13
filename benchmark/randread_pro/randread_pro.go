@@ -1,21 +1,22 @@
 package main
 
 import (
+	"context"
+	crand "crypto/rand"
 	"flag"
 	"fmt"
+	"math/big"
 	"math/rand"
 	"strconv"
-	"context"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
 	"gitee.com/dong-shuishui/FlexSync/pool"
 	"gitee.com/dong-shuishui/FlexSync/raft"
 	"gitee.com/dong-shuishui/FlexSync/rpc/kvrpc"
 	"gitee.com/dong-shuishui/FlexSync/util"
-	crand "crypto/rand"
-	"math/big"
 )
 
 // 保留原有的标志定义
@@ -25,6 +26,7 @@ var (
 	dnums = flag.Int("dnums", 1000000, "data num")
 	key   = flag.Int("key", 6, "target key")
 )
+
 type KVClient struct {
 	Kvservers []string
 	mu        sync.Mutex
@@ -32,51 +34,73 @@ type KVClient struct {
 	seqId     int64 // 该客户端单调递增的请求id
 	leaderId  int
 
-	pools   []pool.Pool
-	goodPut int // 有效吞吐量
+	pools     []pool.Pool
+	goodPut   int // 有效吞吐量
+	valuesize int
 }
 
 func (kvc *KVClient) randRead() {
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
 	wg.Add(*cnums)
-	// last := 0
-	kvc.goodPut = 0
+
+	type getResult struct {
+		count     int
+		valueSize int
+	}
+	resultChan := make(chan getResult, *cnums)
 
 	for i := 0; i < *cnums; i++ {
 		go func(i int) {
 			defer wg.Done()
-			num := 0
-			rand.Seed(time.Now().Unix())
+			localResult := getResult{}
+			rand.Seed(time.Now().UnixNano())
 			for j := 0; j < base; j++ {
-				key := rand.Intn(100000000)
+				key := rand.Intn(100000)
 				//k := base*i + j
 				// key := fmt.Sprintf("key_%d", k)
 				targetkey := strconv.Itoa(key)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				time.Sleep(300 * time.Millisecond)
+				// time.Sleep(300 * time.Millisecond)
 				_, keyExist, err := kvc.Get(targetkey) // 先随机传入一个地址的连接池
 				// fmt.Println("after putinraft , j:",j)
 				if err == nil {
-					kvc.goodPut++
+					// localGoodPut++
 					// fmt.Println("点查询key为：",key)
 				}
-				// if err == nil && keyExist {
-					// kvc.goodPut++
+				if err == nil && keyExist {
+					localResult.count++
+					fmt.Printf("此时找到的key为:%v\n",key)
+					// localResult.valueSize = len([]byte(value))
 					// fmt.Printf("Got the value:** corresponding to the key:%v === exist\n ", key)
-				// }
+				}
 				if !keyExist {
 					// kvc.PutInRaft(targetkey, value) // 找到不存在的，先随便弥补一个键值对
 					// fmt.Printf("Got the value:%v corresponding to the key:%v === nokey\n ", value, key)
 				}
-				if j >= num+100 {
-					num = j
-					// fmt.Printf("Goroutine %v put key num: %v\n", i, num)
-				}
+				// if j == 0 && keyExist {
+					// localResult.valueSize = len([]byte(value))
+					// fmt.Printf("value为:%v\n", value)
+					// fmt.Printf("valuesize为：%v\n", localResult.valueSize)
+				// }
 			}
+			resultChan <- localResult
 		}(i)
 	}
-	wg.Wait()
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	tag := 0
+	for result := range resultChan {
+		if result.valueSize != 0 && tag == 0 {
+			kvc.valuesize = result.valueSize
+			tag = 1
+		}
+		kvc.goodPut += result.count
+	}
+	kvc.valuesize = 1000
 	for _, pool := range kvc.pools {
 		pool.Close()
 		util.DPrintf("The raft pool has been closed")
@@ -94,11 +118,11 @@ func (kvc *KVClient) SendGetInRaft(targetId int, request *kvrpc.GetInRaftRequest
 	}
 	defer conn.Close()
 	client := kvrpc.NewKVClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
 	reply, err := client.GetInRaft(ctx, request)
 	if err != nil {
-		// util.EPrintf("err in SendGetInRaft: %v, address:%v", err, kvc.Kvservers[targetId])
+		util.EPrintf("err in SendGetInRaft: %v, address:%v", err, kvc.Kvservers[targetId])
 		return nil, err
 	}
 	return reply, nil
@@ -120,7 +144,7 @@ func (kvc *KVClient) Get(key string) (string, bool, error) {
 	for {
 		reply, err := kvc.SendGetInRaft(targetId, args)
 		if err != nil {
-			// fmt.Println("can not connect ", kvc.Kvservers[targetId], "or it's not leader")
+			// fmt.Println("can   not connect ", kvc.Kvservers[targetId], "or it's not leader")
 			return "", false, err
 		}
 		if reply.Err == raft.OK {
@@ -228,19 +252,18 @@ func runTest() float64 {
 	kvc.InitPool()
 	startTime := time.Now()
 	kvc.randRead()
-	valuesize := 64000
 
-	sum_Size_MB := float64(kvc.goodPut*valuesize) / 1000000
+	sum_Size_MB := float64(kvc.goodPut*kvc.valuesize) / 1000000
 	throughput := float64(sum_Size_MB) / time.Since(startTime).Seconds()
-	
+
 	fmt.Printf("Elapse: %v, Throughput: %.4f MB/S, Total: %v, GoodPut: %v, Value: %v, Client: %v, Size: %.2f MB\n",
-		time.Since(startTime), throughput, *dnums, kvc.goodPut, valuesize, *cnums, sum_Size_MB)
+		time.Since(startTime), throughput, *dnums, kvc.goodPut, kvc.valuesize, *cnums, sum_Size_MB)
 
 	return throughput
 }
 
 func main() {
-	numTests := 20
+	numTests := 1
 	var totalThroughput float64
 
 	for i := 0; i < numTests; i++ {
