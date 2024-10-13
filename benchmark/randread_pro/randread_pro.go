@@ -62,7 +62,7 @@ func (kvc *KVClient) randRead() {
 				targetkey := strconv.Itoa(key)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
 				// time.Sleep(300 * time.Millisecond)
-				_, keyExist, err := kvc.Get(targetkey) // 先随机传入一个地址的连接池
+				value, keyExist, err := kvc.Get(targetkey) // 先随机传入一个地址的连接池
 				// fmt.Println("after putinraft , j:",j)
 				if err == nil {
 					// localGoodPut++
@@ -70,8 +70,9 @@ func (kvc *KVClient) randRead() {
 				}
 				if err == nil && keyExist {
 					localResult.count++
-					fmt.Printf("此时找到的key为:%v\n",key)
-					// localResult.valueSize = len([]byte(value))
+					// fmt.Printf("此时找到的key为:%v\n",key)
+					localResult.valueSize = len([]byte(value))
+					// fmt.Printf("valuesize为%v\n",localResult.valueSize)
 					// fmt.Printf("Got the value:** corresponding to the key:%v === exist\n ", key)
 				}
 				if !keyExist {
@@ -79,9 +80,9 @@ func (kvc *KVClient) randRead() {
 					// fmt.Printf("Got the value:%v corresponding to the key:%v === nokey\n ", value, key)
 				}
 				// if j == 0 && keyExist {
-					// localResult.valueSize = len([]byte(value))
-					// fmt.Printf("value为:%v\n", value)
-					// fmt.Printf("valuesize为：%v\n", localResult.valueSize)
+				// localResult.valueSize = len([]byte(value))
+				// fmt.Printf("value为:%v\n", value)
+				// fmt.Printf("valuesize为：%v\n", localResult.valueSize)
 				// }
 			}
 			resultChan <- localResult
@@ -100,7 +101,7 @@ func (kvc *KVClient) randRead() {
 		}
 		kvc.goodPut += result.count
 	}
-	kvc.valuesize = 1000
+	// kvc.valuesize = 1000
 	for _, pool := range kvc.pools {
 		pool.Close()
 		util.DPrintf("The raft pool has been closed")
@@ -263,7 +264,7 @@ func runTest() float64 {
 }
 
 func main() {
-	numTests := 1
+	numTests := 10
 	var totalThroughput float64
 
 	for i := 0; i < numTests; i++ {
