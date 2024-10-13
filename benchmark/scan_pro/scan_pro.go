@@ -1,11 +1,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"math/rand"
 	"strconv"
-	"context"
 	"strings"
 	"sync"
 	"time"
@@ -20,11 +20,11 @@ import (
 )
 
 var (
-	ser = flag.String("servers", "", "the Server, Client Connects to")
+	ser   = flag.String("servers", "", "the Server, Client Connects to")
 	cnums = flag.Int("cnums", 1, "Client Threads Number")
 	dnums = flag.Int("dnums", 1000000, "data num")
-	k1 = flag.Int("startkey", 0, "first key")
-	k2 = flag.Int("endkey", 20, "last key")
+	k1    = flag.Int("startkey", 0, "first key")
+	k2    = flag.Int("endkey", 20, "last key")
 )
 
 type KVClient struct {
@@ -34,8 +34,9 @@ type KVClient struct {
 	seqId     int64
 	leaderId  int
 
-	pools   []pool.Pool
-	goodPut int
+	pools     []pool.Pool
+	goodPut   int
+	valuesize int
 }
 
 func (kvc *KVClient) scan(gapkey int) float64 {
@@ -44,12 +45,17 @@ func (kvc *KVClient) scan(gapkey int) float64 {
 	wg.Add(*cnums)
 	kvc.goodPut = 0
 
-	results := make(chan int, *cnums)
+	type scanResult struct {
+		count     int
+		valueSize int
+	}
+
+	results := make(chan scanResult, *cnums)
 
 	for i := 0; i < *cnums; i++ {
 		go func(i int) {
 			defer wg.Done()
-			localGoodPut := 0
+			localResult := scanResult{}
 			rand.Seed(time.Now().UnixNano() + int64(i))
 			for j := 0; j < base; j++ {
 				k1 := rand.Intn(100000)
@@ -61,10 +67,18 @@ func (kvc *KVClient) scan(gapkey int) float64 {
 				}
 				reply, err := kvc.rangeGet(startKey, endKey)
 				if err == nil {
-					localGoodPut += len(reply.KeyValuePairs)
+					localResult.count += len(reply.KeyValuePairs)
+				}
+				if j == 0 {
+					for _, value := range reply.KeyValuePairs {
+						// fmt.Printf("这个value为多少：%v\n",value)
+						localResult.valueSize = len([]byte(value))
+						// fmt.Printf("这个valuesize为多少：%v\n",localResult.valueSize)
+						break // 只迭代一次后就跳出循环
+					}
 				}
 			}
-			results <- localGoodPut
+			results <- localResult
 		}(i)
 	}
 
@@ -75,13 +89,16 @@ func (kvc *KVClient) scan(gapkey int) float64 {
 
 	totalGoodPut := 0
 	for result := range results {
-		totalGoodPut += result
+		// 保证拿去一个valuesize即可，以免全部读取重复的valuesize引起不必要的开销
+		if result.valueSize != 0 && totalGoodPut == 0 {
+			kvc.valuesize = result.valueSize
+		}
+		totalGoodPut += result.count
 	}
 
 	kvc.goodPut = totalGoodPut
-
-	valuesize := 4000
-	sum_Size_MB := float64(kvc.goodPut*valuesize) / 1000000
+	// fmt.Printf("读出来的valuesize为：%v\n", kvc.valuesize)
+	sum_Size_MB := float64(kvc.goodPut*kvc.valuesize) / 1000000
 	return sum_Size_MB
 }
 
