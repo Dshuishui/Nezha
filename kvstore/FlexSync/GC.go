@@ -349,7 +349,7 @@ func (kvs *KVServer) CheckDatabaseContent() error {
 		value.Free()
 
 		count++
-		if count >= 100 {
+		if count >= 10 {
 			fmt.Println("Stopping after 100 entries...")
 			break
 		}
