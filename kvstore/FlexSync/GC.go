@@ -209,10 +209,10 @@ func (kvs *KVServer) CreateSortedFileIndex(filePath string, indexInterval int) (
 			return nil, err
 		}
 		UnpadKey := kvs.persister.UnpadKey(entry.Key)
-		if entryCount%indexInterval == 0 {
+		// if entryCount%indexInterval == 0 {
 			index = append(index, IndexEntry{Key: UnpadKey, Offset: offset})
 			// fmt.Printf("Added index entry: Key=%s, Offset=%d\n", UnpadKey, offset)
-		}
+		// }
 
 		offset += entrySize
 		entryCount++

@@ -768,56 +768,8 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 }
 
 // 普通的
-// func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
-// 	// 假设我们已经创建了索引并存储在 kvs.sortedFileIndex 中
-// 	index := kvs.sortedFileIndex
-// 	paddedKey := kvs.persister.PadKey(key)
-
-// 	// 二分查找找到小于等于目标key的最大索引项
-// 	i := sort.Search(len(index.Entries), func(i int) bool {
-// 		return index.Entries[i].Key > paddedKey
-// 	}) - 1
-
-// 	if i < 0 {
-// 		return "", errors.New(raft.ErrNoKey)
-// 	}
-
-// 	// 打开文件并移动到索引位置
-// 	file, err := os.Open(index.FilePath)
-// 	if err != nil {
-// 		return "", err
-// 	}
-// 	defer file.Close()
-
-// 	_, err = file.Seek(index.Entries[i].Offset, 0)
-// 	if err != nil {
-// 		return "", err
-// 	}
-
-// 	reader := bufio.NewReader(file)
-
-// 	// 从索引位置开始线性搜索
-// 	for {
-// 		entry, _, err := ReadEntry(reader, 0)
-// 		if err != nil {
-// 			if err == io.EOF {
-// 				return "", errors.New(raft.ErrNoKey)
-// 			}
-// 			return "", err
-// 		}
-
-// 		if entry.Key == paddedKey {
-// 			return entry.Value, nil
-// 		}
-
-// 		if entry.Key > paddedKey {
-// 			return "", errors.New(raft.ErrNoKey)
-// 		}
-// 	}
-// }
-
-// 带内存映射的
 func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
+	// 假设我们已经创建了索引并存储在 kvs.sortedFileIndex 中
 	index := kvs.sortedFileIndex
 	paddedKey := kvs.persister.PadKey(key)
 
@@ -830,33 +782,23 @@ func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
 		return "", errors.New(raft.ErrNoKey)
 	}
 
-	// 打开文件
+	// 打开文件并移动到索引位置
 	file, err := os.Open(index.FilePath)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
 
-	// 获取文件信息
-	fileInfo, err := file.Stat()
+	_, err = file.Seek(index.Entries[i].Offset, 0)
 	if err != nil {
 		return "", err
 	}
-	fileSize := fileInfo.Size()
 
-	// 创建内存映射
-	mmap, err := mmap.Map(file, mmap.RDONLY, 0)
-	if err != nil {
-		return "", err
-	}
-	defer mmap.Unmap()
-
-	// 确定起始位置
-	startOffset := index.Entries[i].Offset
+	reader := bufio.NewReader(file)
 
 	// 从索引位置开始线性搜索
-	for offset := startOffset; offset < fileSize; {
-		entry, entrySize, err := ReadEntryFromMMap(mmap[offset:])
+	for {
+		entry, _, err := ReadEntry(reader, 0)
 		if err != nil {
 			if err == io.EOF {
 				return "", errors.New(raft.ErrNoKey)
@@ -871,12 +813,70 @@ func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
 		if entry.Key > paddedKey {
 			return "", errors.New(raft.ErrNoKey)
 		}
-
-		offset += int64(entrySize)
 	}
-
-	return "", errors.New(raft.ErrNoKey)
 }
+
+// 带内存映射的
+// func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
+// 	index := kvs.sortedFileIndex
+// 	paddedKey := kvs.persister.PadKey(key)
+
+// 	// 二分查找找到小于等于目标key的最大索引项
+// 	i := sort.Search(len(index.Entries), func(i int) bool {
+// 		return kvs.persister.PadKey(index.Entries[i].Key) > paddedKey
+// 	}) - 1
+
+// 	if i < 0 {
+// 		return "", errors.New(raft.ErrNoKey)
+// 	}
+
+// 	// 打开文件
+// 	file, err := os.Open(index.FilePath)
+// 	if err != nil {
+// 		return "", err
+// 	}
+// 	defer file.Close()
+
+// 	// 获取文件信息
+// 	fileInfo, err := file.Stat()
+// 	if err != nil {
+// 		return "", err
+// 	}
+// 	fileSize := fileInfo.Size()
+
+// 	// 创建内存映射
+// 	mmap, err := mmap.Map(file, mmap.RDONLY, 0)
+// 	if err != nil {
+// 		return "", err
+// 	}
+// 	defer mmap.Unmap()
+
+// 	// 确定起始位置
+// 	startOffset := index.Entries[i].Offset
+
+// 	// 从索引位置开始线性搜索
+// 	for offset := startOffset; offset < fileSize; {
+// 		entry, entrySize, err := ReadEntryFromMMap(mmap[offset:])
+// 		if err != nil {
+// 			if err == io.EOF {
+// 				return "", errors.New(raft.ErrNoKey)
+// 			}
+// 			return "", err
+// 		}
+
+// 		if entry.Key == paddedKey {
+// 			return entry.Value, nil
+// 		}
+
+// 		if entry.Key > paddedKey {
+// 			return "", errors.New(raft.ErrNoKey)
+// 		}
+
+// 		offset += int64(entrySize)
+// 	}
+
+// 	return "", errors.New(raft.ErrNoKey)
+// }
 
 // 内存映射，并行索引区间查询
 // func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]string, error) {
