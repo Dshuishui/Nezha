@@ -396,72 +396,38 @@ func ReadValueFromNewFile(positionBytes []byte, logLocation string) (string, err
 	return entry.Value, nil
 }
 
-func ReadEntry(reader *bufio.Reader, currentOffset int64) (*raft.Entry, int64, error) {
-	var entry raft.Entry
-	var keySize, valueSize uint32
+func  ReadEntry(reader *bufio.Reader, currentOffset int64) (*raft.Entry, int64, error) {
+    var entry raft.Entry
+    var keySize, valueSize uint32
 
-	// entryStartOffset := currentOffset
+    // Read all 20 bytes at once
+    header := make([]byte, 20)
+    n, err := io.ReadFull(reader, header)
+    if err != nil {
+        if err == io.EOF && n == 0 {
+            return nil, 0, io.EOF // File is empty or we're at the end
+        }
+        return nil, 0, fmt.Errorf("failed to read header: %v (read %d bytes)", err, n)
+    }
 
-	// 读取固定大小的字段
-	if err := binary.Read(reader, binary.LittleEndian, &entry.Index); err != nil {
-		if err == io.EOF {
-			return nil, 0, err
-		}
-		return nil, 0, fmt.Errorf("failed to read Index: %v", err)
-	}
-	if err := binary.Read(reader, binary.LittleEndian, &entry.CurrentTerm); err != nil {
-		if err == io.EOF {
-			return nil, 0, err
-		}
-		return nil, 0, fmt.Errorf("failed to read CurrentTerm: %v", err)
-	}
-	if err := binary.Read(reader, binary.LittleEndian, &entry.VotedFor); err != nil {
-		if err == io.EOF {
-			return nil, 0, err
-		}
-		return nil, 0, fmt.Errorf("failed to read VotedFor: %v", err)
-	}
-	if err := binary.Read(reader, binary.LittleEndian, &keySize); err != nil {
-		if err == io.EOF {
-			return nil, 0, err
-		}
-		return nil, 0, fmt.Errorf("failed to read keySize: %v", err)
-	}
-	if err := binary.Read(reader, binary.LittleEndian, &valueSize); err != nil {
-		if err == io.EOF {
-			return nil, 0, err
-		}
-		return nil, 0, fmt.Errorf("failed to read valueSize: %v", err)
-	}
+    // Parse the header
+    keySize = binary.LittleEndian.Uint32(header[12:16])
+    valueSize = binary.LittleEndian.Uint32(header[16:20])
 
-	// fmt.Printf("Reading entry at offset %d: Index=%d, CurrentTerm=%d, VotedFor=%d, KeySize=%d, ValueSize=%d\n",
-	// 	entryStartOffset, entry.Index, entry.CurrentTerm, entry.VotedFor, keySize, valueSize)
+    // Calculate total size
+    entrySize := int64(20 + keySize + valueSize)
 
-	// 读取key和value
-	keyBytes := make([]byte, keySize)
-	if _, err := io.ReadFull(reader, keyBytes); err != nil {
-		if err == io.EOF {
-			return nil, 0, err
-		}
-		return nil, 0, fmt.Errorf("failed to read key: %v", err)
-	}
-	entry.Key = string(keyBytes)
+    // Read key and value
+    data := make([]byte, keySize+valueSize)
+    _, err = io.ReadFull(reader, data)
+    if err != nil {
+        return nil, 0, fmt.Errorf("failed to read key and value: %v", err)
+    }
 
-	valueBytes := make([]byte, valueSize)
-	if _, err := io.ReadFull(reader, valueBytes); err != nil {
-		if err == io.EOF {
-			return nil, 0, err
-		}
-		return nil, 0, fmt.Errorf("failed to read value: %v", err)
-	}
-	entry.Value = string(valueBytes)
+    entry.Key = string(data[:keySize])
+    entry.Value = string(data[keySize:])
 
-	entrySize := int64(20 + keySize + valueSize) // 16 是固定字段的总大小
-
-	// fmt.Printf("Read entry: Key='%s', Value='暂时不显示'\n", entry.Key)
-
-	// return &entry, entryStartOffset, nil
-	return &entry, entrySize, nil
+    return &entry, entrySize, nil
 }
 
 // ==================================================
