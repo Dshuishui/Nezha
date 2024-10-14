@@ -187,7 +187,7 @@ func (kvs *KVServer) CreateIndex(sortedFilePath string) error {
 	// kvs.scanFromFile = kvs.scanFromSortedOrNew
 }
 
-func (kvs *KVServer) CreateSortedFileIndex(filePath string, indexInterval int) (*SortedFileIndex, error) {
+func (kvs *KVServer)    CreateSortedFileIndex(filePath string, indexInterval int) (*SortedFileIndex, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, err
