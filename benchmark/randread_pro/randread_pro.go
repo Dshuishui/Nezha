@@ -123,7 +123,7 @@ func (kvc *KVClient) SendGetInRaft(targetId int, request *kvrpc.GetInRaftRequest
 	defer cancel()
 	reply, err := client.GetInRaft(ctx, request)
 	if err != nil {
-		util.EPrintf("err in SendGetInRaft: %v, address:%v", err, kvc.Kvservers[targetId])
+		// util.EPrintf("err in SendGetInRaft: %v, address:%v", err, kvc.Kvservers[targetId])
 		return nil, err
 	}
 	return reply, nil
