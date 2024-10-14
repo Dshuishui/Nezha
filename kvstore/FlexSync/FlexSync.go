@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"runtime"
 
 	// "io"
 	"strconv"
@@ -396,38 +397,38 @@ func ReadValueFromNewFile(positionBytes []byte, logLocation string) (string, err
 	return entry.Value, nil
 }
 
-func  ReadEntry(reader *bufio.Reader, currentOffset int64) (*raft.Entry, int64, error) {
-    var entry raft.Entry
-    var keySize, valueSize uint32
+func ReadEntry(reader *bufio.Reader, currentOffset int64) (*raft.Entry, int64, error) {
+	var entry raft.Entry
+	var keySize, valueSize uint32
 
-    // Read all 20 bytes at once
-    header := make([]byte, 20)
-    n, err := io.ReadFull(reader, header)
-    if err != nil {
-        if err == io.EOF && n == 0 {
-            return nil, 0, io.EOF // File is empty or we're at the end
-        }
-        return nil, 0, fmt.Errorf("failed to read header: %v (read %d bytes)", err, n)
-    }
+	// Read all 20 bytes at once
+	header := make([]byte, 20)
+	n, err := io.ReadFull(reader, header)
+	if err != nil {
+		if err == io.EOF && n == 0 {
+			return nil, 0, io.EOF // File is empty or we're at the end
+		}
+		return nil, 0, fmt.Errorf("failed to read header: %v (read %d bytes)", err, n)
+	}
 
-    // Parse the header
-    keySize = binary.LittleEndian.Uint32(header[12:16])
-    valueSize = binary.LittleEndian.Uint32(header[16:20])
+	// Parse the header
+	keySize = binary.LittleEndian.Uint32(header[12:16])
+	valueSize = binary.LittleEndian.Uint32(header[16:20])
 
-    // Calculate total size
-    entrySize := int64(20 + keySize + valueSize)
+	// Calculate total size
+	entrySize := int64(20 + keySize + valueSize)
 
-    // Read key and value
-    data := make([]byte, keySize+valueSize)
-    _, err = io.ReadFull(reader, data)
-    if err != nil {
-        return nil, 0, fmt.Errorf("failed to read key and value: %v", err)
-    }
+	// Read key and value
+	data := make([]byte, keySize+valueSize)
+	_, err = io.ReadFull(reader, data)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to read key and value: %v", err)
+	}
 
-    entry.Key = string(data[:keySize])
-    entry.Value = string(data[keySize:])
+	entry.Key = string(data[:keySize])
+	entry.Value = string(data[keySize:])
 
-    return &entry, entrySize, nil
+	return &entry, entrySize, nil
 }
 
 // ==================================================
@@ -733,6 +734,57 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 	return reply
 }
 
+func (kvs *KVServer) parallelSearchIndex(key string) (int, error) {
+	paddedKey := kvs.persister.PadKey(key)
+	chunks := runtime.GOMAXPROCS(0) // 使用可用的CPU核心数
+	chunkSize := len(kvs.sortedFileIndex.Entries) / chunks
+
+	type result struct {
+		index int
+		found bool
+	}
+
+	results := make(chan result, chunks)
+	for i := 0; i < chunks; i++ {
+		go func(start, end int) {
+			idx := sort.Search(end-start, func(j int) bool {
+				return kvs.persister.PadKey(kvs.sortedFileIndex.Entries[start+j].Key) >= paddedKey
+			})
+			globalIdx := start + idx
+			if globalIdx < end && kvs.persister.PadKey(kvs.sortedFileIndex.Entries[globalIdx].Key) == paddedKey {
+				results <- result{index: globalIdx, found: true}
+			} else if globalIdx > start {
+				results <- result{index: globalIdx - 1, found: false}
+			} else {
+				results <- result{index: -1, found: false}
+			}
+		}(i*chunkSize, min((i+1)*chunkSize, len(kvs.sortedFileIndex.Entries)))
+	}
+
+	bestIndex := -1
+	for i := 0; i < chunks; i++ {
+		res := <-results
+		if res.found {
+			return res.index, nil // 找到精确匹配，立即返回
+		}
+		if res.index > bestIndex {
+			bestIndex = res.index
+		}
+	}
+
+	if bestIndex == -1 {
+		// return -1, errors.New(raft.ErrNoKey)
+		return -1,nil
+	}
+	return bestIndex, nil
+}
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // 普通的
 func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
 	// 假设我们已经创建了索引并存储在 kvs.sortedFileIndex 中
@@ -743,6 +795,12 @@ func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
 	i := sort.Search(len(index.Entries), func(i int) bool {
 		return kvs.persister.PadKey(index.Entries[i].Key) > paddedKey
 	}) - 1
+
+	// i, err := kvs.parallelSearchIndex(key)
+	// if err != nil {
+	// 	fmt.Println("新的搜索索引的方式有问题！！！")
+	// 	panic(err)
+	// }
 
 	if i < 0 {
 		return "", errors.New(raft.ErrNoKey)
@@ -759,6 +817,7 @@ func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// fmt.Printf("此时的索引对应的key以及后面三个key为%v-%v-%v-%v，以及查找的key为%v\n",index.Entries[i].Key,index.Entries[i+1].Key,index.Entries[i+2].Key,index.Entries[i+3].Key,paddedKey)
 
 	reader := bufio.NewReader(file)
 
@@ -1417,7 +1476,7 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	kvs.startGC = true
-	kvs.endGC = true                // 测试效果
+	kvs.endGC = true                 // 测试效果
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
 
 	// kvs.oldLog = "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
