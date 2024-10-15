@@ -484,6 +484,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	key := args.GetKey()
 
 	if !kvs.startGC { // 还未开始GC，先去旧的rocksdb查询
+		startTime := time.Now()
 		positionBytes, err := kvs.oldPersister.Get_opt(key)
 		if err != nil {
 			fmt.Println("去旧的rocksdb中拿取key对应的index有问题")
@@ -494,6 +495,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 			reply.Value = raft.NoKey
 			return reply
 		}else{
+			fmt.Printf("直接去rocksdb中找花费了%v\n", time.Since(startTime))
 			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
 			if err != nil {
 				fmt.Println("拿取value有问题")
@@ -746,7 +748,7 @@ func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
 	// 假设我们已经创建了索引并存储在 kvs.sortedFileIndex 中
 	index := kvs.sortedFileIndex
 	paddedKey := kvs.persister.PadKey(key)
-
+	startTime := time.Now()
 	// 二分查找找到小于等于目标key的最大索引项
 	i := sort.Search(len(index.Entries), func(i int) bool {
 		return kvs.persister.PadKey(index.Entries[i].Key) > paddedKey
@@ -773,6 +775,7 @@ func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	fmt.Printf("找索引花费了%v\n", time.Since(startTime))
 	// fmt.Printf("此时的索引对应的key以及后面三个key为%v-%v-%v-%v，以及查找的key为%v\n",index.Entries[i].Key,index.Entries[i+1].Key,index.Entries[i+2].Key,index.Entries[i+3].Key,paddedKey)
 
 	reader := bufio.NewReader(file)

@@ -55,10 +55,11 @@ func (kvc *KVClient) scan(gapkey int) float64 {
 	for i := 0; i < *cnums; i++ {
 		go func(i int) {
 			defer wg.Done()
+			tag := 0
 			localResult := scanResult{}
 			rand.Seed(time.Now().UnixNano() + int64(i))
 			for j := 0; j < base; j++ {
-				k1 := rand.Intn(100000)
+				k1 := rand.Intn(1000000)
 				k2 := k1 + gapkey
 				startKey := strconv.Itoa(k1)
 				endKey := strconv.Itoa(k2)
@@ -69,13 +70,14 @@ func (kvc *KVClient) scan(gapkey int) float64 {
 				if err == nil {
 					localResult.count += len(reply.KeyValuePairs)
 				}
-				if j == 0 && reply != nil {
+				if tag == 0 && reply != nil {
 					for _, value := range reply.KeyValuePairs {
 						// fmt.Printf("这个value为多少：%v\n",value)
 						localResult.valueSize = len([]byte(value))
 						// fmt.Printf("这个valuesize为多少：%v\n",localResult.valueSize)
 						break // 只迭代一次后就跳出循环
 					}
+					tag = 1
 				}
 			}
 			results <- localResult
@@ -88,12 +90,12 @@ func (kvc *KVClient) scan(gapkey int) float64 {
 	}()
 
 	totalGoodPut := 0
-	tag := 0
+	tag2 := 0
 	for result := range results {
 		// 保证拿去一个valuesize即可，以免全部读取重复的valuesize引起不必要的开销
-		if result.valueSize != 0 && tag == 0 {
+		if result.valueSize != 0 && tag2 == 0 {
 			kvc.valuesize = result.valueSize
-			tag = 1
+			tag2 = 1
 
 		}
 		totalGoodPut += result.count
@@ -188,8 +190,8 @@ func main() {
 		throughput := float64(sum_Size_MB) / elapsedTime.Seconds()
 		totalThroughput += throughput
 
-		fmt.Printf("Test %d: elapse:%v, throught:%.4fMB/S, total %v, goodPut %v, client %v, Size %.2fMB\n",
-			i+1, elapsedTime, throughput, *dnums, kvc.goodPut, *cnums, sum_Size_MB)
+		fmt.Printf("Test %d: elapse:%v, throught:%.4fMB/S, total %v, goodPut %v, client %v, valuesize %vB, Size %.2fMB\n",
+			i+1, elapsedTime, throughput, *dnums, kvc.goodPut, *cnums, kvc.valuesize, sum_Size_MB)
 
 		if i < numTests-1 {
 			time.Sleep(8 * time.Second)
