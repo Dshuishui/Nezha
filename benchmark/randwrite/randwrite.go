@@ -99,21 +99,11 @@ func (kvc *KVClient) batchRawPut(value string) {
 }
 
 func generateUniqueRandomInts(min, max int) []int {
-    // 创建一个包含范围内所有整数的切片
     nums := make([]int, max-min+1)
     for i := range nums {
         nums[i] = min + i
     }
-
-    // 使用当前时间作为随机数种子
-    rand.Seed(time.Now().UnixNano())
-
-    // 使用 Fisher-Yates 洗牌算法
-    for i := len(nums) - 1; i > 0; i-- {
-        j := rand.Intn(i + 1)
-        nums[i], nums[j] = nums[j], nums[i]
-    }
-
+    rand.Shuffle(len(nums), func(i, j int) { nums[i], nums[j] = nums[j], nums[i] })
     return nums
 }
 
