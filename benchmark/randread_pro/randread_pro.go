@@ -56,7 +56,7 @@ func (kvc *KVClient) randRead() {
 			localResult := getResult{}
 			rand.Seed(time.Now().UnixNano())
 			for j := 0; j < base; j++ {
-				key := rand.Intn(100000)
+				key := rand.Intn(1000000)
 				//k := base*i + j
 				// key := fmt.Sprintf("key_%d", k)
 				targetkey := strconv.Itoa(key)
@@ -68,11 +68,12 @@ func (kvc *KVClient) randRead() {
 					// localGoodPut++
 					// fmt.Println("点查询key为：",key)
 				}
-				if err == nil && keyExist {
+				if err == nil && keyExist && value != "ErrNoKey" {
 					localResult.count++
 					// fmt.Printf("此时找到的key为:%v\n",key)
 					localResult.valueSize = len([]byte(value))
 					// fmt.Printf("valuesize为%v\n",localResult.valueSize)
+					// fmt.Printf("value为%v\n",value)
 					// fmt.Printf("Got the value:** corresponding to the key:%v === exist\n ", key)
 				}
 				if !keyExist {
