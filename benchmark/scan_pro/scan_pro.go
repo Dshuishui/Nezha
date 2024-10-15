@@ -69,7 +69,7 @@ func (kvc *KVClient) scan(gapkey int) float64 {
 				if err == nil {
 					localResult.count += len(reply.KeyValuePairs)
 				}
-				if j == 0 {
+				if j == 0 && reply != nil {
 					for _, value := range reply.KeyValuePairs {
 						// fmt.Printf("这个value为多少：%v\n",value)
 						localResult.valueSize = len([]byte(value))
