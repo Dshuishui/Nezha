@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"strconv"
 
 	// "strconv"
 	"context"
@@ -22,7 +23,6 @@ import (
 
 	crand "crypto/rand"
 	"math/big"
-
 )
 
 var (
@@ -50,46 +50,71 @@ func (kvc *KVClient) batchRawPut(value string) {
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
 	wg.Add(*cnums)
-	// last := 0
 	kvc.goodPut = 0
 
-	// ticker := time.NewTicker(2 * time.Second)
-	// defer ticker.Stop()
-	// go func() {
-	// 	for range ticker.C {
-	// 		fmt.Printf("PutInRaft called %d times in the last 2 seconds\n", num-last)
-	// 		last = num
-	// 	}
-	// }()
+	// 为每个goroutine创建一个唯一的随机数生成器
+	randomGens := make([]*rand.Rand, *cnums)
+	for i := range randomGens {
+		randomGens[i] = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+	// 生成一个包含所有可能key的切片
+	allKeys := generateUniqueRandomInts(0,*dnums+200000)
+	// allKeys := generateUniqueRandomInts(0,*dnums)
+
 
 	for i := 0; i < *cnums; i++ {
 		go func(i int) {
-			defer wg.Done()
-			num := 0
-			rand.Seed(time.Now().Unix())
-			for j := 0; j < base; j++ {
-				// k := rand.Intn(*dnums)
-				//k := base*i + j
-				// key := fmt.Sprintf("key_%d", k)
-				key := util.GenerateFixedSizeKey(5)
-				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				reply, err := kvc.PutInRaft(key, value) // 先随机传入一个地址的连接池
-				// fmt.Println("after putinraft , j:",j)
-				if err == nil && reply != nil && reply.Err != "defeat" {
-					kvc.goodPut++
-				}
-				if j >= num+100 {
-					num = j
-					// fmt.Printf("Goroutine %v put key num: %v\n", i, num)
-				}
-			}
-		}(i)
+            defer wg.Done()
+            
+            // 为每个goroutine分配一部分key
+            start := i * base
+            end := (i + 1) * base
+            if i == *cnums-1 {
+                end = *dnums // 确保最后一个goroutine使用所有剩余的key
+            }
+            keys := allKeys[start:end]
+            
+            // 打乱这部分key的顺序
+            // randomGens[i].Shuffle(len(keys), func(i, j int) { keys[i], keys[j] = keys[j], keys[i] })
+
+            for j := 0; j < base; j++ {
+                if j >= len(keys) {
+                    break // 防止越界
+                }
+                key := strconv.Itoa(keys[j])
+                
+                // 这里使用key进行你的操作
+                reply, err := kvc.PutInRaft(key, value)
+                if err == nil && reply != nil && reply.Err != "defeat" {
+                    kvc.goodPut++
+                }
+            }
+        }(i)
 	}
 	wg.Wait()
 	for _, pool := range kvc.pools {
 		pool.Close()
 		util.DPrintf("The raft pool has been closed")
 	}
+}
+
+func generateUniqueRandomInts(min, max int) []int {
+    // 创建一个包含范围内所有整数的切片
+    nums := make([]int, max-min+1)
+    for i := range nums {
+        nums[i] = min + i
+    }
+
+    // 使用当前时间作为随机数种子
+    rand.Seed(time.Now().UnixNano())
+
+    // 使用 Fisher-Yates 洗牌算法
+    for i := len(nums) - 1; i > 0; i-- {
+        j := rand.Intn(i + 1)
+        nums[i], nums[j] = nums[j], nums[i]
+    }
+
+    return nums
 }
 
 // Method of Send RPC of PutInRaft
@@ -115,14 +140,14 @@ func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftRespon
 		}
 		defer conn.Close()
 		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*1) // 设置5秒定时往下传
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*4) // 设置4秒定时往下传
 		defer cancel()
 
 		reply, err := client.PutInRaft(ctx, request)
 		if err != nil {
 			// fmt.Println("客户端调用PutInRaft有问题")
 			// util.EPrintf("err in PutInRaft-调用了服务器的put方法: %v", err)
-			util.EPrintf("seqid：%v, err in PutInRaft-调用了服务器的put方法: %v",request.SeqId, err)
+			// util.EPrintf("seqid：%v, err in PutInRaft-调用了服务器的put方法: %v",request.SeqId, err)
 			// 这里防止服务器是宕机了，所以要change leader
 			return nil, err
 		}
