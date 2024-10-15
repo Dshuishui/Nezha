@@ -11,7 +11,7 @@ import (
 	 "errors"
 	//  "sync"
 	"strings"
-	"strconv"
+	// "strconv"
 )
 
 const KeyLength = 10
@@ -289,22 +289,22 @@ func (p *Persister) ScanRange(startKey, endKey string) (map[string]string, error
 	
 	// 遍历结束，现在检查是否有缺失的键.如果键不存在，设定值为NOKEY
 	// 解析起始和结束键为整数
-	startInt, err := strconv.ParseInt(startKey, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing startKey: %v", err)
-	}
-	endInt, err := strconv.ParseInt(endKey, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing endKey: %v", err)
-	}
+	// startInt, err := strconv.ParseInt(startKey, 10, 64)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("error parsing startKey: %v", err)
+	// }
+	// endInt, err := strconv.ParseInt(endKey, 10, 64)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("error parsing endKey: %v", err)
+	// }
 	// 遍历结束，现在检查是否有缺失的键
-    for i := startInt; i <= endInt; i++ {
-        // keyStr := fmt.Sprintf("%010d", i) // 生成预期的键
-		stringValue := strconv.FormatInt(i, 10) // 将 int64 转换为 string
-        if _, exists := result[stringValue]; !exists {
-            result[stringValue] = "NOKEY" // 如果键不存在，赋值默认值
-        }
-    }
+    // for i := startInt; i <= endInt; i++ {
+    //     // keyStr := fmt.Sprintf("%010d", i) // 生成预期的键
+	// 	stringValue := strconv.FormatInt(i, 10) // 将 int64 转换为 string
+    //     if _, exists := result[stringValue]; !exists {
+    //         result[stringValue] = "NOKEY" // 如果键不存在，赋值默认值
+    //     }
+    // }
 
 	return result, nil
 }
