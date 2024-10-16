@@ -4,9 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
-	// "strconv"
 
-	// "strconv"
+	"strconv"
 	"context"
 	"strings"
 	"sync"
@@ -45,97 +44,103 @@ type KVClient struct {
 	goodPut int // 有效吞吐量
 }
 
+// func (kvc *KVClient) batchRawPut(value string) {
+//     wg := sync.WaitGroup{}
+//     base := *dnums / *cnums
+//     wg.Add(*cnums)
+    
+//     // Create a channel to collect results from goroutines
+//     resultChan := make(chan int, *cnums)
+
+//     for i := 0; i < *cnums; i++ {
+//         go func(i int) {
+//             defer wg.Done()
+//             localGoodPut := 0
+//             rand.Seed(time.Now().UnixNano())
+//             for j := 0; j < base; j++ {
+//                 key := util.GenerateFixedSizeKey(5)
+//                 reply, err := kvc.PutInRaft(key, value)
+//                 if err == nil && reply != nil && reply.Err != "defeat" {
+//                     localGoodPut++
+//                 }
+//             }
+//             // Send the local result to the channel
+//             resultChan <- localGoodPut
+//         }(i)
+//     }
+
+//     // Close the result channel when all goroutines are done
+//     go func() {
+//         wg.Wait()
+//         close(resultChan)
+//     }()
+
+//     // Collect and sum up the results
+//     totalGoodPut := 0
+//     for localGoodPut := range resultChan {
+//         totalGoodPut += localGoodPut
+//     }
+
+//     kvc.goodPut = totalGoodPut
+
+//     for _, pool := range kvc.pools {
+//         pool.Close()
+//         util.DPrintf("The raft pool has been closed")
+//     }
+// }
+
+// batchRawPut blinds put bench.
 func (kvc *KVClient) batchRawPut(value string) {
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
 	wg.Add(*cnums)
 	kvc.goodPut = 0
 
+	// 为每个goroutine创建一个唯一的随机数生成器
+	randomGens := make([]*rand.Rand, *cnums)
+	for i := range randomGens {
+		randomGens[i] = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+	// 生成一个包含所有可能key的切片
+	// allKeys := generateUniqueRandomInts(*dnums+5000000,*dnums+10000000)
+	allKeys := generateUniqueRandomInts(20000000,30000000)
+
+
 	for i := 0; i < *cnums; i++ {
-        go func(i int) {
+		go func(i int) {
             defer wg.Done()
-            num := 0
-            rand.Seed(time.Now().Unix())
+            
+            // 为每个goroutine分配一部分key
+            start := i * base
+            end := (i + 1) * base
+            if i == *cnums-1 {
+                end = *dnums // 确保最后一个goroutine使用所有剩余的key
+            }
+            keys := allKeys[start:end]
+            
+            // 打乱这部分key的顺序
+            // randomGens[i].Shuffle(len(keys), func(i, j int) { keys[i], keys[j] = keys[j], keys[i] })
+
             for j := 0; j < base; j++ {
-                // k := rand.Intn(dnums)
-                //k := basei + j
-                // key := fmt.Sprintf("key_%d", k)
-                key := util.GenerateFixedSizeKey(5)
-                // key := strconv.Itoa(rand.Intn(dnums))
-                // key:= generateUniqueRandomInts(1, *dnums)
-                // key= strconv.Itoa(key)
-                //fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-                reply, err := kvc.PutInRaft(key, value) // 先随机传入一个地址的连接池
-                // fmt.Println("after putinraft , j:",j)
+                if j >= len(keys) {
+                    break // 防止越界
+                }
+                key := strconv.Itoa(keys[j])
+                
+                // 这里使用key进行你的操作
+                reply, err := kvc.PutInRaft(key, value)
                 if err == nil && reply != nil && reply.Err != "defeat" {
                     kvc.goodPut++
                 }
-                if j >= num+100 {
-                    num = j
-                    // fmt.Printf("Goroutine %v put key num: %v\n", i, num)
-                }
             }
         }(i)
-    }
+	}
 	wg.Wait()
 	for _, pool := range kvc.pools {
 		pool.Close()
 		util.DPrintf("The raft pool has been closed")
 	}
 }
-
-// batchRawPut blinds put bench.
-// func (kvc *KVClient) batchRawPut(value string) {
-// 	wg := sync.WaitGroup{}
-// 	base := *dnums / *cnums
-// 	wg.Add(*cnums)
-// 	kvc.goodPut = 0
-
-// 	// 为每个goroutine创建一个唯一的随机数生成器
-// 	randomGens := make([]*rand.Rand, *cnums)
-// 	for i := range randomGens {
-// 		randomGens[i] = rand.New(rand.NewSource(time.Now().UnixNano()))
-// 	}
-// 	// 生成一个包含所有可能key的切片
-// 	// allKeys := generateUniqueRandomInts(*dnums+5000000,*dnums+10000000)
-// 	allKeys := generateUniqueRandomInts(0,*dnums)
-
-
-// 	for i := 0; i < *cnums; i++ {
-// 		go func(i int) {
-//             defer wg.Done()
-            
-//             // 为每个goroutine分配一部分key
-//             start := i * base
-//             end := (i + 1) * base
-//             if i == *cnums-1 {
-//                 end = *dnums // 确保最后一个goroutine使用所有剩余的key
-//             }
-//             keys := allKeys[start:end]
-            
-//             // 打乱这部分key的顺序
-//             // randomGens[i].Shuffle(len(keys), func(i, j int) { keys[i], keys[j] = keys[j], keys[i] })
-
-//             for j := 0; j < base; j++ {
-//                 if j >= len(keys) {
-//                     break // 防止越界
-//                 }
-//                 key := strconv.Itoa(keys[j])
-                
-//                 // 这里使用key进行你的操作
-//                 reply, err := kvc.PutInRaft(key, value)
-//                 if err == nil && reply != nil && reply.Err != "defeat" {
-//                     kvc.goodPut++
-//                 }
-//             }
-//         }(i)
-// 	}
-// 	wg.Wait()
-// 	for _, pool := range kvc.pools {
-// 		pool.Close()
-// 		util.DPrintf("The raft pool has been closed")
-// 	}
-// }
 
 func generateUniqueRandomInts(min, max int) []int {
     nums := make([]int, max-min+1)
@@ -169,7 +174,7 @@ func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftRespon
 		}
 		defer conn.Close()
 		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*4) // 设置4秒定时往下传
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*1) // 设置4秒定时往下传
 		defer cancel()
 
 		reply, err := client.PutInRaft(ctx, request)
