@@ -37,6 +37,7 @@ type KVClient struct {
 	pools     []pool.Pool
 	goodPut   int // 有效吞吐量
 	valuesize int
+	totalLatency time.Duration // 添加总延迟字段
 }
 
 func (kvc *KVClient) randRead() {
@@ -47,6 +48,7 @@ func (kvc *KVClient) randRead() {
 	type getResult struct {
 		count     int
 		valueSize int
+		latency   time.Duration // 添加延迟字段
 	}
 	resultChan := make(chan getResult, *cnums)
 
@@ -56,13 +58,15 @@ func (kvc *KVClient) randRead() {
 			localResult := getResult{}
 			rand.Seed(time.Now().UnixNano())
 			for j := 0; j < base; j++ {
-				key := rand.Intn(70000)
+				key := rand.Intn(12000000)
 				//k := base*i + j
 				// key := fmt.Sprintf("key_%d", k)
 				targetkey := strconv.Itoa(key)
 				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
 				// time.Sleep(300 * time.Millisecond)
+				start := time.Now() // 开始计时
 				value, keyExist, err := kvc.Get(targetkey) // 先随机传入一个地址的连接池
+				duration := time.Since(start) // 计算持续时间
 				// fmt.Println("after putinraft , j:",j)
 				if err == nil {
 					// localGoodPut++
@@ -72,6 +76,7 @@ func (kvc *KVClient) randRead() {
 					localResult.count++
 					// fmt.Printf("此时找到的key为:%v\n",key)
 					localResult.valueSize = len([]byte(value))
+					localResult.latency += duration // 累加延迟
 					// fmt.Printf("valuesize为%v\n",localResult.valueSize)
 					// fmt.Printf("value为%v\n",value)
 					// fmt.Printf("Got the value:** corresponding to the key:%v === exist\n ", key)
@@ -101,6 +106,7 @@ func (kvc *KVClient) randRead() {
 			tag = 1
 		}
 		kvc.goodPut += result.count
+		kvc.totalLatency += result.latency // 累加总延迟
 	}
 	// kvc.valuesize = 1000
 	for _, pool := range kvc.pools {
@@ -244,7 +250,7 @@ func nrand() int64 { //随机生成clientId
 	return x
 }
 
-func runTest() float64 {
+func runTest() (float64, time.Duration) {
 	flag.Parse()
 	servers := strings.Split(*ser, ",")
 	kvc := new(KVClient)
@@ -257,28 +263,33 @@ func runTest() float64 {
 
 	sum_Size_MB := float64(kvc.goodPut*kvc.valuesize) / 1000000
 	throughput := float64(sum_Size_MB) / time.Since(startTime).Seconds()
+	averageLatency := kvc.totalLatency / time.Duration(kvc.goodPut) // 计算平均延迟
 
-	fmt.Printf("Elapse: %v, Throughput: %.4f MB/S, Total: %v, GoodPut: %v, Value: %v, Client: %v, Size: %.2f MB\n",
-		time.Since(startTime), throughput, *dnums, kvc.goodPut, kvc.valuesize, *cnums, sum_Size_MB)
+	fmt.Printf("Elapse: %v, Throughput: %.4f MB/S, Total: %v, GoodPut: %v, Value: %v, Client: %v, Size: %.2f MB, Average Latency: %v\n",
+		time.Since(startTime), throughput, *dnums, kvc.goodPut, kvc.valuesize, *cnums, sum_Size_MB, averageLatency)
 
-	return throughput
+	return throughput, averageLatency
 }
 
 func main() {
-	numTests := 10
+	numTests := 3
 	var totalThroughput float64
+	var totalAverageLatency time.Duration
 
 	for i := 0; i < numTests; i++ {
-		fmt.Printf("\nRunning test %d of %d\n", i+1, numTests)
-		throughput := runTest()
+		fmt.Printf("\n运行测试 %d / %d\n", i+1, numTests)
+		throughput, averageLatency := runTest()
 		totalThroughput += throughput
+		totalAverageLatency += averageLatency
 
 		if i < numTests-1 {
-			fmt.Println("Waiting 5 seconds before next test...")
+			fmt.Println("等待5秒后进行下一次测试...")
 			time.Sleep(5 * time.Second)
 		}
 	}
 
 	averageThroughput := totalThroughput / float64(numTests)
-	fmt.Printf("\nAverage throughput over %d tests: %.4f MB/S\n", numTests, averageThroughput)
+	overallAverageLatency := totalAverageLatency / time.Duration(numTests)
+	fmt.Printf("\n%d 次测试的平均吞吐量: %.4f MB/S\n", numTests, averageThroughput)
+	fmt.Printf("%d 次测试的总平均延迟: %v\n", numTests, overallAverageLatency)
 }

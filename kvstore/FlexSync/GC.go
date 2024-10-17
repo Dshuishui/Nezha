@@ -173,7 +173,7 @@ func (kvs *KVServer) CreateIndex(sortedFilePath string) error {
 	kvs.sortedFilePath = sortedFilePath
 
 	// 创建索引，假设每1000个条目记录一次索引，稀疏索引，间隔一部分创建一个索引，找到第一个合适的，再进行线性查询
-	index, err := kvs.CreateSortedFileIndex(sortedFilePath, 1)
+	index, err := kvs.CreateSortedFileIndex(sortedFilePath)
 	if err != nil {
 		// 处理错误
 		return err
@@ -187,7 +187,7 @@ func (kvs *KVServer) CreateIndex(sortedFilePath string) error {
 	// kvs.scanFromFile = kvs.scanFromSortedOrNew
 }
 
-func (kvs *KVServer)    CreateSortedFileIndex(filePath string, indexInterval int) (*SortedFileIndex, error) {
+func (kvs *KVServer) CreateSortedFileIndex(filePath string) (*SortedFileIndex, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, err
@@ -195,12 +195,11 @@ func (kvs *KVServer)    CreateSortedFileIndex(filePath string, indexInterval int
 	defer file.Close()
 
 	reader := bufio.NewReader(file)
-	var index []IndexEntry
+	index := make(map[string]int64) // 使用map而不是切片
 	var offset int64 = 0
 	entryCount := 0
 
 	for {
-		// 下面的offset为起始位置，entrysize为读取了一个entry之后要移动的距离大小
 		entry, entrySize, err := ReadEntry(reader, offset)
 		if err != nil {
 			if err == io.EOF {
@@ -208,17 +207,18 @@ func (kvs *KVServer)    CreateSortedFileIndex(filePath string, indexInterval int
 			}
 			return nil, err
 		}
-		UnpadKey := kvs.persister.UnpadKey(entry.Key)
-		// if entryCount%indexInterval == 0 {
-			index = append(index, IndexEntry{Key: UnpadKey, Offset: offset})
-			// fmt.Printf("Added index entry: Key=%s, Offset=%d\n", UnpadKey, offset)
-		// }
+		unpadKey := kvs.persister.UnpadKey(entry.Key)
+		
+		// 直接将键和偏移量存入map
+		index[unpadKey] = offset
 
 		offset += entrySize
 		entryCount++
-		// if entryCount % 10000 == 0 {
-        //     fmt.Printf("Processed %d entries, current offset: %d\n", entryCount, offset)
-        // }
+
+		if entryCount % 100000 == 0 {
+			// 可以保留这个日志，但频率降低，以减少输出
+			// fmt.Printf("Processed %d entries, current offset: %d\n", entryCount, offset)
+		}
 	}
 
 	return &SortedFileIndex{Entries: index, FilePath: filePath}, nil

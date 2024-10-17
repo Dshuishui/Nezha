@@ -42,6 +42,7 @@ type KVClient struct {
 
 	pools   []pool.Pool
 	goodPut int // 有效吞吐量
+	totalLatency time.Duration // 添加总延迟字段
 }
 
 // func (kvc *KVClient) batchRawPut(value string) {
@@ -95,6 +96,7 @@ func (kvc *KVClient) batchRawPut(value string) {
 	base := *dnums / *cnums
 	wg.Add(*cnums)
 	kvc.goodPut = 0
+	kvc.totalLatency = 0 // 重置总延迟
 
 	// 为每个goroutine创建一个唯一的随机数生成器
 	randomGens := make([]*rand.Rand, *cnums)
@@ -103,12 +105,18 @@ func (kvc *KVClient) batchRawPut(value string) {
 	}
 	// 生成一个包含所有可能key的切片
 	// allKeys := generateUniqueRandomInts(*dnums+5000000,*dnums+10000000)
-	allKeys := generateUniqueRandomInts(0,160000)
+	allKeys := generateUniqueRandomInts(0,12000000)
 
+	type putResult struct {
+		goodPut int
+		latency time.Duration
+	}
+	results := make(chan putResult, *cnums)
 
 	for i := 0; i < *cnums; i++ {
 		go func(i int) {
             defer wg.Done()
+			localResult := putResult{}
             
             // 为每个goroutine分配一部分key
             start := i * base
@@ -126,16 +134,27 @@ func (kvc *KVClient) batchRawPut(value string) {
                     break // 防止越界
                 }
                 key := strconv.Itoa(keys[j])
-                
-                // 这里使用key进行你的操作
-                reply, err := kvc.PutInRaft(key, value)
-                if err == nil && reply != nil && reply.Err != "defeat" {
-                    kvc.goodPut++
-                }
+                startTime := time.Now()
+				reply, err := kvc.PutInRaft(key, value)
+				duration := time.Since(startTime)
+				if err == nil && reply != nil && reply.Err != "defeat" {
+					localResult.goodPut++
+					localResult.latency += duration
+				}
             }
+			results <- localResult
         }(i)
 	}
-	wg.Wait()
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	for result := range results {
+		kvc.goodPut += result.goodPut
+		kvc.totalLatency += result.latency
+	}
+
 	for _, pool := range kvc.pools {
 		pool.Close()
 		util.DPrintf("The raft pool has been closed")
@@ -237,22 +256,23 @@ func nrand() int64 { //随机生成clientId
 
 func main() {
 	flag.Parse()
-	// dataNum := *dnums
 	valueSize := *vsize
 	servers := strings.Split(*ser, ",")
-	// fmt.Printf("servers:%v\n",servers)
 	kvc := new(KVClient)
 	kvc.Kvservers = servers
 	kvc.clientId = nrand()
 
-	// value := make([]byte, valueSize)
 	value := util.GenerateLargeValue(valueSize)
 	kvc.InitPool()
 	startTime := time.Now()
-	// 开始发送请求
+	
 	kvc.batchRawPut(value)
 
+	elapsedTime := time.Since(startTime)
 	sum_Size_MB := float64(kvc.goodPut*valueSize) / 1000000
-	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, total %v, goodPut %v, value %v, client %v, Size %vMB\n",
-		time.Since(startTime), float64(sum_Size_MB)/time.Since(startTime).Seconds(), *dnums, kvc.goodPut, *vsize, *cnums, sum_Size_MB)
+	throughput := float64(sum_Size_MB) / elapsedTime.Seconds()
+	avgLatency := kvc.totalLatency / time.Duration(kvc.goodPut)
+
+	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, avg latency:%v, total %v, goodPut %v, value %v, client %v, Size %vMB\n",
+		elapsedTime, throughput, avgLatency, *dnums, kvc.goodPut, *vsize, *cnums, sum_Size_MB)
 }
