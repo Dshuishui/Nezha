@@ -56,7 +56,7 @@ func (kvc *KVClient) randRead() {
 			localResult := getResult{}
 			rand.Seed(time.Now().UnixNano())
 			for j := 0; j < base; j++ {
-				key := rand.Intn(10000000)
+				key := rand.Intn(70000)
 				//k := base*i + j
 				// key := fmt.Sprintf("key_%d", k)
 				targetkey := strconv.Itoa(key)

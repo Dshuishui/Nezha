@@ -59,7 +59,7 @@ func (kvc *KVClient) scan(gapkey int) float64 {
 			localResult := scanResult{}
 			rand.Seed(time.Now().UnixNano() + int64(i))
 			for j := 0; j < base; j++ {
-				k1 := rand.Intn(10000000)
+				k1 := rand.Intn(70000)
 				k2 := k1 + gapkey
 				startKey := strconv.Itoa(k1)
 				endKey := strconv.Itoa(k2)
