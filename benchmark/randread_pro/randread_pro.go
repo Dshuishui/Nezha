@@ -44,6 +44,8 @@ func (kvc *KVClient) randRead() {
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
 	wg.Add(*cnums)
+	kvc.goodPut = 0
+	kvc.totalLatency = 0 // 重置总延迟
 
 	type getResult struct {
 		count     int

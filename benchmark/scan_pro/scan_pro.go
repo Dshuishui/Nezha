@@ -38,6 +38,7 @@ type KVClient struct {
 	goodPut      int
 	valuesize    int
 	totalLatency time.Duration // 添加总延迟字段
+	goodscan int
 }
 
 func (kvc *KVClient) scan(gapkey int) (float64, time.Duration) {
@@ -45,10 +46,12 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration) {
 	base := *dnums / *cnums
 	wg.Add(*cnums)
 	kvc.goodPut = 0
+	kvc.goodscan = 0
 	kvc.totalLatency = 0 // 重置总延迟
 
 	type scanResult struct {
 		count     int
+		count_scan     int
 		valueSize int
 		latency   time.Duration // 添加延迟字段
 	}
@@ -74,6 +77,7 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration) {
 				duration := time.Since(start) // 计算持续时间
 				if err == nil {
 					localResult.count += len(reply.KeyValuePairs)
+					localResult.count_scan ++
 					localResult.latency += duration // 累加延迟
 				}
 				if tag == 0 && reply != nil && len(reply.KeyValuePairs) != 0 {
@@ -96,6 +100,7 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration) {
 	}()
 
 	totalGoodPut := 0
+	totalScan := 0
 	tag2 := 0
 	for result := range results {
 		// 保证拿去一个valuesize即可，以免全部读取重复的valuesize引起不必要的开销
@@ -105,13 +110,15 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration) {
 
 		}
 		totalGoodPut += result.count
+		totalScan +=result.count_scan
 		kvc.totalLatency += result.latency // 累加总延迟
 	}
 
 	kvc.goodPut = totalGoodPut
+	kvc.goodscan = totalScan
 	// fmt.Printf("读出来的valuesize为：%v\n", kvc.valuesize)
 	sum_Size_MB := float64(kvc.goodPut*kvc.valuesize) / 1000000
-	avgLatency := kvc.totalLatency / time.Duration(kvc.goodPut) // 计算平均延迟
+	avgLatency := kvc.totalLatency / time.Duration(kvc.goodscan) // 计算平均延迟
 	return sum_Size_MB,avgLatency
 }
 
