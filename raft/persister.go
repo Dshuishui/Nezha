@@ -61,6 +61,16 @@ func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
     opts.SetBlockBasedTableFactory(bbto)
     opts.SetCreateIfMissing(true)
 
+	// 禁用缓存
+	bbto.SetNoBlockCache(true)  // 禁用块缓存
+	bbto.SetCacheIndexAndFilterBlocks(false)  // 禁用索引和过滤器块的缓存
+	opts.SetBlockBasedTableFactory(bbto)
+	// 5. 关闭预读
+	opts.SetAllowMmapReads(false)
+	// 6. 禁用 Bloom Filter
+	// bbto.SetFilterPolicy(nil)
+
+
     p.db, err = gorocksdb.OpenDb(opts, path)
     if err != nil {
         return nil, fmt.Errorf("open db failed: %w", err)

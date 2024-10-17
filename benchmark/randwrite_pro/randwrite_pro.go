@@ -103,7 +103,7 @@ func (kvc *KVClient) batchRawPut(value string) {
 	}
 	// 生成一个包含所有可能key的切片
 	// allKeys := generateUniqueRandomInts(*dnums+5000000,*dnums+10000000)
-	allKeys := generateUniqueRandomInts(20000000,30000000)
+	allKeys := generateUniqueRandomInts(0,160000)
 
 
 	for i := 0; i < *cnums; i++ {
