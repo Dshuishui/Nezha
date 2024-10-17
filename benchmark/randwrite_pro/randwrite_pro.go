@@ -105,7 +105,7 @@ func (kvc *KVClient) batchRawPut(value string) {
 	}
 	// 生成一个包含所有可能key的切片
 	// allKeys := generateUniqueRandomInts(*dnums+5000000,*dnums+10000000)
-	allKeys := generateUniqueRandomInts(0,3000000)
+	allKeys := generateUniqueRandomInts(0,100000)
 
 	type putResult struct {
 		goodPut int
@@ -270,7 +270,8 @@ func main() {
 
 	elapsedTime := time.Since(startTime)
 	sum_Size_MB := float64(kvc.goodPut*valueSize) / 1000000
-	throughput := float64(sum_Size_MB) / elapsedTime.Seconds()
+	// throughput := float64(sum_Size_MB) / elapsedTime.Seconds()
+	throughput := float64(sum_Size_MB) / kvc.totalLatency.Seconds()	 // 这应该是用total的时延
 	avgLatency := kvc.totalLatency / time.Duration(kvc.goodPut)
 
 	fmt.Printf("\nelapse:%v, throught:%.4fMB/S, avg latency:%v, total %v, goodPut %v, value %v, client %v, Size %vMB\n",

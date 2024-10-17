@@ -60,7 +60,7 @@ func (kvc *KVClient) randRead() {
 			localResult := getResult{}
 			rand.Seed(time.Now().UnixNano())
 			for j := 0; j < base; j++ {
-				key := rand.Intn(3000000)
+				key := rand.Intn(100000)
 				//k := base*i + j
 				// key := fmt.Sprintf("key_%d", k)
 				targetkey := strconv.Itoa(key)
@@ -264,7 +264,8 @@ func runTest() (float64, time.Duration) {
 	kvc.randRead()
 
 	sum_Size_MB := float64(kvc.goodPut*kvc.valuesize) / 1000000
-	throughput := float64(sum_Size_MB) / time.Since(startTime).Seconds()
+	// throughput := float64(sum_Size_MB) / time.Since(startTime).Seconds()
+	throughput := float64(sum_Size_MB) / kvc.totalLatency.Seconds()		// 用这个时延才准确
 	averageLatency := kvc.totalLatency / time.Duration(kvc.goodPut) // 计算平均延迟
 
 	fmt.Printf("Elapse: %v, Throughput: %.4f MB/S, Total: %v, GoodPut: %v, Value: %v, Client: %v, Size: %.2f MB, Average Latency: %v\n",
