@@ -1474,6 +1474,15 @@ func main() {
 	kvs.endGC = true              // 测试效果
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
 
+	// 初始化存储value的文件
+	InitialRaftStateLog := "/home/DYC/Gitee/FlexSync/raft/RaftState.log"
+	// InitialRaftStateLog, err := os.Create(currentLog)
+	// if err != nil {
+	// 	log.Fatalf("Failed to create new RaftState log: %v", err)
+	// }
+	// defer newRaftStateLog.Close()
+	kvs.oldLog = InitialRaftStateLog // 给old log文件赋值
+
 	// kvs.oldLog = "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
 	// kvs.currentLog = kvs.oldLog
 	// _, err := kvs.oldPersister.Init(InitialPersister, true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
@@ -1492,35 +1501,50 @@ func main() {
 		time1 := 500000 * time.Second
 		for {
 			time.Sleep(timeout)
-			// if (time.Since(kvs.lastPutTime) > timeout) && (time.Since(kvs.raft.LastAppendTime) > timeout) {
 			if time.Since(kvs.lastPutTime) > timeout {
-
-				fmt.Println("开始垃圾回收，可能不会有反应，因为磁盘文件没有超过阈值")
+				// 检查文件是否存在并且大小是否超过4GB
+				fileInfo, err := os.Stat(kvs.oldLog)
+				if err != nil {
+					if os.IsNotExist(err) {
+						fmt.Printf("文件 %s 不存在，跳过垃圾回收\n", kvs.oldLog)
+						continue
+					}
+					fmt.Printf("检查文件 %s 时出错: %v\n", kvs.oldLog, err)
+					continue
+				}
+	
+				fileSizeGB := float64(fileInfo.Size()) / (1024 * 1024 * 1024)
+				if fileSizeGB <= 2 {
+					fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.oldLog, fileSizeGB)
+					continue
+				}
+	
+				fmt.Printf("文件 %s 大小为 %.2f GB，开始垃圾回收\n", kvs.oldLog, fileSizeGB)
 				startTime := time.Now()
-				// GC.MonitorFileSize("raft/RaftState.log")	// GC处理
-				err := kvs.GarbageCollection() //  暂时确定为一段时间没有收到来自客户端的请求就进行GC处理。
-				// kvs.endGC = true
+	
+				err = kvs.GarbageCollection()
 				if err != nil {
 					fmt.Println("垃圾回收出现了错误: ", err)
+				} else {
+					fmt.Printf("垃圾回收完成，共花费了%v\n", time.Since(startTime))
 				}
-				fmt.Printf("垃圾回收完成，共花费了%v\n", time.Since(startTime))
-
-				err = kvs.CheckDatabaseContent() //	检查GC之后的数据库的数据
+	
+				err = kvs.CheckDatabaseContent()
 				if err != nil {
 					fmt.Println("检查GC后的数据库出现了错误: ", err)
 				}
-
-				err = CompareLeaderAndFollowerLogs() //	检查GC之后的数据库的数据
+	
+				err = CompareLeaderAndFollowerLogs()
 				if err != nil {
 					fmt.Println("检查log文件出现了错误: ", err)
 				}
-
+	
 				fmt.Println("等五秒再停止服务器")
 				time.Sleep(time1)
 				cancel() // 超时后取消上下文
 				fmt.Println("38秒没有请求，停止服务器")
 				wg.Done()
-
+	
 				kvs.raft.Kill() // 关闭Raft层
 				return          // 退出main函数
 			}
@@ -1528,14 +1552,6 @@ func main() {
 	}()
 	wg.Add(1 + 1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
-	// 初始化存储value的文件
-	InitialRaftStateLog := "/home/DYC/Gitee/FlexSync/raft/RaftState.log"
-	// InitialRaftStateLog, err := os.Create(currentLog)
-	// if err != nil {
-	// 	log.Fatalf("Failed to create new RaftState log: %v", err)
-	// }
-	// defer newRaftStateLog.Close()
-	kvs.oldLog = InitialRaftStateLog // 给old log文件赋值
 	kvs.raft.SetCurrentLog(InitialRaftStateLog)
 	kvs.raft.Gap = gap
 	kvs.raft.SyncTime = syncTime

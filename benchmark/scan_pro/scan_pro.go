@@ -38,58 +38,73 @@ type KVClient struct {
 	goodPut      int
 	valuesize    int
 	totalLatency time.Duration // 添加总延迟字段
-	goodscan int
+	goodscan     int
 }
 
-func (kvc *KVClient) scan(gapkey int) (float64, time.Duration) {
+type scanResult struct {
+	totalCount int // 总读取数量
+	scanCount  int // 执行的scan次数
+	avgLatency time.Duration
+	throughput float64
+	valueSize  int
+}
+
+func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
 	wg.Add(*cnums)
 	kvc.goodPut = 0
 	kvc.goodscan = 0
-	kvc.totalLatency = 0 // 重置总延迟
-
-	type scanResult struct {
-		count     int
-		count_scan     int
-		valueSize int
-		latency   time.Duration // 添加延迟字段
-	}
 
 	results := make(chan scanResult, *cnums)
 
 	for i := 0; i < *cnums; i++ {
 		go func(i int) {
 			defer wg.Done()
-			tag := 0
 			localResult := scanResult{}
 			rand.Seed(time.Now().UnixNano() + int64(i))
+
+			var totalLatency time.Duration
+			var totalDataSize float64
+			var totalActualLatency time.Duration
+
 			for j := 0; j < base; j++ {
-				k1 := rand.Intn(100000)
+				k1 := rand.Intn(40000)
 				k2 := k1 + gapkey
 				startKey := strconv.Itoa(k1)
 				endKey := strconv.Itoa(k2)
 				if startKey > endKey {
 					startKey, endKey = endKey, startKey
 				}
-				start := time.Now() // 开始计时
+
+				start := time.Now()
 				reply, err := kvc.rangeGet(startKey, endKey)
-				duration := time.Since(start) // 计算持续时间
-				if err == nil {
-					localResult.count += len(reply.KeyValuePairs)
-					localResult.count_scan ++
-					localResult.latency += duration // 累加延迟
-				}
-				if tag == 0 && reply != nil && len(reply.KeyValuePairs) != 0 {
-					for _, value := range reply.KeyValuePairs {
-						// fmt.Printf("这个value为多少：%v\n",value)
-						localResult.valueSize = len([]byte(value))
-						// fmt.Printf("这个valuesize为多少：%v\n",localResult.valueSize)
-						break // 只迭代一次后就跳出循环
+				duration := time.Since(start)
+
+				if err == nil && reply != nil {
+					count := len(reply.KeyValuePairs)
+					localResult.totalCount += count
+					localResult.scanCount++
+
+					if localResult.totalCount > 0 { // 该次scan读取到了数据
+						// 计算单个scan的平均时延和吞吐量
+						avgItemLatency := duration / time.Duration(count)
+						scanLatency := avgItemLatency * time.Duration(gapkey)
+						scanDataSize := float64(count*localResult.valueSize) / 1000000 // MB
+						// scanThroughput := scanDataSize / duration.Seconds()
+
+						totalLatency += scanLatency
+						totalDataSize += scanDataSize
+						totalActualLatency += duration
 					}
-					tag = 1
 				}
 			}
+
+			if localResult.scanCount > 0 {
+				localResult.avgLatency = totalLatency / time.Duration(localResult.scanCount)
+				localResult.throughput = totalDataSize / totalActualLatency.Seconds() // 计算吞吐量还是得用实际读取这些数据所花费的时间
+			}
+
 			results <- localResult
 		}(i)
 	}
@@ -99,27 +114,37 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration) {
 		close(results)
 	}()
 
-	totalGoodPut := 0
-	totalScan := 0
-	tag2 := 0
-	for result := range results {
-		// 保证拿去一个valuesize即可，以免全部读取重复的valuesize引起不必要的开销
-		if result.valueSize != 0 && tag2 == 0 {
-			kvc.valuesize = result.valueSize
-			tag2 = 1
+	var totalAvgLatency time.Duration
+	var totalAvgThroughput float64
+	var totalCount, totalScanCount, valueSize int
+	goroutineCount := 0
 
+	for result := range results {
+		if result.scanCount > 0 {
+			totalAvgLatency += result.avgLatency
+			totalAvgThroughput += result.throughput
+			valueSize = result.valueSize
+			goroutineCount++
 		}
-		totalGoodPut += result.count
-		totalScan +=result.count_scan
-		kvc.totalLatency += result.latency // 累加总延迟
+		totalCount += result.totalCount
+		totalScanCount += result.scanCount
 	}
 
-	kvc.goodPut = totalGoodPut
-	kvc.goodscan = totalScan
-	// fmt.Printf("读出来的valuesize为：%v\n", kvc.valuesize)
-	sum_Size_MB := float64(kvc.goodPut*kvc.valuesize) / 1000000
-	avgLatency := kvc.totalLatency / time.Duration(kvc.goodscan) // 计算平均延迟
-	return sum_Size_MB,avgLatency
+	kvc.goodPut = totalCount
+	kvc.goodscan = totalScanCount
+	kvc.valuesize = valueSize
+
+	avgLatency := totalAvgLatency / time.Duration(goroutineCount)
+	avgThroughput := totalAvgThroughput / float64(goroutineCount)
+
+	sum_Size_MB := float64(totalCount*valueSize) / 1000000
+
+	for _, pool := range kvc.pools {
+		pool.Close()
+		util.DPrintf("The raft pool has been closed")
+	}
+
+	return avgThroughput, avgLatency, sum_Size_MB
 }
 
 func (kvc *KVClient) rangeGet(key1 string, key2 string) (*kvrpc.ScanRangeResponse, error) {
@@ -201,18 +226,18 @@ func main() {
 
 	for i := 0; i < numTests; i++ {
 		startTime := time.Now()
-		sum_Size_MB, avgLatency := kvc.scan(gapkey)
+		avgThroughput, avgLatency, sum_Size_MB := kvc.scan(gapkey)
 		elapsedTime := time.Since(startTime)
 		// throughput := float64(sum_Size_MB) / elapsedTime.Seconds()
-		throughput := float64(sum_Size_MB) / avgLatency.Seconds()	// 用这个时延
-		totalThroughput += throughput
+		// throughput := float64(sum_Size_MB) / avgLatency.Seconds()	// 用这个时延
+		totalThroughput += avgThroughput
 		totalAvgLatency += avgLatency
 
 		fmt.Printf("Test %d: elapse:%v, throught:%.4fMB/S, avg latency:%v, total %v, goodPut %v, client %v, valuesize %vB, Size %.2fMB\n",
-			i+1, elapsedTime, throughput, avgLatency, *dnums, kvc.goodPut, *cnums, kvc.valuesize, sum_Size_MB)
+			i+1, elapsedTime, avgThroughput, avgLatency, *dnums, kvc.goodPut, *cnums, kvc.valuesize, sum_Size_MB)
 
 		if i < numTests-1 {
-			time.Sleep(8 * time.Second)
+			time.Sleep(5 * time.Second)
 		}
 	}
 

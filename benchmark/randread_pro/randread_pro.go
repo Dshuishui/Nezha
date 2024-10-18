@@ -37,21 +37,21 @@ type KVClient struct {
 	pools     []pool.Pool
 	goodPut   int // 有效吞吐量
 	valuesize int
-	totalLatency time.Duration // 添加总延迟字段
+	// totalLatency time.Duration // 添加总延迟字段
+}
+type getResult struct {
+	count         int
+	avgLatency    time.Duration
+	throughput    float64 // MB/s
+	valueSize  int
 }
 
-func (kvc *KVClient) randRead() {
+func (kvc *KVClient) randRead() (float64, time.Duration) {
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
 	wg.Add(*cnums)
 	kvc.goodPut = 0
-	kvc.totalLatency = 0 // 重置总延迟
 
-	type getResult struct {
-		count     int
-		valueSize int
-		latency   time.Duration // 添加延迟字段
-	}
 	resultChan := make(chan getResult, *cnums)
 
 	for i := 0; i < *cnums; i++ {
@@ -59,39 +59,21 @@ func (kvc *KVClient) randRead() {
 			defer wg.Done()
 			localResult := getResult{}
 			rand.Seed(time.Now().UnixNano())
+			startTime := time.Now()
 			for j := 0; j < base; j++ {
-				key := rand.Intn(100000)
-				//k := base*i + j
-				// key := fmt.Sprintf("key_%d", k)
+				key := rand.Intn(40000)
 				targetkey := strconv.Itoa(key)
-				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-				// time.Sleep(300 * time.Millisecond)
-				start := time.Now() // 开始计时
-				value, keyExist, err := kvc.Get(targetkey) // 先随机传入一个地址的连接池
-				duration := time.Since(start) // 计算持续时间
-				// fmt.Println("after putinraft , j:",j)
-				if err == nil {
-					// localGoodPut++
-					// fmt.Println("点查询key为：",key)
-				}
+				value, keyExist, err := kvc.Get(targetkey)
 				if err == nil && keyExist && value != "ErrNoKey" {
 					localResult.count++
-					// fmt.Printf("此时找到的key为:%v\n",key)
 					localResult.valueSize = len([]byte(value))
-					localResult.latency += duration // 累加延迟
-					// fmt.Printf("valuesize为%v\n",localResult.valueSize)
-					// fmt.Printf("value为%v\n",value)
-					// fmt.Printf("Got the value:** corresponding to the key:%v === exist\n ", key)
 				}
-				if !keyExist {
-					// kvc.PutInRaft(targetkey, value) // 找到不存在的，先随便弥补一个键值对
-					// fmt.Printf("Got the value:%v corresponding to the key:%v === nokey\n ", value, key)
-				}
-				// if j == 0 && keyExist {
-				// localResult.valueSize = len([]byte(value))
-				// fmt.Printf("value为:%v\n", value)
-				// fmt.Printf("valuesize为：%v\n", localResult.valueSize)
-				// }
+			}
+			duration := time.Since(startTime)
+			if localResult.count > 0 {
+				localResult.avgLatency = duration / time.Duration(localResult.count)
+				totalDataSize := float64(localResult.count * localResult.valueSize) / 1000000 // MB
+				localResult.throughput = totalDataSize / duration.Seconds()
 			}
 			resultChan <- localResult
 		}(i)
@@ -101,20 +83,32 @@ func (kvc *KVClient) randRead() {
 		close(resultChan)
 	}()
 
-	tag := 0
+	var totalThroughput float64
+	var totalAvgLatency time.Duration
+	var totalCount int
+	goroutineCount := 0
+
 	for result := range resultChan {
-		if result.valueSize != 0 && tag == 0 {
+		if result.count > 0 {
+			totalThroughput += result.throughput
+			totalAvgLatency += result.avgLatency
 			kvc.valuesize = result.valueSize
-			tag = 1
+			goroutineCount++
 		}
-		kvc.goodPut += result.count
-		kvc.totalLatency += result.latency // 累加总延迟
+		totalCount += result.count
 	}
-	// kvc.valuesize = 1000
+
+	kvc.goodPut = totalCount
+
+	avgThroughput := totalThroughput / float64(goroutineCount)
+	avgLatency := totalAvgLatency / time.Duration(goroutineCount)
+
 	for _, pool := range kvc.pools {
 		pool.Close()
 		util.DPrintf("The raft pool has been closed")
 	}
+
+	return avgThroughput, avgLatency
 }
 
 // Method of Send RPC of GetInRaft
@@ -261,15 +255,13 @@ func runTest() (float64, time.Duration) {
 
 	kvc.InitPool()
 	startTime := time.Now()
-	kvc.randRead()
+	throughput, averageLatency := kvc.randRead()
 
+	elapsedTime := time.Since(startTime)
 	sum_Size_MB := float64(kvc.goodPut*kvc.valuesize) / 1000000
-	// throughput := float64(sum_Size_MB) / time.Since(startTime).Seconds()
-	throughput := float64(sum_Size_MB) / kvc.totalLatency.Seconds()		// 用这个时延才准确
-	averageLatency := kvc.totalLatency / time.Duration(kvc.goodPut) // 计算平均延迟
 
 	fmt.Printf("Elapse: %v, Throughput: %.4f MB/S, Total: %v, GoodPut: %v, Value: %v, Client: %v, Size: %.2f MB, Average Latency: %v\n",
-		time.Since(startTime), throughput, *dnums, kvc.goodPut, kvc.valuesize, *cnums, sum_Size_MB, averageLatency)
+		elapsedTime, throughput, *dnums, kvc.goodPut, kvc.valuesize, *cnums, sum_Size_MB, averageLatency)
 
 	return throughput, averageLatency
 }
