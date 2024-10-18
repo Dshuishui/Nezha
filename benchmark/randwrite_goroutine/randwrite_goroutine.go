@@ -46,11 +46,11 @@ type KVClient struct {
 }
 
 type putResult struct {
-	goodPut    int
-	avgLatency time.Duration
-	throughput float64
+	goodPut      int
+	avgLatency   time.Duration
+	totalLatency time.Duration
+	localDataSize float64 // MB
 }
-
 // func (kvc *KVClient) batchRawPut(value string) {
 //     wg := sync.WaitGroup{}
 //     base := *dnums / *cnums
@@ -104,7 +104,7 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 	wg.Add(*cnums)
 	kvc.goodPut = 0
 
-	allKeys := generateUniqueRandomInts(0, 80000)
+	allKeys := generateUniqueRandomInts(0, 200000)
 	results := make(chan putResult, *cnums)
 
 	for i := 0; i < *cnums; i++ {
@@ -127,12 +127,11 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 					localResult.goodPut++
 				}
 			}
-			totalLatency := time.Since(startTime)
+			localResult.totalLatency = time.Since(startTime)
 			
 			if localResult.goodPut > 0 {
-				localResult.avgLatency = totalLatency / time.Duration(localResult.goodPut)
-				localDataSize := float64(localResult.goodPut * len(value)) / 1000000 // MB
-				localResult.throughput = localDataSize / totalLatency.Seconds()
+				localResult.avgLatency = localResult.totalLatency / time.Duration(localResult.goodPut)
+				localResult.localDataSize = float64(localResult.goodPut * len(value)) / 1000000 // MB
 			}
 			
 			results <- localResult
@@ -145,21 +144,25 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 	}()
 
 	var totalGoodPut int
-	var totalThroughput float64
+	var totalDataSize float64
 	var totalAvgLatency time.Duration
+	var maxTotalLatency time.Duration
 	goroutineCount := 0
 
 	for result := range results {
 		totalGoodPut += result.goodPut
+		totalDataSize += result.localDataSize
+		totalAvgLatency += result.avgLatency
+		if result.totalLatency > maxTotalLatency {
+			maxTotalLatency = result.totalLatency
+		}
 		if result.goodPut > 0 {
-			totalThroughput += result.throughput
-			totalAvgLatency += result.avgLatency
 			goroutineCount++
 		}
 	}
 
 	kvc.goodPut = totalGoodPut
-	avgThroughput := totalThroughput / float64(goroutineCount)
+	avgThroughput := totalDataSize / maxTotalLatency.Seconds()
 	avgLatency := totalAvgLatency / time.Duration(goroutineCount)
 
 	for _, pool := range kvc.pools {
