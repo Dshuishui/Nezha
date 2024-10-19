@@ -80,25 +80,25 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 				start := time.Now()
 				reply, err := kvc.rangeGet(startKey, endKey)
 				duration := time.Since(start)
-
-				if err == nil && reply != nil {
+				// fmt.Printf("有问题：%v\n",err)
+				if err == nil && reply != nil && len(reply.KeyValuePairs) != 0 {
 					count := len(reply.KeyValuePairs)
 					localResult.totalCount += count
 					localResult.scanCount++
 
-					if localResult.totalCount > 0 &&count!=0{ // 该次scan读取到了数据
+					if localResult.totalCount > 0 && count != 0 { // 该次scan读取到了数据
 						for _, value := range reply.KeyValuePairs {
 							localResult.valueSize = len([]byte(value))
 							break // 只迭代一次后就跳出循环
 						}
-							
+
 						// 计算单个scan的平均时延和吞吐量
 						avgItemLatency := duration / time.Duration(count)
-						scanLatency := avgItemLatency * time.Duration(gapkey)
+						// scanLatency := avgItemLatency * time.Duration(gapkey)
 						scanDataSize := float64(count*localResult.valueSize) / 1000000 // MB
 						// scanThroughput := scanDataSize / duration.Seconds()
 
-						totalLatency += scanLatency
+						totalLatency += avgItemLatency
 						totalDataSize += scanDataSize
 						totalActualLatency += duration
 					}
@@ -165,7 +165,7 @@ func (kvc *KVClient) rangeGet(key1 string, key2 string) (*kvrpc.ScanRangeRespons
 		}
 		defer conn.Close()
 		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
 		defer cancel()
 		reply, err := client.ScanRangeInRaft(ctx, args)
 		if err != nil {
