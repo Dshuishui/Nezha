@@ -1493,12 +1493,12 @@ func main() {
 
 	go kvs.applyLoop()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, _ := context.WithCancel(context.Background())
 	// ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
 		timeout := 25 * time.Second
-		time1 := 500000 * time.Second
+		// time1 := 2500000 * time.Second
 		for {
 			time.Sleep(timeout)
 			if time.Since(kvs.lastPutTime) > timeout {
@@ -1539,16 +1539,17 @@ func main() {
 					fmt.Println("检查log文件出现了错误: ", err)
 				}
 	
-				fmt.Println("等五秒再停止服务器")
-				time.Sleep(time1)
-				cancel() // 超时后取消上下文
-				fmt.Println("38秒没有请求，停止服务器")
-				wg.Done()
+				// fmt.Println("等五秒再停止服务器")
+				// time.Sleep(time1)
+				// cancel() // 超时后取消上下文
+				// fmt.Println("38秒没有请求，停止服务器")
+				
 	
-				kvs.raft.Kill() // 关闭Raft层
-				return          // 退出main函数
+				// kvs.raft.Kill() // 关闭Raft层
+				// return          // 退出main函数
 			}
 		}
+		// wg.Done()
 	}()
 	wg.Add(1 + 1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
