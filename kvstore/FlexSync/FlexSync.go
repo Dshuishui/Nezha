@@ -601,7 +601,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 }
 
 func (kvs *KVServer) OutputMeasurements() {
-    if len(kvs.getMeasurements) <= 1000 {
+    if len(kvs.getMeasurements) <= 100 {
         return
     }
 
