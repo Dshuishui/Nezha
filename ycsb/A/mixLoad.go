@@ -221,7 +221,7 @@ func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftRespon
 		p := kvc.pools[kvc.leaderId]
 		conn, err := p.Get()
 		if err != nil {
-			return nil, err
+			util.EPrintf("failed to get conn: %v", err)
 		}
 		defer conn.Close()
 		
@@ -297,7 +297,7 @@ func main() {
 	kvc.InitPool()
 	
 	fmt.Printf("Starting mixed workload test with %.1f%% writes\n", *writeRatio*100)
-	fmt.Printf("Total operations: %d, Threads: %d, Value size: %d bytes\n", *dnums, *cnums, *vsize)
+	fmt.Printf("Total operations: %d, Threads: %d, Write value size: %d bytes\n", *dnums, *cnums, *vsize)
 	
 	startTime := time.Now()
 	stats := kvc.mixedWorkload(*writeRatio, value)
