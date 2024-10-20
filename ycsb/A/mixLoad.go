@@ -90,7 +90,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 	wg.Add(*cnums)
 
 	// 预生成唯一的key集合
-	allKeys := generateUniqueRandomInts(0, 70000000)	// 针对1KB value，KV分离后
+	allKeys := generateUniqueRandomInts(0, 10000000)	// 针对1KB value，KV分离后
 	// allKeys := generateUniqueRandomInts(0, 620000)	// 针对16KB value，KV分离后
 	// allKeys := generateUniqueRandomInts(0, 1000000)	// 针对16KB value，KV分离前
 	// allKeys := generateUniqueRandomInts(0, 12000000)	// 针对1KB value，KV分离前
