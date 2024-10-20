@@ -1514,7 +1514,7 @@ func (rf *Raft) applyLogLoop() {
 				// if rf.commitIndex > rf.lastApplied {
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				rf.lastApplied += 1
-				util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets%d", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
+				// util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets%d", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
 				appliedIndex := rf.index2LogPos(rf.lastApplied)
 				realIndex := rf.lastApplied - rf.shotOffset // 截断前1个数据,后续可以优化，考虑批量删除
 				appliedMsg := ApplyMsg{
