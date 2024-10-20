@@ -596,7 +596,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			rf.log = append(rf.log, logEntry)
 			rf.batchLog = append(rf.batchLog, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
 
-			if index == rf.lastIndex() { // 已经将日志补足后，开始批量写入
+			if index == rf.lastIndex()&&logEntry.Command.OpType!="TermLog" { // 已经将日志补足后，开始批量写入，同时为了与leader在偏移量上的统一，对于空指令，也不写入
 				// offsets1, err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
 				// rf.mu.Unlock()
 				rf.WriteEntryToFile(rf.batchLog, rf.currentLog, 0)
