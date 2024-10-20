@@ -651,16 +651,26 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 		reply.Err = raft.ErrWrongLeader
 		return reply // 如果收到客户端put请求的不是leader，需要将leader的id返回给客户端的reply中
 	}
-
 	opCtx := newOpContext(&op)
-
 	func() {
 		kvs.mu.Lock()
 		defer kvs.mu.Unlock()
 		// 保存RPC上下文，等待提交回调，可能会因为Leader变更覆盖同样Index，不过前一个RPC会超时退出并令客户端重试
 		kvs.reqMap[int(op.Index)] = opCtx
 	}()
+	// _,exist:=kvs.reqMap[int(op.Index)]
+	// fmt.Println("大撒上的",exist)
+	// fmt.Printf("index%v\n",op.Index)
 
+	// fmt.Println("222")
+
+	// func() {
+	// 	kvs.mu.Lock()
+	// 	defer kvs.mu.Unlock()
+	// 	// 保存RPC上下文，等待提交回调，可能会因为Leader变更覆盖同样Index，不过前一个RPC会超时退出并令客户端重试
+	// 	kvs.reqMap[int(op.Index)] = opCtx
+	// }()
+	// fmt.Println("333")
 	// 超时后，结束apply请求的RPC，清理该请求index的上下文
 	defer func() {
 		kvs.mu.Lock()
@@ -671,8 +681,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 			}
 		}
 	}()
-
-	timer := time.NewTimer(400 * time.Millisecond)
+	timer := time.NewTimer(4000000 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	// 通道关闭或者有数据传入都会执行以下的分支
@@ -686,10 +695,12 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 			// 说明req id过期了，该请求被忽略，对MIT这个lab来说只需要告知客户端OK跳过即可
 			reply.Err = raft.OK
 		}
+		// fmt.Println("444")
 	case <-timer.C: // 如果2秒都没提交成功，让client重试
 		// fmt.Println("Put请求执行超时了，超过了2s，重新让client发送执行")
 		// reply.Err = raft.ErrWrongLeader
 		reply.Err = "defeat"
+		// fmt.Println("555")
 	}
 	return reply
 }
@@ -1375,16 +1386,19 @@ func (kvs *KVServer) applyLoop() {
 	for !kvs.killed() {
 		select {
 		case msg := <-kvs.applyCh:
+			// fmt.Printf("asdasd\n")
 			// 如果是安装快照
 			if msg.CommandValid {
+				// fmt.Printf("aasd")
 				cmd := msg.Command
 				index := msg.CommandIndex
 				cmdTerm := msg.CommandTerm
 				offset := msg.Offset
-
+				// index = index-2
 				func() {
 					kvs.mu.Lock()
 					defer kvs.mu.Unlock()
+					// fmt.Printf("进入了fun\n")
 					// 更新已经应用到的日志
 					kvs.lastAppliedIndex = index
 					// fmt.Println("进入到applyLoop")
@@ -1398,7 +1412,7 @@ func (kvs *KVServer) applyLoop() {
 					opCtx, existOp := kvs.reqMap[index]          // 检查当前index对应的等待put的请求是否超时，即是否还在等待被apply
 					prevSeq, existSeq := kvs.seqMap[op.ClientId] // 上一次该客户端发来的请求的序号
 					kvs.seqMap[op.ClientId] = op.SeqId           // 更新服务器端，客户端请求的序列号
-
+					// fmt.Printf("op:%v---index%v\n",existOp,index)
 					if existOp { // 存在等待结果的apply日志的RPC, 那么判断状态是否与写入时一致，可能之前接受过该日志，但是身份不是leader了，该index对应的请求日志被别的leader同步日志时覆盖了。
 						// 虽然没超时，但是如果已经和刚开始写入的请求不一致了，那也不行。
 						if opCtx.op.Term != int32(cmdTerm) { //这里要用msg里面的CommandTerm而不是cmd里面的Term，因为当拿去到的是空指令时，其cmd里面的Term是0，会重复发生错误
@@ -1409,6 +1423,7 @@ func (kvs *KVServer) applyLoop() {
 
 					// 只处理ID单调递增的客户端写请求
 					if op.OpType == OP_TYPE_PUT {
+						// fmt.Printf("kaishiput")
 						if !existSeq || op.SeqId > prevSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
 							// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
 							if op.SeqId%10000 == 0 {
@@ -1466,6 +1481,7 @@ func (kvs *KVServer) applyLoop() {
 
 					// 唤醒挂起的RPC
 					if existOp { // 如果等待apply的请求还没超时
+						// fmt.Printf("666")
 						close(opCtx.committed)
 					}
 				}()

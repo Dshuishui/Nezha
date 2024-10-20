@@ -183,7 +183,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 	// 预分配足够大的偏移量切片，避免了在循环中动态扩容偏移量切片的操作
 	offsets = make([]int64, len(e))
 
-	if startPos == 0 {
+	if startPos == 0 {	// 0是直接追加
 		offset, err = file.Seek(0, os.SEEK_END)
 		if err != nil {
 			log.Fatalf("定位存储Raft日志的磁盘文件失败：%v", err)
@@ -622,6 +622,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 
 				// offset := rf.Offsets[index]      // 截取后面错误的offset
 				offset := rf.Offsets[index-rf.shotOffset-1] // 这个要减一
+				// offset := rf.Offsets[index-rf.shotOffset] // 将上面的改为加一了
 				// rf.Offsets = rf.Offsets[:logPos] // 删除当前错误的offset，以及后续的所有
 				rf.Offsets = rf.Offsets[:logPos-rf.shotOffset] // 不用减一，因为logPos已经是减一了的
 				arrEntry := []*Entry{&entry}                   // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
@@ -713,8 +714,9 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Term:    int32(rf.currentTerm),
 	}
 	// fmt.Println("到这了嘛4")
-	index = rf.lastIndex()
+	index = rf.lastIndex()+1	// 加一是为了除去空指令
 	term = rf.currentTerm
+	// fmt.Printf("11111offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
 	if logEntry.Command.OpType != "TermLog" { // 除去上任leader后的空指令
 		entry_global = Entry{
 			Index:       uint32(index),
@@ -745,6 +747,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// }
 	rf.log = append(rf.log, &logEntry) // 确保日志落盘之后，再更新log
 	rf.mu.Unlock()
+	// fmt.Printf("22222offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
 	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// if err != nil {
 	// 	panic(err)
@@ -1020,10 +1023,12 @@ func (rf *Raft) updateCommitIndex() {
 	}
 	sort.Ints(sortedMatchIndex)
 	newCommitIndex := sortedMatchIndex[len(rf.peers)/2]
+	// fmt.Printf("newconmittindex%v\n",newCommitIndex)
 	// if语句的第一个条件则是排除掉还没有复制到大多数server的情况
 	// fmt.Printf("此时log的长度：%v以及newcommitindex的值：%v\n",len(rf.log),newCommitIndex)
 	if newCommitIndex > rf.commitIndex && rf.log[rf.index2LogPos(newCommitIndex)].Term == int32(rf.currentTerm) {
 		rf.commitIndex = newCommitIndex // 保证是当前的Term才能根据同步到server的副本数量判断是否可以提交
+		// fmt.Println("上任空包被提交了")	// 提交了的，因为虽然是空包，但是也赋予了当前任期，满足提交条件
 	}
 	// util.DPrintf("RaftNode[%d] updateCommitIndex, newCommitIndex[%d] matchIndex[%v]", rf.me, rf.commitIndex, sortedMatchIndex)
 }
@@ -1039,10 +1044,11 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	args.Term = int32(rf.currentTerm)
 	args.LeaderId = int32(rf.me)
 	args.LeaderCommit = int32(rf.commitIndex)
-	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)
+	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)	// 减一是为了拿到下标
 	if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
 		args.PrevLogTerm = 0
 	} else {
+		// fmt.Printf("此时log%v,PrevLogIndex%v\n",len(rf.log),args.PrevLogIndex)
 		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
 	}
 	// start := rf.index2LogPos(int(args.PrevLogIndex)+1)
@@ -1060,12 +1066,12 @@ func (rf *Raft) doAppendEntries(peerId int) {
 			continue
 		}
 		if err := enc.Encode(rf.log[i]); err != nil { // 将 rf.log[i] 日志项编码后的字节序列写入到 buffer 缓冲区中
-			util.EPrintf("Encode error：", err)
+			fmt.Println("Encode error：", err)
 		}
 		totalSize += int64(buffer.Len())
 		// 如果总大小超过3MB，截取日志数组并退出循环
 		if totalSize >= threshold {
-			appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i]
+			appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i]	// 不包括第i个索引
 			break
 		}
 	}
@@ -1497,13 +1503,15 @@ func (rf *Raft) applyLogLoop() {
 			defer rf.mu.Unlock()
 
 			noMore = true
-			// fmt.Printf("此时的commitIndex是多少：%v",rf.commitIndex)
+			// fmt.Printf("此时的offset的长度是多少：%v",len(rf.Offsets))
 			if (rf.commitIndex > rf.lastApplied) && ((rf.lastApplied - rf.shotOffset) <
 				len(rf.Offsets)) {
+					// fmt.Printf("提交了一次commitidnex%v-lastapplied%v-shotoffset%v-len(off)%v\n",rf.commitIndex,rf.lastApplied,rf.shotOffset,len(rf.Offsets))
+					// fmt.Println("offset",rf.Offsets)
 				// if rf.commitIndex > rf.lastApplied {
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				rf.lastApplied += 1
-				// util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
+				util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets%d", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
 				appliedIndex := rf.index2LogPos(rf.lastApplied)
 				realIndex := rf.lastApplied - rf.shotOffset // 截断前1个数据,后续可以优化，考虑批量删除
 				appliedMsg := ApplyMsg{

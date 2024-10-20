@@ -147,6 +147,8 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 	var totalDataSize float64
 	var totalAvgLatency time.Duration
 	var maxTotalLatency time.Duration
+	var avgLatency time.Duration
+
 	goroutineCount := 0
 
 	for result := range results {
@@ -163,7 +165,10 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 
 	kvc.goodPut = totalGoodPut
 	avgThroughput := totalDataSize / maxTotalLatency.Seconds()
-	avgLatency := totalAvgLatency / time.Duration(goroutineCount)
+	if goroutineCount != 0 {
+		avgLatency = totalAvgLatency / time.Duration(goroutineCount)
+	}
+	// avgLatency := totalAvgLatency / time.Duration(goroutineCount)
 
 	for _, pool := range kvc.pools {
 		pool.Close()
@@ -205,7 +210,7 @@ func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftRespon
 		}
 		defer conn.Close()
 		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*1) // 设置4秒定时往下传
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*100) // 设置4秒定时往下传
 		defer cancel()
 
 		reply, err := client.PutInRaft(ctx, request)
