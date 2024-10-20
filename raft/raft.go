@@ -617,6 +617,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			// util.DPrintf("追加RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] Index[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, index, rf.Offsets)
 		} else { // 重叠部分
 			if rf.log[logPos].Term != logEntry.Term {
+				fmt.Println("还有重叠的情况嘛？？？")
 				rf.log = rf.log[:logPos]          // 删除当前以及后续所有log
 				rf.log = append(rf.log, logEntry) // 把新log加入进来
 
@@ -1513,16 +1514,18 @@ func (rf *Raft) applyLogLoop() {
 				rf.lastApplied += 1
 				util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets%d", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
 				appliedIndex := rf.index2LogPos(rf.lastApplied)
-				realIndex := rf.lastApplied - rf.shotOffset // 截断前1个数据,后续可以优化，考虑批量删除
+				// realIndex := rf.lastApplied - rf.shotOffset // 截断前1个数据,后续可以优化，考虑批量删除
 				appliedMsg := ApplyMsg{
 					CommandValid: true,
 					Command:      rf.log[appliedIndex].Command,
 					CommandIndex: rf.lastApplied,
 					CommandTerm:  int(rf.log[appliedIndex].Term),
-					Offset:       rf.Offsets[realIndex-1], // 将偏移量传进通道
+					// Offset:       rf.Offsets[realIndex-1], // 将偏移量传进通道
+					Offset:       rf.Offsets[appliedIndex],
 				}
+				fmt.Printf("发了index:%v给服务器端\n",appliedMsg.Offset)
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
-				rf.Offsets = rf.Offsets[1:]
+				// rf.Offsets = rf.Offsets[1:]
 				rf.shotOffset++
 				if rf.lastApplied%rf.Gap == 0 {
 					// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
