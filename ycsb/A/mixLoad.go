@@ -90,7 +90,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 	wg.Add(*cnums)
 
 	// 预生成唯一的key集合
-	allKeys := generateUniqueRandomInts(0, 10000000)	// 针对1KB value，KV分离后
+	allKeys := generateUniqueRandomInts(0, 70000000)	// 针对1KB value，KV分离后
 	// allKeys := generateUniqueRandomInts(0, 620000)	// 针对16KB value，KV分离后
 	// allKeys := generateUniqueRandomInts(0, 1000000)	// 针对16KB value，KV分离前
 	// allKeys := generateUniqueRandomInts(0, 12000000)	// 针对1KB value，KV分离前
@@ -124,9 +124,9 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 			// 剩余的为读操作，默认为false
 			
 			// 随机打乱操作顺序
-			rand.Shuffle(len(operations), func(i, j int) {
-				operations[i], operations[j] = operations[j], operations[i]
-			})
+			// rand.Shuffle(len(operations), func(i, j int) {
+			// 	operations[i], operations[j] = operations[j], operations[i]
+			// })
 
 			// 执行操作序列
 			for idx, keyInt := range localKeys {
