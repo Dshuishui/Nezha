@@ -109,6 +109,7 @@ type KVServer struct {
 	// currentPersister *raft.Persister
 	// getFromFile     func(string) (string, error)			// 对应与垃圾分离前后的两种查询方法。
 	// scanFromFile    func(string, string) (map[string]string, error)
+	getMeasurements []time.Duration
 }
 
 // ValueLog represents the Value Log file for storing values.
@@ -558,12 +559,15 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 		}
 	}
 	if kvs.startGC && kvs.endGC {
-		positionBytes, err := kvs.persister.Get_opt(key)
+		start := time.Now()
+        positionBytes, err := kvs.persister.Get_opt(key)
+        duration := time.Since(start)
 		if err != nil {
 			fmt.Println("去新的rocksdb中拿取key对应的index有问题")
 			panic(err)
 		}
 		if positionBytes == -1 {
+			kvs.getMeasurements = append(kvs.getMeasurements, duration)  // 统计去新rocksdb文件中没有找到该key的时间
 			value, err := kvs.getFromSortedFile(key)
 			if err == nil {
 				reply.Value = value // 找到了，赋值
@@ -589,10 +593,47 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 			return reply
 		}
 	}
+	kvs.OutputMeasurements()
 	return reply
 	// }
 	// time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
 	// }
+}
+
+func (kvs *KVServer) OutputMeasurements() {
+    if len(kvs.getMeasurements) <= 1000 {
+        return
+    }
+
+    file, err := os.Create("/home/DYC/Gitee/FlexSync/result/NotFound/newRocksdb.txt")
+    if err != nil {
+        log.Printf("Error creating file: %v", err)
+        return
+    }
+    defer file.Close()
+
+    var total time.Duration
+    for i, duration := range kvs.getMeasurements {
+        _, err := fmt.Fprintf(file, "Measurement %d: %v\n", i+1, duration)
+        if err != nil {
+            log.Printf("Error writing to file: %v", err)
+            return
+        }
+        total += duration
+    }
+
+    average := total / time.Duration(len(kvs.getMeasurements))
+    _, err = fmt.Fprintf(file, "\nAverage: %v\n", average)
+    if err != nil {
+        log.Printf("Error writing average to file: %v", err)
+        return
+    }
+
+    log.Printf("Measurements written to get_measurements.txt")
+    log.Printf("Average measurement: %v", average)
+
+    // Clear the measurements after output
+    // kvs.getMeasurements = kvs.getMeasurements[:0]
 }
 
 func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
@@ -1512,7 +1553,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
-	kvs.startGC = false
+	kvs.startGC = true
 	kvs.endGC = false                // 测试效果
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
 
