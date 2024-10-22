@@ -90,7 +90,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 	wg.Add(*cnums)
 
 	// 预生成唯一的key集合
-	allKeys := generateUniqueRandomInts(0, 10000000)	// 针对1KB value，KV分离后
+	allKeys := generateUniqueRandomInts(0, 40000)	// 针对1KB value，KV分离后
 	// allKeys := generateUniqueRandomInts(0, 620000)	// 针对16KB value，KV分离后
 	// allKeys := generateUniqueRandomInts(0, 1000000)	// 针对16KB value，KV分离前
 	// allKeys := generateUniqueRandomInts(0, 12000000)	// 针对1KB value，KV分离前
@@ -107,6 +107,10 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 			end := (threadID + 1) * opsPerThread
 			if threadID == *cnums-1 {
 				end = *dnums
+			}
+			// 确保待查询的key在范围内
+			if len(allKeys) <*dnums{
+				end = len(allKeys)
 			}
 			
 			localKeys := allKeys[start:end]
@@ -197,7 +201,7 @@ func (kvc *KVClient) SendGetInRaft(targetId int, request *kvrpc.GetInRaftRequest
 	defer conn.Close()
 	
 	client := kvrpc.NewKVClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 	
 	reply, err := client.GetInRaft(ctx, request)
@@ -226,7 +230,7 @@ func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftRespon
 		defer conn.Close()
 		
 		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 		defer cancel()
 
 		reply, err := client.PutInRaft(ctx, request)
