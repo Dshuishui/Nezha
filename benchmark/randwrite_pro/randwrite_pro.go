@@ -104,7 +104,7 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 	wg.Add(*cnums)
 	kvc.goodPut = 0
 
-	allKeys := generateUniqueRandomInts(0, 40000)
+	allKeys := generateUniqueRandomInts(0, 12000)
 	results := make(chan putResult, *cnums)
 
 	for i := 0; i < *cnums; i++ {
@@ -202,13 +202,13 @@ func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftRespon
 		}
 		defer conn.Close()
 		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10000000) // 设置4秒定时往下传
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10) // 设置4秒定时往下传
 		defer cancel()
-		start := time.Now()
-		fmt.Println("sss")
+		// start := time.Now()
+		// fmt.Println("sss")
 		reply, err := client.PutInRaft(ctx, request)
-		endtime := time.Since(start).Milliseconds()
-		fmt.Printf("time:%v",endtime)
+		// endtime := time.Since(start).Milliseconds()
+		// fmt.Printf("time:%v",endtime)
 		if err != nil {
 			// fmt.Println("客户端调用PutInRaft有问题")
 			// util.EPrintf("err in PutInRaft-调用了服务器的put方法: %v", err)
