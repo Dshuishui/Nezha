@@ -42,8 +42,9 @@ type KVClient struct {
 type getResult struct {
 	count         int
 	avgLatency    time.Duration
-	throughput    float64 // MB/s
+	totalDataSize    float64 // MB/s
 	valueSize  int
+	duration   time.Duration
 }
 
 func (kvc *KVClient) randRead() (float64, time.Duration) {
@@ -61,7 +62,7 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 			rand.Seed(time.Now().UnixNano())
 			startTime := time.Now()
 			for j := 0; j < base; j++ {
-				key := rand.Intn(40000)
+				key := rand.Intn(10000000)
 				targetkey := strconv.Itoa(key)
 				value, keyExist, err := kvc.Get(targetkey)
 				if err == nil && keyExist && value != "ErrNoKey" {
@@ -69,11 +70,11 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 					localResult.valueSize = len([]byte(value))
 				}
 			}
-			duration := time.Since(startTime)
+			localResult.duration = time.Since(startTime)
 			if localResult.count > 0 {
-				localResult.avgLatency = duration / time.Duration(localResult.count)
-				totalDataSize := float64(localResult.count * localResult.valueSize) / 1000000 // MB
-				localResult.throughput = totalDataSize / duration.Seconds()
+				localResult.avgLatency = localResult.duration / time.Duration(localResult.count)
+				localResult.totalDataSize = float64(localResult.count * localResult.valueSize) / 1000000 // MB
+				// localResult.throughput = totalDataSize / duration.Seconds()
 			}
 			resultChan <- localResult
 		}(i)
@@ -83,14 +84,18 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 		close(resultChan)
 	}()
 
-	var totalThroughput float64
+	var maxDuration time.Duration
+	var totalData float64
 	var totalAvgLatency time.Duration
 	var totalCount int
 	goroutineCount := 0
 
 	for result := range resultChan {
 		if result.count > 0 {
-			totalThroughput += result.throughput
+			if result.duration > maxDuration {
+                maxDuration = result.duration
+            }
+			totalData += result.totalDataSize
 			totalAvgLatency += result.avgLatency
 			kvc.valuesize = result.valueSize
 			goroutineCount++
@@ -100,7 +105,7 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 
 	kvc.goodPut = totalCount
 
-	avgThroughput := totalThroughput / float64(goroutineCount)
+	throughput := totalData / float64(maxDuration)
 	avgLatency := totalAvgLatency / time.Duration(goroutineCount)
 
 	for _, pool := range kvc.pools {
@@ -108,7 +113,7 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 		util.DPrintf("The raft pool has been closed")
 	}
 
-	return avgThroughput, avgLatency
+	return throughput, avgLatency
 }
 
 // Method of Send RPC of GetInRaft
