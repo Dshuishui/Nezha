@@ -79,10 +79,10 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 			resultChan <- localResult
 		}(i)
 	}
-	go func() {
+	// go func() {
 		wg.Wait()
 		close(resultChan)
-	}()
+	// }()
 
 	var maxDuration time.Duration
 	var totalData float64
@@ -102,10 +102,11 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 		}
 		totalCount += result.count
 	}
+	// fmt.Printf("此时，maxduration为%v,totalData:%v\n",maxDuration,totalData)
 
 	kvc.goodPut = totalCount
 
-	throughput := totalData / float64(maxDuration)
+	throughput := totalData / maxDuration.Seconds()
 	avgLatency := totalAvgLatency / time.Duration(goroutineCount)
 
 	for _, pool := range kvc.pools {
