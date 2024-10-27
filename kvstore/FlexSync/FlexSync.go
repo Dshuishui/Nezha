@@ -1554,7 +1554,7 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	kvs.startGC = true
-	kvs.endGC = false                // 测试效果
+	kvs.endGC = true                // 测试效果
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
 
 	// 初始化存储value的文件
