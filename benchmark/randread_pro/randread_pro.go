@@ -62,7 +62,7 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 			rand.Seed(time.Now().UnixNano())
 			startTime := time.Now()
 			for j := 0; j < base; j++ {
-				key := rand.Intn(625000)
+				key := rand.Intn(10000000)
 				targetkey := strconv.Itoa(key)
 				value, keyExist, err := kvc.Get(targetkey)
 				if err == nil && keyExist && value != "ErrNoKey" {
@@ -128,7 +128,7 @@ func (kvc *KVClient) SendGetInRaft(targetId int, request *kvrpc.GetInRaftRequest
 	}
 	defer conn.Close()
 	client := kvrpc.NewKVClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
 	defer cancel()
 	reply, err := client.GetInRaft(ctx, request)
 	if err != nil {
