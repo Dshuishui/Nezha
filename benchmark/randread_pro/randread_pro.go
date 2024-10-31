@@ -62,7 +62,7 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 			rand.Seed(time.Now().UnixNano())
 			startTime := time.Now()
 			for j := 0; j < base; j++ {
-				key := rand.Intn(40000)
+				key := rand.Intn(2000000)
 				targetkey := strconv.Itoa(key)
 				value, keyExist, err := kvc.Get(targetkey)
 				if err == nil && keyExist && value != "ErrNoKey" {

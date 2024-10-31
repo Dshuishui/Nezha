@@ -87,121 +87,140 @@ type mixedWorkloadResult struct {
 }
 
 func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadStats {
-	stats := &WorkloadStats{
-		readLatencies:  make([]time.Duration, 0),
-		writeLatencies: make([]time.Duration, 0),
-	}
+    stats := &WorkloadStats{
+        readLatencies:  make([]time.Duration, 0),
+        writeLatencies: make([]time.Duration, 0),
+    }
 
-	wg := sync.WaitGroup{}
-	opsPerThread := *dnums / *cnums
-	wg.Add(*cnums)
-	var baga = 2000000
+    wg := sync.WaitGroup{}
+    opsPerThread := *dnums / *cnums
+    wg.Add(*cnums)
 
-	// 预生成唯一的key集合
-	allKeys := generateUniqueRandomInts(0, baga) // 针对1KB value，KV分离后
-	// allKeys := generateUniqueRandomInts(0, 620000)	// 针对16KB value，KV分离后
-	// allKeys := generateUniqueRandomInts(0, 1000000)	// 针对16KB value，KV分离前
-	// allKeys := generateUniqueRandomInts(0, 12000000)	// 针对1KB value，KV分离前
+    // 为读操作预生成唯一的key集合
+    maxReadKey := 2000000
+    allReadKeys := generateUniqueRandomInts(0, maxReadKey)
+    
+    // 为写操作预生成不同范围的key集合
+    writeKeyStart := maxReadKey + 1  // 确保写操作的key在读操作范围之外
+    writeKeyEnd := writeKeyStart + 2000000
+    allWriteKeys := generateUniqueRandomInts(writeKeyStart, writeKeyEnd)
+    
+    results := make(chan mixedWorkloadResult, *cnums)
 
-	results := make(chan mixedWorkloadResult, *cnums)
+    for i := 0; i < *cnums; i++ {
+        go func(threadID int) {
+            defer wg.Done()
 
-	// 为每个线程预先生成操作序列
-	for i := 0; i < *cnums; i++ {
-		go func(threadID int) {
-			defer wg.Done()
+            localResult := mixedWorkloadResult{}
+            
+            // 计算每个线程的操作范围
+            start := threadID * opsPerThread
+            end := (threadID + 1) * opsPerThread
+            if threadID == *cnums-1 {
+                end = *dnums
+            }
 
-			localResult := mixedWorkloadResult{}
-			start := threadID * opsPerThread
-			end := (threadID + 1) * opsPerThread
-			if threadID == *cnums-1 {
-				end = *dnums
-			}
-			// 确保待查询的key在范围内
-			if len(allKeys) < *dnums {
-				end = len(allKeys)
-			}
+            localOpsCount := end - start
+            writeCount := int(float64(localOpsCount) * writeRatio)
+            readCount := localOpsCount - writeCount
 
-			localKeys := allKeys[start:end]
-			localOpsCount := end - start
+            // 从两个不同的key集合中获取对应范围的key
+            var localReadKeys, localWriteKeys []int
+            if start < len(allReadKeys) {
+                readEnd := min(start+readCount, len(allReadKeys))
+                localReadKeys = allReadKeys[start:readEnd]
+            }
+            if start < len(allWriteKeys) {
+                writeEnd := min(start+writeCount, len(allWriteKeys))
+                localWriteKeys = allWriteKeys[start:writeEnd]
+            }
 
-			// 计算当前线程中写操作的精确数量
-			writeCount := int(float64(localOpsCount) * writeRatio)
-			// readCount := localOpsCount - writeCount
+            // 创建混合操作序列
+            operations := make([]bool, localOpsCount) // true表示写操作
+            for i := 0; i < writeCount; i++ {
+                operations[i] = true
+            }
+            
+            // 随机打乱操作顺序
+            rand.Shuffle(len(operations), func(i, j int) {
+                operations[i], operations[j] = operations[j], operations[i]
+            })
 
-			// 创建操作序列，true表示写操作，false表示读操作
-			operations := make([]bool, localOpsCount)
-			for i := 0; i < writeCount; i++ {
-				operations[i] = true
-			}
-			// 剩余的为读操作，默认为false
+            writeKeyIndex := 0
+            readKeyIndex := 0
 
-			// 随机打乱操作顺序
-			rand.Shuffle(len(operations), func(i, j int) {
-				operations[i], operations[j] = operations[j], operations[i]
-			})
+            // 执行操作序列
+            for _, isWrite := range operations {
+                var key string
+                if isWrite {
+                    if writeKeyIndex >= len(localWriteKeys) {
+                        continue
+                    }
+                    key = strconv.Itoa(localWriteKeys[writeKeyIndex])
+                    writeKeyIndex++
+                } else {
+                    if readKeyIndex >= len(localReadKeys) {
+                        continue
+                    }
+                    key = strconv.Itoa(localReadKeys[readKeyIndex])
+                    readKeyIndex++
+                }
 
-			// 执行操作序列
-			for idx, keyInt := range localKeys {
-				key := strconv.Itoa(keyInt)
-				isWrite := operations[idx]
+                startTime := time.Now()
+                var result OperationResult
 
-				startTime := time.Now()
-				var result OperationResult
+                if isWrite {
+                    reply, err := kvc.PutInRaft(key, value)
+                    result = OperationResult{
+                        isWrite:   true,
+                        latency:   time.Since(startTime),
+                        success:   err == nil && reply != nil && reply.Err != "defeat",
+                        valueSize: len(value),
+                    }
+                } else {
+                    value, exists, err := kvc.Get(key)
+                    result = OperationResult{
+                        isWrite:   false,
+                        latency:   time.Since(startTime),
+                        success:   err == nil && exists,
+                        valueSize: len([]byte(value)),
+                    }
+                }
 
-				if isWrite {
+                localResult.valueSize = result.valueSize
+                localResult.totalCount++
+                localResult.totalLatency += result.latency
 
-					// 加下面的对key的转换操作就是Insert
-					// keyInt, err := strconv.Atoi(key)
-					// if err != nil {
-					// 	keyInt += baga*1 // 使得key的操作变为insert
-					// 	key = strconv.Itoa(keyInt)
-					// }
+                stats.addResult(result)
+            }
+            results <- localResult
+        }(i)
+    }
 
-					reply, err := kvc.PutInRaft(key, value)
-					result = OperationResult{
-						isWrite:   true,
-						latency:   time.Since(startTime),
-						success:   err == nil && reply != nil && reply.Err != "defeat",
-						valueSize: len(value),
-					}
-				} else {
-					value, exists, err := kvc.Get(key)
-					result = OperationResult{
-						isWrite:   false,
-						latency:   time.Since(startTime),
-						success:   err == nil && exists,
-						valueSize: len([]byte(value)),
-					}
-				}
-				localResult.valueSize = result.valueSize
-				localResult.totalCount++
-				localResult.totalLatency += result.latency
+    wg.Wait()
+    close(results)
 
-				stats.addResult(result)
-			}
-			results <- localResult
-		}(i)
-	}
+    var totalCount float64
+    var maxDuration time.Duration
+    var valueSize int
 
-	wg.Wait()
-	close(results)
+    for result := range results {
+        totalCount += float64(result.totalCount)
+        if result.totalLatency > maxDuration {
+            maxDuration = result.totalLatency
+        }
+        valueSize = result.valueSize
+    }
+    stats.throughput = (totalCount * float64(valueSize) / 1000000) / maxDuration.Seconds()
 
-	var totalWRcount float64
-	// var throughput float64
-	// var totalLatency time.Duration
-	var maxDuration time.Duration
-	var valueSize int
+    return stats
+}
 
-	for result := range results {
-		totalWRcount += float64(result.totalCount)
-		if result.totalLatency > maxDuration {
-			maxDuration = result.totalLatency
-		}
-		valueSize = result.valueSize
-	}
-	stats.throughput = (totalWRcount * float64(valueSize) / 1000000) / maxDuration.Seconds()
-
-	return stats
+func min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
 }
 
 // Get方法实现

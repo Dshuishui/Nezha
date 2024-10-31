@@ -153,17 +153,29 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 					// 加下面的对key的转换操作就是Insert
 					// keyInt, err := strconv.Atoi(key)
 					// if err != nil {
-					// 	keyInt += baga*1 // 使得key的操作变为insert
+					// 	keyInt += baga // 使得key的操作变为insert
 					// 	key = strconv.Itoa(keyInt)
 					// }
 
-					reply, err := kvc.PutInRaft(key, value)
-					result = OperationResult{
-						isWrite:   true,
-						latency:   time.Since(startTime),
-						success:   err == nil && reply != nil && reply.Err != "defeat",
-						valueSize: len(value),
+					// 下面是复合的RMW的写入操作，先读取在写入
+					value, exists, err := kvc.Get(key)
+					if err == nil && exists {
+						reply, err := kvc.PutInRaft(key, value)
+						result = OperationResult{
+							isWrite:   true,
+							latency:   time.Since(startTime),
+							success:   err == nil && reply != nil && reply.Err != "defeat",
+							valueSize: len(value),
+						}
 					}
+
+					// reply, err := kvc.PutInRaft(key, value)
+					// result = OperationResult{
+					// 	isWrite:   true,
+					// 	latency:   time.Since(startTime),
+					// 	success:   err == nil && reply != nil && reply.Err != "defeat",
+					// 	valueSize: len(value),
+					// }
 				} else {
 					value, exists, err := kvc.Get(key)
 					result = OperationResult{
