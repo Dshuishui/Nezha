@@ -50,8 +50,8 @@ type WorkloadStats struct {
 	writeLatencies []time.Duration
 	// readThroughput  float64
 	// writeThroughput float64
-	throughput float64
-	mu         sync.Mutex
+	totalSize float64
+	mu        sync.Mutex
 }
 
 func (ws *WorkloadStats) addResult(result OperationResult) {
@@ -95,7 +95,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 	wg := sync.WaitGroup{}
 	opsPerThread := *dnums / *cnums
 	wg.Add(*cnums)
-	var baga = 2000000
+	var baga = 125000
 
 	// 预生成唯一的key集合
 	allKeys := generateUniqueRandomInts(0, baga) // 针对1KB value，KV分离后
@@ -185,8 +185,10 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 						valueSize: len([]byte(value)),
 					}
 				}
-				localResult.valueSize = result.valueSize
-				localResult.totalCount++
+				if result.success { //	得是正常执行了才计算进去
+					localResult.valueSize = result.valueSize
+					localResult.totalCount++
+				}
 				localResult.totalLatency += result.latency
 
 				stats.addResult(result)
@@ -211,7 +213,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 		}
 		valueSize = result.valueSize
 	}
-	stats.throughput = (totalWRcount * float64(valueSize) / 1000000) / maxDuration.Seconds()
+	stats.totalSize = totalWRcount * float64(valueSize) / 1000000
 
 	return stats
 }
@@ -373,7 +375,7 @@ func main() {
 	fmt.Printf("Write operations: %d (%.1f%%)\n", stats.totalWrites, float64(stats.totalWrites)*100/float64(*dnums))
 	fmt.Printf("Average read latency: %v\n", avgReadLatency)
 	fmt.Printf("Average write latency: %v\n", avgWriteLatency)
-	fmt.Printf("Total throughput: %.2f MB/s\n", stats.throughput)
+	fmt.Printf("Total throughput: %.2f MB/s\n", stats.totalSize/elapsedTime.Seconds())
 
 	// 清理资源
 	for _, pool := range kvc.pools {
