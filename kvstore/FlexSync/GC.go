@@ -332,27 +332,27 @@ func (kvs *KVServer) CheckDatabaseContent() error {
 		if key == nil || value == nil {
 			fmt.Printf("DB entry %d: <nil key or value>\n", count)
 		} else {
-			keyStr := string(key.Data())
-			valueBytes := value.Data()
+			// keyStr := string(key.Data())
+			// valueBytes := value.Data()
 
 			// 尝试将值解释为 int64
-			if len(valueBytes) == 8 {
-				intValue := int64(binary.LittleEndian.Uint64(valueBytes))
-				fmt.Printf("DB entry %d: key=%s, value as int64=%d\n", count, keyStr, intValue)
-			} else {
+			// if len(valueBytes) == 8 {
+				// intValue := int64(binary.LittleEndian.Uint64(valueBytes))
+				// fmt.Printf("DB entry %d: key=%s, value as int64=%d\n", count, keyStr, intValue)
+			// } else {
 				// 如果不是 8 字节，则显示十六进制表示
-				fmt.Printf("DB entry %d: key=%s, value (hex)=%x\n", count, keyStr, valueBytes)
-			}
+				// fmt.Printf("DB entry %d: key=%s, value (hex)=%x\n", count, keyStr, valueBytes)
+			// }
 		}
 
 		key.Free()
 		value.Free()
 
 		count++
-		if count >= 10 {
-			fmt.Printf("Stopping after %v entries...\n",count)
-			break
-		}
+		// if count >= 10 {
+		// 	fmt.Printf("Stopping after %v entries...\n",count)
+		// 	break
+		// }
 	}
 
 	if err := iter.Err(); err != nil {

@@ -559,15 +559,15 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 		}
 	}
 	if kvs.startGC && kvs.endGC {
-		start := time.Now()
+		// start := time.Now()
         positionBytes, err := kvs.persister.Get_opt(key)
-        duration := time.Since(start)
+        // duration := time.Since(start)
 		if err != nil {
 			fmt.Println("去新的rocksdb中拿取key对应的index有问题")
 			panic(err)
 		}
 		if positionBytes == -1 {
-			kvs.getMeasurements = append(kvs.getMeasurements, duration)  // 统计去新rocksdb文件中没有找到该key的时间
+			// kvs.getMeasurements = append(kvs.getMeasurements, duration)  // 统计去新rocksdb文件中没有找到该key的时间
 			value, err := kvs.getFromSortedFile(key)
 			if err == nil {
 				reply.Value = value // 找到了，赋值
@@ -576,7 +576,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 				reply.Err = raft.ErrNoKey // 已排序的文件中没有就是没有
 				reply.Value = raft.NoKey
 			}
-			kvs.OutputMeasurements()
+			// kvs.OutputMeasurements()
 			return reply
 		} else { // 表明新的文件存在该key，则去新的log文件中找
 			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
@@ -809,7 +809,7 @@ func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
 	index := kvs.sortedFileIndex
 	// startTime := time.Now()
 	offset, exists := index.GetOffset(key)
-	fmt.Printf("索引的长度：%v",len(index.Entries))
+	// fmt.Printf("索引的长度：%v",len(index.Entries))
 	if !exists {
 		return "", errors.New(raft.ErrNoKey)
 	}
@@ -1555,7 +1555,7 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	kvs.startGC = true
-	kvs.endGC = true                // 测试效果
+	kvs.endGC = false                // 测试效果
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
 
 	// 初始化存储value的文件

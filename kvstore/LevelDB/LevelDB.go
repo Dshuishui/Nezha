@@ -11,13 +11,13 @@ import (
 
 	// "math/rand"
 	"encoding/binary"
+	"log"
 	"net"
 	_ "net/http/pprof"
 	"os"
 	"strings"
 	"sync"
 	"time"
-	"log"
 
 	// "gitee.com/dong-shuishui/FlexSync/config"
 	"gitee.com/dong-shuishui/FlexSync/raft"
@@ -32,6 +32,7 @@ import (
 	// "google.golang.org/grpc/credentials/insecure"
 	"gitee.com/dong-shuishui/FlexSync/pool"
 	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/tecbot/gorocksdb"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
 	// "gitee.com/dong-shuishui/FlexSync/kvstore/GC"
@@ -230,8 +231,12 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 			key := args.GetKey()
 			value, err := kvs.persister.Get(key)
 			if err != nil {
-				fmt.Println("拿取value有问题")
-				panic(err)
+				// fmt.Println("拿取value有问题")
+				if value == raft.ErrNoKey {
+					reply.Err = value
+				}else{
+					panic(err)
+				}
 			}
 			// positionBytes := kvs.persister.Get(op.Key)
 			// if value == -1 { //  说明leveldb中没有该key
@@ -611,6 +616,63 @@ func (kvs *KVServer) applyLoop() {
 	}
 }
 
+func (kvs *KVServer) CheckDatabaseContent() error {
+	if kvs.persister == nil || kvs.persister.GetDb() == nil {
+		return fmt.Errorf("database is not initialized")
+	}
+
+	ro := gorocksdb.NewDefaultReadOptions()
+	defer ro.Destroy()
+
+	iter := kvs.persister.GetDb().NewIterator(ro)
+	if iter == nil {
+		return fmt.Errorf("failed to create iterator")
+	}
+	defer iter.Close()
+
+	count := 0
+	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
+		key := iter.Key()
+		value := iter.Value()
+
+		if key == nil || value == nil {
+			fmt.Printf("DB entry %d: <nil key or value>\n", count)
+		} else {
+			// keyStr := string(key.Data())
+			// valueBytes := value.Data()
+
+			// 尝试将值解释为 int64
+			// if len(valueBytes) == 8 {
+				// intValue := int64(binary.LittleEndian.Uint64(valueBytes))
+				// fmt.Printf("DB entry %d: key=%s, value as int64=%d\n", count, keyStr, intValue)
+			// } else {
+				// 如果不是 8 字节，则显示十六进制表示
+				// fmt.Printf("DB entry %d: key=%s, value (hex)=%x\n", count, keyStr, valueBytes)
+			// }
+		}
+
+		key.Free()
+		value.Free()
+
+		count++
+		// if count >= 10 {
+		// 	fmt.Printf("Stopping after %v entries...\n",count)
+		// 	break
+		// }
+	}
+
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("iterator error: %v", err)
+	}
+
+	fmt.Printf("Total entries checked: %d\n", count)
+	if count == 0 {
+		fmt.Println("Warning: No entries found in the database.")
+	}
+
+	return nil
+}
+
 func main() {
 	// peers inputed by command line
 	flag.Parse()
@@ -645,6 +707,9 @@ func main() {
 			time.Sleep(timeout)
 			// if (time.Since(kvs.lastPutTime) > timeout) && (time.Since(kvs.raft.LastAppendTime) > timeout) {
 			if time.Since(kvs.lastPutTime) > timeout {
+
+				kvs.CheckDatabaseContent()
+				// time.Sleep(10000*time.Second)
 				cancel() // 超时后取消上下文
 				fmt.Println("38秒没有请求，停止服务器")
 				wg.Done()

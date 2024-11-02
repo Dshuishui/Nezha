@@ -180,7 +180,7 @@ func (p *Persister) Get(key string) (string, error) {
 	defer slice.Free()
 	valueBytes := slice.Data()
 	if slice.Size() == 0 {
-		return ErrNoKey, nil
+		return ErrNoKey, errors.New("巴嘎，没有这个key")
 	}
 	return string(valueBytes), nil
 }
