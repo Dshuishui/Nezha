@@ -50,8 +50,9 @@ type WorkloadStats struct {
 	writeLatencies []time.Duration
 	// readThroughput  float64
 	// writeThroughput float64
-	totalSize float64
+	// throughput float64
 	mu        sync.Mutex
+	throughput float64
 }
 
 func (ws *WorkloadStats) addResult(result OperationResult) {
@@ -64,6 +65,14 @@ func (ws *WorkloadStats) addResult(result OperationResult) {
 			ws.writeLatencies = append(ws.writeLatencies, result.latency)
 		} else {
 			ws.totalReads++
+			ws.readLatencies = append(ws.readLatencies, result.latency)
+		}
+	}else{
+		if result.isWrite {
+			// ws.totalWrites++
+			ws.writeLatencies = append(ws.writeLatencies, result.latency)
+		} else {
+			// ws.totalReads++
 			ws.readLatencies = append(ws.readLatencies, result.latency)
 		}
 	}
@@ -95,7 +104,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 	wg := sync.WaitGroup{}
 	opsPerThread := *dnums / *cnums
 	wg.Add(*cnums)
-	var baga = 125000
+	var baga = 2000000
 
 	// 预生成唯一的key集合
 	allKeys := generateUniqueRandomInts(0, baga) // 针对1KB value，KV分离后
@@ -116,6 +125,11 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 			if threadID == *cnums-1 {
 				end = *dnums
 			}
+
+			// 取余，保证索引下表在范围内
+			start = start % baga
+			end = end % baga
+
 			// 确保待查询的key在范围内
 			if len(allKeys) < *dnums {
 				end = len(allKeys)
@@ -140,6 +154,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 				operations[i], operations[j] = operations[j], operations[i]
 			})
 
+			startTimeBig := time.Now()
 			// 执行操作序列
 			for idx, keyInt := range localKeys {
 				key := strconv.Itoa(keyInt)
@@ -149,13 +164,6 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 				var result OperationResult
 
 				if isWrite {
-
-					// 加下面的对key的转换操作就是Insert
-					// keyInt, err := strconv.Atoi(key)
-					// if err != nil {
-					// 	keyInt += baga // 使得key的操作变为insert
-					// 	key = strconv.Itoa(keyInt)
-					// }
 
 					// 下面是复合的RMW的写入操作，先读取在写入
 					value, exists, err := kvc.Get(key)
@@ -167,21 +175,25 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 							success:   err == nil && reply != nil && reply.Err != "defeat",
 							valueSize: len(value),
 						}
+					}else{
+						result = OperationResult{
+							isWrite:   true,
+							latency:   time.Since(startTime),
+							success:   false,
+							valueSize: len(value),
+						}
 					}
-
-					// reply, err := kvc.PutInRaft(key, value)
-					// result = OperationResult{
-					// 	isWrite:   true,
-					// 	latency:   time.Since(startTime),
-					// 	success:   err == nil && reply != nil && reply.Err != "defeat",
-					// 	valueSize: len(value),
-					// }
-				} else {
-					value, exists, err := kvc.Get(key)
+				} else { //	get的key用在一定范围内随机生成的key
+					randKey := rand.Intn(baga)
+					randStrKey := strconv.Itoa(randKey)
+					value, exists, err := kvc.Get(randStrKey)
+					if err != nil {
+						fmt.Println("什么问题err:", err)
+					}
 					result = OperationResult{
 						isWrite:   false,
 						latency:   time.Since(startTime),
-						success:   err == nil && exists,
+						success:   err == nil && exists && value!="ErrNoKey",
 						valueSize: len([]byte(value)),
 					}
 				}
@@ -189,10 +201,11 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 					localResult.valueSize = result.valueSize
 					localResult.totalCount++
 				}
-				localResult.totalLatency += result.latency
+				// localResult.totalLatency += result.latency
 
 				stats.addResult(result)
 			}
+			localResult.totalLatency = time.Since(startTimeBig)
 			results <- localResult
 		}(i)
 	}
@@ -213,7 +226,8 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 		}
 		valueSize = result.valueSize
 	}
-	stats.totalSize = totalWRcount * float64(valueSize) / 1000000
+	fmt.Printf("读取多少数据：%v---%v---%v\n", totalWRcount, maxDuration, valueSize)
+	stats.throughput = (totalWRcount * float64(valueSize) / 1000000) / maxDuration.Seconds()
 
 	return stats
 }
@@ -375,7 +389,7 @@ func main() {
 	fmt.Printf("Write operations: %d (%.1f%%)\n", stats.totalWrites, float64(stats.totalWrites)*100/float64(*dnums))
 	fmt.Printf("Average read latency: %v\n", avgReadLatency)
 	fmt.Printf("Average write latency: %v\n", avgWriteLatency)
-	fmt.Printf("Total throughput: %.2f MB/s\n", stats.totalSize/elapsedTime.Seconds())
+	fmt.Printf("Total throughput: %.2f MB/s\n", stats.throughput)
 
 	// 清理资源
 	for _, pool := range kvc.pools {
