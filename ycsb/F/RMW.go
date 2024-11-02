@@ -53,6 +53,8 @@ type WorkloadStats struct {
 	// throughput float64
 	mu        sync.Mutex
 	throughput float64
+	avgReadLatency time.Duration
+	avgWriteLatency time.Duration
 }
 
 func (ws *WorkloadStats) addResult(result OperationResult) {
@@ -78,7 +80,7 @@ func (ws *WorkloadStats) addResult(result OperationResult) {
 	}
 }
 
-func calculateAverage(durations []time.Duration) (averageLatency time.Duration, totalAvgLatency time.Duration) {
+func calculateAverage(durations []time.Duration, num int64) (averageLatency time.Duration, totalAvgLatency time.Duration) {
 	if len(durations) == 0 {
 		return 0, 0
 	}
@@ -86,13 +88,15 @@ func calculateAverage(durations []time.Duration) (averageLatency time.Duration, 
 	for _, d := range durations {
 		sum += d
 	}
-	return sum / time.Duration(len(durations)), sum
+	return sum / time.Duration(num), sum
 }
 
 type mixedWorkloadResult struct {
 	totalCount   int           // 总操作数
 	totalLatency time.Duration //
 	valueSize    int
+	avgReadLatency time.Duration
+	avgWriteLatency time.Duration
 }
 
 func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadStats {
@@ -104,7 +108,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 	wg := sync.WaitGroup{}
 	opsPerThread := *dnums / *cnums
 	wg.Add(*cnums)
-	var baga = 2000000
+	var baga = 125000
 
 	// 预生成唯一的key集合
 	allKeys := generateUniqueRandomInts(0, baga) // 针对1KB value，KV分离后
@@ -164,7 +168,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 				var result OperationResult
 
 				if isWrite {
-
+					
 					// 下面是复合的RMW的写入操作，先读取在写入
 					value, exists, err := kvc.Get(key)
 					if err == nil && exists {
@@ -205,6 +209,8 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 
 				stats.addResult(result)
 			}
+			localResult.avgReadLatency, _ = calculateAverage(stats.readLatencies,stats.totalReads)
+			localResult.avgWriteLatency, _ = calculateAverage(stats.writeLatencies,stats.totalWrites)
 			localResult.totalLatency = time.Since(startTimeBig)
 			results <- localResult
 		}(i)
@@ -217,6 +223,8 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 	// var throughput float64
 	// var totalLatency time.Duration
 	var maxDuration time.Duration
+	var totalReadLatency time.Duration
+	var totalWriteLatency time.Duration
 	var valueSize int
 
 	for result := range results {
@@ -225,9 +233,13 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 			maxDuration = result.totalLatency
 		}
 		valueSize = result.valueSize
+		totalReadLatency += result.avgReadLatency
+		totalWriteLatency += result.avgWriteLatency
 	}
 	fmt.Printf("读取多少数据：%v---%v---%v\n", totalWRcount, maxDuration, valueSize)
 	stats.throughput = (totalWRcount * float64(valueSize) / 1000000) / maxDuration.Seconds()
+	stats.avgReadLatency = totalReadLatency / time.Duration(*cnums) 
+	stats.avgWriteLatency = totalWriteLatency / time.Duration(*cnums) 
 
 	return stats
 }
@@ -373,8 +385,8 @@ func main() {
 	elapsedTime := time.Since(startTime)
 
 	// 计算统计信息
-	avgReadLatency, _ := calculateAverage(stats.readLatencies)
-	avgWriteLatency, _ := calculateAverage(stats.writeLatencies)
+	// avgReadLatency, _ := calculateAverage(stats.readLatencies)
+	// avgWriteLatency, _ := calculateAverage(stats.writeLatencies)
 	// totalLatency := totalReadAverageLatency + totalWriteAverageLatency
 
 	// readDataSize := float64(stats.totalReads*int64(len(value))) / 1000000   // MB
@@ -387,8 +399,8 @@ func main() {
 	fmt.Printf("Total time: %v\n", elapsedTime)
 	fmt.Printf("Read operations: %d (%.1f%%)\n", stats.totalReads, float64(stats.totalReads)*100/float64(*dnums))
 	fmt.Printf("Write operations: %d (%.1f%%)\n", stats.totalWrites, float64(stats.totalWrites)*100/float64(*dnums))
-	fmt.Printf("Average read latency: %v\n", avgReadLatency)
-	fmt.Printf("Average write latency: %v\n", avgWriteLatency)
+	fmt.Printf("Average read latency: %v\n", stats.avgReadLatency)
+	fmt.Printf("Average write latency: %v\n", stats.avgWriteLatency)
 	fmt.Printf("Total throughput: %.2f MB/s\n", stats.throughput)
 
 	// 清理资源
