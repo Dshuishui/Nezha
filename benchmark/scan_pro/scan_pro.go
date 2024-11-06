@@ -89,16 +89,19 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 				if err == nil && reply != nil && len(reply.KeyValuePairs) != 0 {
 					count := len(reply.KeyValuePairs)
 					localResult.totalCount += count
-					localResult.scanCount++
+					// localResult.scanCount++
 
 					if localResult.totalCount > 0 && count != 0 { // 该次scan读取到了数据
+						localResult.scanCount++
+
 						for _, value := range reply.KeyValuePairs {
 							localResult.valueSize = len([]byte(value))
 							break // 只迭代一次后就跳出循环
 						}
 
 						// 计算单个scan的平均时延和吞吐量
-						avgItemLatency := duration / time.Duration(count)
+						// avgItemLatency := duration / time.Duration(count)
+						avgItemLatency := duration 
 						// scanLatency := avgItemLatency * time.Duration(gapkey)
 						scanDataSize := float64(count*localResult.valueSize) / 1000000 // MB
 						// scanThroughput := scanDataSize / duration.Seconds()
@@ -149,6 +152,9 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 
 	avgLatency := totalAvgLatency / time.Duration(*cnums)
 	throughput := totalData / maxDuration.Seconds()
+
+	// 计算ops
+	// throughput = (float64(totalScanCount)*float64(valueSize) / 1000000) / maxDuration.Seconds()
 
 	sum_Size_MB := float64(totalCount*valueSize) / 1000000
 
