@@ -176,7 +176,8 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
                     if err == nil && reply != nil {
                         itemCount := len(reply.KeyValuePairs)
                         if itemCount > 0 {
-                            avgLatency := duration / time.Duration(itemCount) // 计算每个条目的平均时延
+                            // avgLatency := duration / time.Duration(itemCount) // 计算每个条目的平均时延
+                            avgLatency := duration // 计算scan的平均时延
                             result = OperationResult{
                                 isWrite:        false,
                                 latency:        duration,
