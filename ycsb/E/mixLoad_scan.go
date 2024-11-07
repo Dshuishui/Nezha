@@ -55,6 +55,7 @@ type WorkloadStats struct {
     totalDataSize   int64  // 总数据量(写入+扫描)
     throughput      float64
     mu              sync.Mutex
+    avgLatency time.Duration
 }
 
 func (ws *WorkloadStats) addResult(result OperationResult) {
@@ -82,6 +83,8 @@ type mixedWorkloadResult struct {
     totalLatency  time.Duration
     valueSize     int
     dataSize      int64  // 这个goroutine处理的总数据量
+    scanCount  int // 执行的scan次数
+	avgLatency time.Duration
 }
 
 // 辅助函数：返回两个整数中的较小值
@@ -176,6 +179,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
                     if err == nil && reply != nil {
                         itemCount := len(reply.KeyValuePairs)
                         if itemCount > 0 {
+                            localResult.totalCount++
                             // avgLatency := duration / time.Duration(itemCount) // 计算每个条目的平均时延
                             avgLatency := duration // 计算scan的平均时延
                             result = OperationResult{
@@ -187,6 +191,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
                                 perItemLatency: avgLatency,
                             }
                             localResult.dataSize += int64(itemCount * len(value))
+                            localResult.totalLatency += result.latency
                         } else {
                             result = OperationResult{
                                 isWrite: false,
@@ -202,10 +207,13 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
                 }
 
                 localResult.valueSize = len(value)
-                localResult.totalCount++
-                localResult.totalLatency += result.latency
+                // localResult.totalCount++
                 stats.addResult(result)
             }
+            if localResult.totalCount > 0 {
+				localResult.avgLatency = localResult.totalLatency / time.Duration(localResult.totalCount)
+				// localResult.throughput = localResult.totalDataSize / totalActualLatency.Seconds() // 计算吞吐量还是得用实际读取这些数据所花费的时间
+			}
             results <- localResult
         }(i)
     }
@@ -214,15 +222,17 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
     close(results)
 
     // 找出最长执行时间的goroutine
-    var maxDuration time.Duration
+    var maxDuration, totalAvgLatency time.Duration
     var totalDataSize int64
     for result := range results {
         if result.totalLatency > maxDuration {
             maxDuration = result.totalLatency
         }
+        totalAvgLatency += result.avgLatency
         totalDataSize += result.dataSize
     }
 
+    stats.avgLatency = totalAvgLatency / time.Duration(*cnums)
     // 计算总吞吐量
     stats.throughput = float64(totalDataSize) / 1000000 / maxDuration.Seconds() // MB/s
 
@@ -371,7 +381,7 @@ func main() {
 
     // 计算统计信息
     avgWriteLatency, _ := calculateAverage(stats.writeLatencies)
-    avgScanLatency, _ := calculateAverage(stats.scanLatencies)  // 这里已经是每个条目的平均时延了
+    // avgScanLatency, _ := calculateAverage(stats.scanLatencies)  // 这里已经是每个条目的平均时延了
 
     // 打印结果
     fmt.Printf("\nTest Results:\n")
@@ -381,7 +391,7 @@ func main() {
     fmt.Printf("Scan operations: %d (%.1f%%)\n", 
         stats.totalScans, float64(stats.totalScans)*100/float64(*dnums))
     fmt.Printf("Average write latency: %v\n", avgWriteLatency)
-    fmt.Printf("Average scan latency per item: %v\n", avgScanLatency)
+    fmt.Printf("Average scan latency per item: %v\n", stats.avgLatency)
     fmt.Printf("Total items scanned: %d\n", stats.totalScanItems)
     fmt.Printf("Total throughput: %.2f MB/s\n", stats.throughput)
 
