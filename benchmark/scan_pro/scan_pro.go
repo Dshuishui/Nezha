@@ -42,13 +42,13 @@ type KVClient struct {
 }
 
 type scanResult struct {
-	totalCount int // 总读取数量
-	scanCount  int // 执行的scan次数
-	avgLatency time.Duration
-	throughput float64
-	valueSize  int
+	totalCount    int // 总读取数量
+	scanCount     int // 执行的scan次数
+	avgLatency    time.Duration
+	throughput    float64
+	valueSize     int
 	totalDataSize float64
-	totalLatency time.Duration
+	totalLatency  time.Duration
 }
 
 func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
@@ -71,7 +71,7 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 			// var totalActualLatency time.Duration
 
 			for j := 0; j < base; j++ {
-				k1 := rand.Intn(125000)
+				k1 := rand.Intn(2000000)
 				k2 := k1 + gapkey
 				startKey := strconv.Itoa(k1)
 				endKey := strconv.Itoa(k2)
@@ -101,7 +101,7 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 
 						// 计算单个scan的平均时延和吞吐量
 						// avgItemLatency := duration / time.Duration(count)
-						avgItemLatency := duration 
+						avgItemLatency := duration
 						// scanLatency := avgItemLatency * time.Duration(gapkey)
 						scanDataSize := float64(count*localResult.valueSize) / 1000000 // MB
 						// scanThroughput := scanDataSize / duration.Seconds()
@@ -134,7 +134,7 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 
 	for result := range results {
 		if result.scanCount > 0 {
-			if result.totalLatency > maxDuration{
+			if result.totalLatency > maxDuration {
 				maxDuration = result.totalLatency
 			}
 			totalAvgLatency += result.avgLatency
@@ -231,7 +231,7 @@ func nrand() int64 {
 
 func main() {
 	flag.Parse()
-	gapkey := 12500
+	gapkey := 200000
 	servers := strings.Split(*ser, ",")
 	kvc := new(KVClient)
 	kvc.Kvservers = servers
