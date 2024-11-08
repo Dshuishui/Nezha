@@ -179,12 +179,55 @@ func (kvs *KVServer) CreateIndex(sortedFilePath string) error {
 		return err
 	}
 	kvs.sortedFileIndex = index
+
+	// 初始化LRU缓存，设置合适的缓存大小
+	// 这里假设缓存10000个key-value对
+	err = kvs.initSortedFileCache(10000)
+	if err != nil {
+		fmt.Printf("Failed to initialize LRU cache: %v\n", err)
+		return err
+	}
+
+	// 预热缓存
+	kvs.warmupCache(sortedFilePath)
+
 	fmt.Println("建立了索引，得到了针对已排序文件的稀疏索引")
 
 	return nil
 
 	// kvs.getFromFile = kvs.getFromSortedOrNew
 	// kvs.scanFromFile = kvs.scanFromSortedOrNew
+}
+
+// 预热缓存：读取最近的一些数据到缓存中
+func (kvs *KVServer) warmupCache(filePath string) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		fmt.Printf("Failed to open file for cache warmup: %v\n", err)
+		return
+	}
+	defer file.Close()
+
+	reader := bufio.NewReader(file)
+	count := 0
+	maxWarmupEntries := 1000 // 预热的条目数量
+
+	for count < maxWarmupEntries {
+		entry, _, err := ReadEntry(reader, 0)
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			fmt.Printf("Error reading entry during cache warmup: %v\n", err)
+			return
+		}
+
+		// 添加到缓存
+		kvs.sortedFileCache.Add(kvs.persister.UnpadKey(entry.Key), entry.Value)
+		count++
+	}
+
+	fmt.Printf("Cache warmup completed with %d entries\n", count)
 }
 
 func (kvs *KVServer) CreateSortedFileIndex(filePath string) (*SortedFileIndex, error) {
@@ -208,14 +251,14 @@ func (kvs *KVServer) CreateSortedFileIndex(filePath string) (*SortedFileIndex, e
 			return nil, err
 		}
 		unpadKey := kvs.persister.UnpadKey(entry.Key)
-		
+
 		// 直接将键和偏移量存入map
 		index[unpadKey] = offset
 
 		offset += entrySize
 		entryCount++
 
-		if entryCount % 100000 == 0 {
+		if entryCount%100000 == 0 {
 			// 可以保留这个日志，但频率降低，以减少输出
 			// fmt.Printf("Processed %d entries, current offset: %d\n", entryCount, offset)
 		}
@@ -337,11 +380,11 @@ func (kvs *KVServer) CheckDatabaseContent() error {
 
 			// 尝试将值解释为 int64
 			// if len(valueBytes) == 8 {
-				// intValue := int64(binary.LittleEndian.Uint64(valueBytes))
-				// fmt.Printf("DB entry %d: key=%s, value as int64=%d\n", count, keyStr, intValue)
+			// intValue := int64(binary.LittleEndian.Uint64(valueBytes))
+			// fmt.Printf("DB entry %d: key=%s, value as int64=%d\n", count, keyStr, intValue)
 			// } else {
-				// 如果不是 8 字节，则显示十六进制表示
-				// fmt.Printf("DB entry %d: key=%s, value (hex)=%x\n", count, keyStr, valueBytes)
+			// 如果不是 8 字节，则显示十六进制表示
+			// fmt.Printf("DB entry %d: key=%s, value (hex)=%x\n", count, keyStr, valueBytes)
 			// }
 		}
 
