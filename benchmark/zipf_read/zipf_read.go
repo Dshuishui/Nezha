@@ -19,7 +19,6 @@ import (
 	"gitee.com/dong-shuishui/FlexSync/util"
 )
 
-// 保留原有的标志定义
 var (
 	ser   = flag.String("servers", "", "the Server, Client Connects to")
 	cnums = flag.Int("cnums", 1, "Client Threads Number")
@@ -30,22 +29,27 @@ var (
 type KVClient struct {
 	Kvservers []string
 	mu        sync.Mutex
-	clientId  int64 // 客户端唯一标识
-	seqId     int64 // 该客户端单调递增的请求id
+	clientId  int64
+	seqId     int64
 	leaderId  int
-
 	pools     []pool.Pool
-	goodPut   int // 有效吞吐量
+	goodPut   int
 	valuesize int
-	// totalLatency time.Duration // 添加总延迟字段
 }
+
 type getResult struct {
 	count         int
 	avgLatency    time.Duration
-	totalDataSize    float64 // MB/s
-	valueSize  int
-	duration   time.Duration
+	totalDataSize float64
+	valueSize     int
+	duration      time.Duration
 }
+
+const (
+    KEY_SPACE      = 100000    // 键空间大小
+    ZIPF_S         = 1.01      // Zipf 分布的偏度参数
+    ZIPF_V         = 1         // 最小值
+)
 
 func (kvc *KVClient) randRead() (float64, time.Duration) {
 	wg := sync.WaitGroup{}
@@ -59,30 +63,43 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 		go func(i int) {
 			defer wg.Done()
 			localResult := getResult{}
-			rand.Seed(time.Now().UnixNano())
+
+			// 为每个 goroutine 创建独立的随机数生成器
+			source := rand.NewSource(time.Now().UnixNano() + int64(i))
+			rnd := rand.New(source)
+			
+			// 创建 Zipf 分布，使用更保守的参数
+			zipf := rand.NewZipf(rnd, ZIPF_S, ZIPF_V, uint64(KEY_SPACE-1))
+			if zipf == nil {
+				fmt.Printf("Failed to create Zipf distribution with parameters: s=%.2f, v=%d, imax=%d\n", 
+                    ZIPF_S, ZIPF_V, KEY_SPACE-1)
+				return
+			}
+
 			startTime := time.Now()
 			for j := 0; j < base; j++ {
-				key := rand.Intn(125000)
-				targetkey := strconv.Itoa(key)
-				value, keyExist, err := kvc.Get(targetkey)
+				// 使用 Zipf 分布生成键
+				keyNum := zipf.Uint64() % uint64(KEY_SPACE) // 确保键在有效范围内
+				targetKey := strconv.FormatUint(keyNum, 10)
+
+				value, keyExist, err := kvc.Get(targetKey)
 				if err == nil && keyExist && value != "ErrNoKey" {
 					localResult.count++
 					localResult.valueSize = len([]byte(value))
 				}
 			}
+
 			localResult.duration = time.Since(startTime)
 			if localResult.count > 0 {
 				localResult.avgLatency = localResult.duration / time.Duration(localResult.count)
-				localResult.totalDataSize = float64(localResult.count * localResult.valueSize) / 1000000 // MB
-				// localResult.throughput = totalDataSize / duration.Seconds()
+				localResult.totalDataSize = float64(localResult.count * localResult.valueSize) / 1000000
 			}
 			resultChan <- localResult
 		}(i)
 	}
-	// go func() {
-		wg.Wait()
-		close(resultChan)
-	// }()
+
+	wg.Wait()
+	close(resultChan)
 
 	var maxDuration time.Duration
 	var totalData float64
@@ -93,8 +110,8 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 	for result := range resultChan {
 		if result.count > 0 {
 			if result.duration > maxDuration {
-                maxDuration = result.duration
-            }
+				maxDuration = result.duration
+			}
 			totalData += result.totalDataSize
 			totalAvgLatency += result.avgLatency
 			kvc.valuesize = result.valueSize
@@ -102,19 +119,25 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 		}
 		totalCount += result.count
 	}
-	// fmt.Printf("此时，maxduration为%v,totalData:%v\n",maxDuration,totalData)
 
 	kvc.goodPut = totalCount
 
-	throughput := totalData / maxDuration.Seconds()
-	avgLatency := totalAvgLatency / time.Duration(goroutineCount)
+	if maxDuration > 0 {
+		throughput := totalData / maxDuration.Seconds()
+		avgLatency := totalAvgLatency
+		if goroutineCount > 0 {
+			avgLatency = totalAvgLatency / time.Duration(goroutineCount)
+		}
 
-	for _, pool := range kvc.pools {
-		pool.Close()
-		util.DPrintf("The raft pool has been closed")
+		for _, pool := range kvc.pools {
+			pool.Close()
+			util.DPrintf("The raft pool has been closed")
+		}
+
+		return throughput, avgLatency
 	}
 
-	return throughput, avgLatency
+	return 0, 0
 }
 
 // Method of Send RPC of GetInRaft
@@ -273,7 +296,7 @@ func runTest() (float64, time.Duration) {
 }
 
 func main() {
-	numTests := 3
+	numTests := 10
 	var totalThroughput float64
 	var totalAverageLatency time.Duration
 

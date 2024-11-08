@@ -110,6 +110,8 @@ type KVServer struct {
 	// getFromFile     func(string) (string, error)			// 对应与垃圾分离前后的两种查询方法。
 	// scanFromFile    func(string, string) (map[string]string, error)
 	getMeasurements []time.Duration
+
+	
 }
 
 // ValueLog represents the Value Log file for storing values.
