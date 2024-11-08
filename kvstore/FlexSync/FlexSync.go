@@ -45,6 +45,7 @@ import (
 	// "google.golang.org/grpc/credentials/insecure"
 	"gitee.com/dong-shuishui/FlexSync/pool"
 	// "gitee.com/dong-shuishui/FlexSync/kvstore/GC4"
+	lru "github.com/hashicorp/golang-lru"
 	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/tecbot/gorocksdb"
 	"google.golang.org/grpc/keepalive"
@@ -111,7 +112,7 @@ type KVServer struct {
 	// scanFromFile    func(string, string) (map[string]string, error)
 	getMeasurements []time.Duration
 
-	
+	sortedFileCache *lru.Cache  // 用于缓存key到offset的映射
 }
 
 // ValueLog represents the Value Log file for storing values.
@@ -569,6 +570,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 			panic(err)
 		}
 		if positionBytes == -1 {
+			// fmt.Println("去新文件找了")
 			// kvs.getMeasurements = append(kvs.getMeasurements, duration)  // 统计去新rocksdb文件中没有找到该key的时间
 			value, err := kvs.getFromSortedFile(key)
 			if err == nil {
@@ -805,38 +807,54 @@ func (sfi *SortedFileIndex) GetOffset(key string) (int64, bool) {
 	return offset, exists
 }
 
-// 哈希表结构的索引
+// getFromSortedFile 增加直接缓存value的LRU缓存功能
 func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
-	// 假设我们已经创建了索引并存储在 kvs.sortedFileIndex 中
-	index := kvs.sortedFileIndex
-	// startTime := time.Now()
-	offset, exists := index.GetOffset(key)
-	// fmt.Printf("索引的长度：%v",len(index.Entries))
-	if !exists {
-		return "", errors.New(raft.ErrNoKey)
-	}
+    // 先检查LRU缓存
+    if value, ok := kvs.sortedFileCache.Get(key); ok {
+        // 缓存命中，直接返回缓存的value
+        return value.(string), nil
+    }
 
-	// 打开文件并移动到索引位置
-	file, err := os.Open(index.FilePath)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
+    // 缓存未命中，使用索引查找
+    index := kvs.sortedFileIndex
+    offset, exists := index.GetOffset(key)
+    if !exists {
+        return "", errors.New(raft.ErrNoKey)
+    }
 
-	_, err = file.Seek(offset, 0)
-	if err != nil {
-		return "", err
-	}
+    // 打开文件并移动到索引位置
+    file, err := os.Open(index.FilePath)
+    if err != nil {
+        return "", err
+    }
+    defer file.Close()
 
-	reader := bufio.NewReader(file)
-	entry, _, err := ReadEntry(reader, offset)
-	if err != nil {
-		return "", err
-	}
+    _, err = file.Seek(offset, 0)
+    if err != nil {
+        return "", err
+    }
 
-	return entry.Value, nil
+    reader := bufio.NewReader(file)
+    entry, _, err := ReadEntry(reader, offset)
+    if err != nil {
+        return "", err
+    }
+
+    // 将查询到的value添加到缓存中
+    kvs.sortedFileCache.Add(key, entry.Value)
+
+    return entry.Value, nil
 }
 
+// 在初始化 KVServer 时，需要初始化 LRU 缓存
+func (kvs *KVServer) initSortedFileCache(cacheSize int) error {
+    cache, err := lru.New(cacheSize)  // 创建指定大小的LRU缓存
+    if err != nil {
+        return fmt.Errorf("failed to create LRU cache: %v", err)
+    }
+    kvs.sortedFileCache = cache
+    return nil
+}
 // 普通的
 // func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
 // 	// 假设我们已经创建了索引并存储在 kvs.sortedFileIndex 中
