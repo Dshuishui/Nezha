@@ -172,7 +172,7 @@ func (kvs *KVServer) CreateIndex(sortedFilePath string) error {
 
 	kvs.sortedFilePath = sortedFilePath
 
-	// 创建索引，假设每1000个条目记录一次索引，稀疏索引，间隔一部分创建一个索引，找到第一个合适的，再进行线性查询
+	// 创建索引，假设每1个条目记录一次索引，稀疏索引，间隔一部分创建一个索引，找到第一个合适的，再进行线性查询
 	index, err := kvs.CreateSortedFileIndex(sortedFilePath)
 	if err != nil {
 		// 处理错误
@@ -181,8 +181,8 @@ func (kvs *KVServer) CreateIndex(sortedFilePath string) error {
 	kvs.sortedFileIndex = index
 
 	// 初始化LRU缓存，设置合适的缓存大小
-	// 这里假设缓存10000个key-value对
-	err = kvs.initSortedFileCache(10000)
+	// 这里假设缓存40000个key-value对
+	err = kvs.initSortedFileCache(320000)
 	if err != nil {
 		fmt.Printf("Failed to initialize LRU cache: %v\n", err)
 		return err
@@ -210,7 +210,7 @@ func (kvs *KVServer) warmupCache(filePath string) {
 
 	reader := bufio.NewReader(file)
 	count := 0
-	maxWarmupEntries := 1000 // 预热的条目数量
+	maxWarmupEntries := 100000 // 预热的条目数量
 
 	for count < maxWarmupEntries {
 		entry, _, err := ReadEntry(reader, 0)
