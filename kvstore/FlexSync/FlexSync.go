@@ -1472,7 +1472,8 @@ func (kvs *KVServer) applyLoop() {
 					}
 
 					opCtx, existOp := kvs.reqMap[index]          // 检查当前index对应的等待put的请求是否超时，即是否还在等待被apply
-					prevSeq, existSeq := kvs.seqMap[op.ClientId] // 上一次该客户端发来的请求的序号
+					// prevSeq, existSeq := kvs.seqMap[op.ClientId] // 上一次该客户端发来的请求的序号
+					_, existSeq := kvs.seqMap[op.ClientId] // 上一次该客户端发来的请求的序号
 					kvs.seqMap[op.ClientId] = op.SeqId           // 更新服务器端，客户端请求的序列号
 					// fmt.Printf("op:%v---index%v\n",existOp,index)
 					if existOp { // 存在等待结果的apply日志的RPC, 那么判断状态是否与写入时一致，可能之前接受过该日志，但是身份不是leader了，该index对应的请求日志被别的leader同步日志时覆盖了。
@@ -1486,7 +1487,8 @@ func (kvs *KVServer) applyLoop() {
 					// 只处理ID单调递增的客户端写请求
 					if op.OpType == OP_TYPE_PUT {
 						// fmt.Printf("kaishiput")
-						if !existSeq || op.SeqId > prevSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
+						// if !existSeq || op.SeqId > prevSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
+						if !existSeq {	//	如果要改就是改这个了，就不管序号，直接先执行。
 							// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
 							if op.SeqId%10000 == 0 {
 								fmt.Println("底层执行了Put请求，以及重置put操作时间")
@@ -1574,8 +1576,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
-	kvs.startGC = true
-	kvs.endGC = true                // 测试效果
+	kvs.startGC = false
+	kvs.endGC = false                // 测试效果
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
 
 	// 初始化存储value的文件
@@ -1601,7 +1603,7 @@ func main() {
 	// ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 25 * time.Second
+		timeout := 250000 * time.Second
 		time1 := 500000 * time.Second
 		for {
 			time.Sleep(timeout)
