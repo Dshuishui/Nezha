@@ -553,7 +553,7 @@ func (kvs *KVServer) applyLoop() {
 					}
 
 					opCtx, existOp := kvs.reqMap[index]          // 检查当前index对应的等待put的请求是否超时，即是否还在等待被apply
-					prevSeq, existSeq := kvs.seqMap[op.ClientId] // 上一次该客户端发来的请求的序号
+					_, existSeq := kvs.seqMap[op.ClientId] // 上一次该客户端发来的请求的序号
 					kvs.seqMap[op.ClientId] = op.SeqId           // 更新服务器端，客户端请求的序列号
 
 					if existOp { // 存在等待结果的apply日志的RPC, 那么判断状态是否与写入时一致，可能之前接受过该日志，但是身份不是leader了，该index对应的请求日志被别的leader同步日志时覆盖了。
@@ -566,7 +566,8 @@ func (kvs *KVServer) applyLoop() {
 
 					// 只处理ID单调递增的客户端写请求
 					if op.OpType == OP_TYPE_PUT {
-						if !existSeq || op.SeqId > prevSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
+						// if !existSeq || op.SeqId > prevSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
+						if !existSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
 							// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
 							if op.SeqId%10000 == 0 {
 								fmt.Println("底层执行了Put请求，以及重置put操作时间")
