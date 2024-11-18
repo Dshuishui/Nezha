@@ -46,9 +46,9 @@ type getResult struct {
 }
 
 const (
-    KEY_SPACE      = 187500    // 键空间大小
-    ZIPF_S         = 1.01      // Zipf 分布的偏度参数
-    ZIPF_V         = 1         // 最小值
+	KEY_SPACE = 125000 // 键空间大小
+	ZIPF_S    = 1.01   // Zipf 分布的偏度参数
+	ZIPF_V    = 1      // 最小值
 )
 
 func (kvc *KVClient) randRead() (float64, time.Duration) {
@@ -67,12 +67,12 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 			// 为每个 goroutine 创建独立的随机数生成器
 			source := rand.NewSource(time.Now().UnixNano() + int64(i))
 			rnd := rand.New(source)
-			
+
 			// 创建 Zipf 分布，使用更保守的参数
 			zipf := rand.NewZipf(rnd, ZIPF_S, ZIPF_V, uint64(KEY_SPACE-1))
 			if zipf == nil {
-				fmt.Printf("Failed to create Zipf distribution with parameters: s=%.2f, v=%d, imax=%d\n", 
-                    ZIPF_S, ZIPF_V, KEY_SPACE-1)
+				fmt.Printf("Failed to create Zipf distribution with parameters: s=%.2f, v=%d, imax=%d\n",
+					ZIPF_S, ZIPF_V, KEY_SPACE-1)
 				return
 			}
 
@@ -87,12 +87,13 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 					localResult.count++
 					localResult.valueSize = len([]byte(value))
 				}
+				// fmt.Printf("exist? %v\n",keyExist)
 			}
 
 			localResult.duration = time.Since(startTime)
 			if localResult.count > 0 {
 				localResult.avgLatency = localResult.duration / time.Duration(localResult.count)
-				localResult.totalDataSize = float64(localResult.count * localResult.valueSize) / 1000000
+				localResult.totalDataSize = float64(localResult.count*localResult.valueSize) / 1000000
 			}
 			resultChan <- localResult
 		}(i)
