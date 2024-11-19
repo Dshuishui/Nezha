@@ -72,10 +72,10 @@ func (ws *WorkloadStats) addResult(result OperationResult) {
 	}else{
 		if result.isWrite {
 			// ws.totalWrites++
-			ws.writeLatencies = append(ws.writeLatencies, result.latency)
+			// ws.writeLatencies = append(ws.writeLatencies, result.latency)
 		} else {
 			// ws.totalReads++
-			ws.readLatencies = append(ws.readLatencies, result.latency)
+			// ws.readLatencies = append(ws.readLatencies, result.latency)
 		}
 	}
 }
@@ -108,7 +108,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 	wg := sync.WaitGroup{}
 	opsPerThread := *dnums / *cnums
 	wg.Add(*cnums)
-	var baga = 2000000
+	var baga = 125000
 
 	// 预生成唯一的key集合
 	allKeys := generateUniqueRandomInts(0, baga) // 针对1KB value，KV分离后

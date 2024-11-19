@@ -148,19 +148,19 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 	// 	return reply // 不是leader，拿不到commitindex直接退出，找其它leader
 	// }
 	// for {
-		// if kvs.raft.GetApplyIndex() >= commitindex {
-			// 执行范围查询
-			result, err := kvs.persister.ScanRange(startKey, endKey)
-			if err != nil {
-				log.Printf("Scan error: %v", err)
-				reply.Err = "error in scan"
-				return reply
-			}
-			// 构造响应并返回
-			reply.KeyValuePairs = result
-			return reply
-		// }
-		// time.Sleep(6 * time.Millisecond)
+	// if kvs.raft.GetApplyIndex() >= commitindex {
+	// 执行范围查询
+	result, err := kvs.persister.ScanRange(startKey, endKey)
+	if err != nil {
+		log.Printf("Scan error: %v", err)
+		reply.Err = "error in scan"
+		return reply
+	}
+	// 构造响应并返回
+	reply.KeyValuePairs = result
+	return reply
+	// }
+	// time.Sleep(6 * time.Millisecond)
 	// }
 }
 
@@ -228,23 +228,23 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	// }
 	// for { // 证明了此服务器就是leader
 	// 	if kvs.raft.GetApplyIndex() >= commitindex {
-			key := args.GetKey()
-			value, err := kvs.persister.Get(key)
-			if err != nil {
-				// fmt.Println("拿取value有问题")
-				if value == raft.ErrNoKey {
-					reply.Err = value
-				}else{
-					panic(err)
-				}
-			}
-			// positionBytes := kvs.persister.Get(op.Key)
-			// if value == -1 { //  说明leveldb中没有该key
-			// 	reply.Err = raft.ErrNoKey
-			// 	reply.Value = raft.NoKey
-			// }
-			reply.Value = value
-			return reply
+	key := args.GetKey()
+	value, err := kvs.persister.Get(key)
+	if err != nil {
+		// fmt.Println("拿取value有问题")
+		if value == raft.ErrNoKey {
+			reply.Err = value
+		} else {
+			panic(err)
+		}
+	}
+	// positionBytes := kvs.persister.Get(op.Key)
+	// if value == -1 { //  说明leveldb中没有该key
+	// 	reply.Err = raft.ErrNoKey
+	// 	reply.Value = raft.NoKey
+	// }
+	reply.Value = value
+	return reply
 	// 	}
 	// 	time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
 	// }
@@ -327,7 +327,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 		}
 	}()
 
-	timer := time.NewTimer(50000 * time.Millisecond)
+	timer := time.NewTimer(500000 * time.Millisecond)
 	defer timer.Stop()
 	select {
 	// 通道关闭或者有数据传入都会执行以下的分支
@@ -552,9 +552,9 @@ func (kvs *KVServer) applyLoop() {
 						return
 					}
 
-					opCtx, existOp := kvs.reqMap[index]          // 检查当前index对应的等待put的请求是否超时，即是否还在等待被apply
+					opCtx, existOp := kvs.reqMap[index] // 检查当前index对应的等待put的请求是否超时，即是否还在等待被apply
 					// _, existSeq := kvs.seqMap[op.ClientId] // 上一次该客户端发来的请求的序号
-					kvs.seqMap[op.ClientId] = op.SeqId           // 更新服务器端，客户端请求的序列号
+					kvs.seqMap[op.ClientId] = op.SeqId // 更新服务器端，客户端请求的序列号
 
 					if existOp { // 存在等待结果的apply日志的RPC, 那么判断状态是否与写入时一致，可能之前接受过该日志，但是身份不是leader了，该index对应的请求日志被别的leader同步日志时覆盖了。
 						// 虽然没超时，但是如果已经和刚开始写入的请求不一致了，那也不行。
@@ -568,28 +568,28 @@ func (kvs *KVServer) applyLoop() {
 					if op.OpType == OP_TYPE_PUT {
 						// if !existSeq || op.SeqId > prevSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
 						// if !existSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
-							// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
-							if op.SeqId%10000 == 0 {
-								fmt.Println("底层执行了Put请求，以及重置put操作时间")
-							}
-							kvs.lastPutTime = time.Now() // 更新put操作时间
+						// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
+						if op.SeqId%10000 == 0 {
+							fmt.Println("底层执行了Put请求，以及重置put操作时间")
+						}
+						kvs.lastPutTime = time.Now() // 更新put操作时间
 
-							// 将整数编码为字节流并存入 LevelDB
-							// indexKey := make([]byte, 4)                            // 假设整数是 int32 类型
-							// kvs.persister.Put(op.Key,indexKey)
-							// binary.BigEndian.PutUint32(indexKey, uint32(op.Index)) // 这里注意是把op.Index放进去还是对应日志的entry.Command.Index，两者应该都一样
-							// kvs.persister.Put(op.Key, indexKey)                    // <key,idnex>,其中index是string类型
-							// addrs := kvs.raft.GetOffsets()		// 拿到raft层的offsets，这个可以优化用通道传输
-							// addr := addrs[op.Index]
-							// positionBytes := make([]byte, binary.MaxVarintLen64) // 相当于把地址（指向keysize开始处）压缩一下
-							// binary.PutVarint(positionBytes, offset)
-							// kvs.persister.Put(op.Key, positionBytes)
+						// 将整数编码为字节流并存入 LevelDB
+						// indexKey := make([]byte, 4)                            // 假设整数是 int32 类型
+						// kvs.persister.Put(op.Key,indexKey)
+						// binary.BigEndian.PutUint32(indexKey, uint32(op.Index)) // 这里注意是把op.Index放进去还是对应日志的entry.Command.Index，两者应该都一样
+						// kvs.persister.Put(op.Key, indexKey)                    // <key,idnex>,其中index是string类型
+						// addrs := kvs.raft.GetOffsets()		// 拿到raft层的offsets，这个可以优化用通道传输
+						// addr := addrs[op.Index]
+						// positionBytes := make([]byte, binary.MaxVarintLen64) // 相当于把地址（指向keysize开始处）压缩一下
+						// binary.PutVarint(positionBytes, offset)
+						// kvs.persister.Put(op.Key, positionBytes)
 
-							kvs.persister.Put(op.Key, op.Value)
-							// fmt.Println("length:",len(positionBytes))
-							// fmt.Println("length:",len([]byte(op.Value)))
+						kvs.persister.Put(op.Key, op.Value)
+						// fmt.Println("length:",len(positionBytes))
+						// fmt.Println("length:",len([]byte(op.Value)))
 						// } else if existOp { // 虽然该请求的处理还未超时，但是已经处理过了。
-							// opCtx.ignored = true
+						// opCtx.ignored = true
 						// }
 					} else { // OP_TYPE_GET
 						if existOp { // 如果是GET请求，只要没超时，都可以进行幂等处理
@@ -644,11 +644,11 @@ func (kvs *KVServer) CheckDatabaseContent() error {
 
 			// 尝试将值解释为 int64
 			// if len(valueBytes) == 8 {
-				// intValue := int64(binary.LittleEndian.Uint64(valueBytes))
-				// fmt.Printf("DB entry %d: key=%s, value as int64=%d\n", count, keyStr, intValue)
+			// intValue := int64(binary.LittleEndian.Uint64(valueBytes))
+			// fmt.Printf("DB entry %d: key=%s, value as int64=%d\n", count, keyStr, intValue)
 			// } else {
-				// 如果不是 8 字节，则显示十六进制表示
-				// fmt.Printf("DB entry %d: key=%s, value (hex)=%x\n", count, keyStr, valueBytes)
+			// 如果不是 8 字节，则显示十六进制表示
+			// fmt.Printf("DB entry %d: key=%s, value (hex)=%x\n", count, keyStr, valueBytes)
 			// }
 		}
 
@@ -692,11 +692,11 @@ func main() {
 	kvs.seqMap = make(map[int64]int64)
 	kvs.lastAppliedIndex = 0
 	// kvs.persister.Init("./kvstore/LevelDB/db_key_value",true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存
-	_, err := kvs.persister.Init("./kvstore/LevelDB/db_key_value",true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
+	_, err := kvs.persister.Init("./kvstore/LevelDB/db_key_value", true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
 	if err != nil {
-        log.Fatalf("Failed to initialize database: %v", err)
-    }
-    // defer persister.Close()
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	// defer persister.Close()
 
 	go kvs.applyLoop()
 
@@ -728,7 +728,6 @@ func main() {
 	kvs.raft.Gap = gap
 	kvs.raft.SyncTime = syncTime
 	// go GC.MonitorFileSize("./kvstore/FlexSync/db_key_index")	// GC处理
-
 
 	wg.Wait()
 }
