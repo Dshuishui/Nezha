@@ -105,7 +105,7 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 	wg.Add(*cnums)
 	kvc.goodPut = 0
 
-	allKeys := generateUniqueRandomInts(0, 39062)
+	allKeys := generateUniqueRandomInts(2000000, 2500000)
 	results := make(chan putResult, *cnums)
 
 	for i := 0; i < *cnums; i++ {

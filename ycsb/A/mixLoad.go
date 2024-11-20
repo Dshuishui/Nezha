@@ -108,7 +108,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 	wg := sync.WaitGroup{}
 	opsPerThread := *dnums / *cnums
 	wg.Add(*cnums)
-	var baga = 125000
+	var baga = 2500000
 
 	// 预生成唯一的key集合
 	allKeys := generateUniqueRandomInts(0, baga) // 针对1KB value，KV分离后
@@ -170,11 +170,11 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 				if isWrite {
 
 					// 加下面的对key的转换操作就是Insert
-					keyInt, err := strconv.Atoi(key)
-					if err != nil {
-						keyInt += baga*1 // 使得key的操作变为insert
-						key = strconv.Itoa(keyInt)
-					}
+					// keyInt, err := strconv.Atoi(key)
+					// if err != nil {
+						// keyInt += baga*1 // 使得key的操作变为insert
+					// 	key = strconv.Itoa(keyInt)
+					// }
 
 					reply, err := kvc.PutInRaft(key, value)
 					result = OperationResult{

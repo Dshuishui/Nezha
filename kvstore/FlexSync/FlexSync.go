@@ -726,7 +726,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 			}
 		}
 	}()
-	timer := time.NewTimer(50000 * time.Millisecond)
+	timer := time.NewTimer(20 * time.Second)
 	defer timer.Stop()
 	select {
 	// 通道关闭或者有数据传入都会执行以下的分支
@@ -1576,8 +1576,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
-	kvs.startGC = false
-	kvs.endGC = false                // 测试效果
+	kvs.startGC = true
+	kvs.endGC = true                // 测试效果
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
 
 	// 初始化存储value的文件
@@ -1603,7 +1603,7 @@ func main() {
 	// ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 250000 * time.Second
+		timeout := 25 * time.Second
 		time1 := 500000 * time.Second
 		for {
 			time.Sleep(timeout)
