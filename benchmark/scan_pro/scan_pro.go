@@ -71,7 +71,7 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 			// var totalActualLatency time.Duration
 
 			for j := 0; j < base; j++ {
-				k1 := rand.Intn(250000)
+				k1 := rand.Intn(230000)
 				k2 := k1 + gapkey
 				startKey := strconv.Itoa(k1)
 				endKey := strconv.Itoa(k2)
@@ -110,6 +110,11 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 						localResult.totalDataSize += scanDataSize
 						localResult.totalLatency += duration
 					}
+				}
+				if reply == nil {
+					fmt.Println("reply为空")
+				} else {
+					fmt.Printf("err=%v\n reply=%v\n length=%v\n", err, reply.Err, len(reply.KeyValuePairs))
 				}
 			}
 
@@ -179,7 +184,7 @@ func (kvc *KVClient) rangeGet(key1 string, key2 string) (*kvrpc.ScanRangeRespons
 		}
 		defer conn.Close()
 		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*500)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
 		defer cancel()
 		reply, err := client.ScanRangeInRaft(ctx, args)
 		if err != nil {
@@ -231,7 +236,7 @@ func nrand() int64 {
 
 func main() {
 	flag.Parse()
-	gapkey := 25000
+	gapkey := 15625
 	servers := strings.Split(*ser, ",")
 	kvc := new(KVClient)
 	kvc.Kvservers = servers
