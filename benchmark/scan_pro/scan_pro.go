@@ -71,7 +71,7 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 			// var totalActualLatency time.Duration
 
 			for j := 0; j < base; j++ {
-				k1 := rand.Intn(230000)
+				k1 := rand.Intn(156250)
 				k2 := k1 + gapkey
 				startKey := strconv.Itoa(k1)
 				endKey := strconv.Itoa(k2)
@@ -100,8 +100,8 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 						}
 
 						// 计算单个scan的平均时延和吞吐量
-						avgItemLatency := duration / time.Duration(count)
-						// avgItemLatency := duration
+						// avgItemLatency := duration / time.Duration(count)
+						avgItemLatency := duration
 						// scanLatency := avgItemLatency * time.Duration(gapkey)
 						scanDataSize := float64(count*localResult.valueSize) / 1000000 // MB
 						// scanThroughput := scanDataSize / duration.Seconds()
@@ -112,9 +112,9 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 					}
 				}
 				if reply == nil {
-					fmt.Println("reply为空")
+					// fmt.Println("reply为空")
 				} else {
-					fmt.Printf("err=%v\n reply=%v\n length=%v\n", err, reply.Err, len(reply.KeyValuePairs))
+					// fmt.Printf("err=%v\n reply=%v\n length=%v\n", err, reply.Err, len(reply.KeyValuePairs))
 				}
 			}
 
@@ -236,7 +236,7 @@ func nrand() int64 {
 
 func main() {
 	flag.Parse()
-	gapkey := 15625
+	gapkey := 100
 	servers := strings.Split(*ser, ",")
 	kvc := new(KVClient)
 	kvc.Kvservers = servers

@@ -51,9 +51,9 @@ type WorkloadStats struct {
 	// readThroughput  float64
 	// writeThroughput float64
 	// throughput float64
-	mu        sync.Mutex
-	throughput float64
-	avgReadLatency time.Duration
+	mu              sync.Mutex
+	throughput      float64
+	avgReadLatency  time.Duration
 	avgWriteLatency time.Duration
 }
 
@@ -69,7 +69,7 @@ func (ws *WorkloadStats) addResult(result OperationResult) {
 			ws.totalReads++
 			ws.readLatencies = append(ws.readLatencies, result.latency)
 		}
-	}else{
+	} else {
 		if result.isWrite {
 			// ws.totalWrites++
 			// ws.writeLatencies = append(ws.writeLatencies, result.latency)
@@ -92,10 +92,10 @@ func calculateAverage(durations []time.Duration, num int64) (averageLatency time
 }
 
 type mixedWorkloadResult struct {
-	totalCount   int           // 总操作数
-	totalLatency time.Duration //
-	valueSize    int
-	avgReadLatency time.Duration
+	totalCount      int           // 总操作数
+	totalLatency    time.Duration //
+	valueSize       int
+	avgReadLatency  time.Duration
 	avgWriteLatency time.Duration
 }
 
@@ -108,7 +108,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 	wg := sync.WaitGroup{}
 	opsPerThread := *dnums / *cnums
 	wg.Add(*cnums)
-	var baga = 2500000
+	var baga = 156250
 
 	// 预生成唯一的key集合
 	allKeys := generateUniqueRandomInts(0, baga) // 针对1KB value，KV分离后
@@ -172,7 +172,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 					// 加下面的对key的转换操作就是Insert
 					// keyInt, err := strconv.Atoi(key)
 					// if err != nil {
-						// keyInt += baga*1 // 使得key的操作变为insert
+					// 	keyInt += baga * 1 // 使得key的操作变为insert
 					// 	key = strconv.Itoa(keyInt)
 					// }
 
@@ -193,7 +193,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 					result = OperationResult{
 						isWrite:   false,
 						latency:   time.Since(startTime),
-						success:   err == nil && exists && value!="ErrNoKey",
+						success:   err == nil && exists && value != "ErrNoKey",
 						valueSize: len([]byte(value)),
 					}
 				}
@@ -205,8 +205,8 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 
 				stats.addResult(result)
 			}
-			localResult.avgReadLatency, _ = calculateAverage(stats.readLatencies,stats.totalReads)
-			localResult.avgWriteLatency, _ = calculateAverage(stats.writeLatencies,stats.totalWrites)
+			localResult.avgReadLatency, _ = calculateAverage(stats.readLatencies, stats.totalReads)
+			localResult.avgWriteLatency, _ = calculateAverage(stats.writeLatencies, stats.totalWrites)
 			localResult.totalLatency = time.Since(startTimeBig)
 			results <- localResult
 		}(i)
@@ -234,8 +234,8 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 	}
 	fmt.Printf("读取多少数据：%v---%v---%v\n", totalWRcount, maxDuration, valueSize)
 	stats.throughput = (totalWRcount * float64(valueSize) / 1000000) / maxDuration.Seconds()
-	stats.avgReadLatency = totalReadLatency / time.Duration(*cnums) 
-	stats.avgWriteLatency = totalWriteLatency / time.Duration(*cnums) 
+	stats.avgReadLatency = totalReadLatency / time.Duration(*cnums)
+	stats.avgWriteLatency = totalWriteLatency / time.Duration(*cnums)
 
 	return stats
 }
@@ -274,7 +274,7 @@ func (kvc *KVClient) SendGetInRaft(targetId int, request *kvrpc.GetInRaftRequest
 	defer conn.Close()
 
 	client := kvrpc.NewKVClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
 	defer cancel()
 
 	reply, err := client.GetInRaft(ctx, request)
@@ -303,7 +303,7 @@ func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftRespon
 		defer conn.Close()
 
 		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
 		defer cancel()
 
 		reply, err := client.PutInRaft(ctx, request)

@@ -63,7 +63,7 @@ func (kvs *KVServer) GarbageCollection() error {
 		return fmt.Errorf("error checking new RaftState log file: %v", err)
 	}
 
-	// kvs.startGC = true
+	kvs.startGC = true
 
 	// 切换到新的文件和RocksDB
 	kvs.SwitchToNewFiles(newRaftStateLogPath, newPersister)
@@ -119,6 +119,8 @@ func (kvs *KVServer) GarbageCollection() error {
 	if err != nil {
 		return fmt.Errorf("verification of sorted file failed: %v", err)
 	}
+
+	kvs.endGC = true
 
 	fmt.Printf("Garbage collection completed in %v\n", time.Since(startTime))
 	return nil

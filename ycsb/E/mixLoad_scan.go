@@ -25,7 +25,7 @@ var (
     dnums      = flag.Int("dnums", 100000, "total operation number")
     vsize      = flag.Int("vsize", 64, "value size in bytes")
     writeRatio = flag.Float64("wratio", 0.5, "write ratio (0-1.0)")
-    scanSize   = flag.Int("scansize", 1000, "number of keys to scan")
+    scanSize   = flag.Int("scansize", 100, "number of keys to scan")
 )
 
 type KVClient struct {
@@ -114,7 +114,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
     wg.Add(*cnums)
 
     // 预生成唯一的key集合
-    maxKey := 2000000
+    maxKey := 156250
     allKeys := generateUniqueRandomInts(0, maxKey)
     
     results := make(chan mixedWorkloadResult, *cnums)
