@@ -726,7 +726,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 			}
 		}
 	}()
-	timer := time.NewTimer(20 * time.Second)
+	timer := time.NewTimer(2 * time.Second)
 	defer timer.Stop()
 	select {
 	// 通道关闭或者有数据传入都会执行以下的分支
@@ -1576,8 +1576,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
-	kvs.startGC = true
-	kvs.endGC = true                // 测试效果
+	kvs.startGC = false
+	kvs.endGC = false                // 测试效果
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
 
 	// 初始化存储value的文件
@@ -1603,11 +1603,11 @@ func main() {
 	// ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 25 * time.Second
+		timeout := 2 * time.Second
 		time1 := 500000 * time.Second
 		for {
 			time.Sleep(timeout)
-			if time.Since(kvs.lastPutTime) > timeout {
+			// if time.Since(kvs.lastPutTime) > timeout {
 				// 检查文件是否存在并且大小是否超过4GB
 				fileInfo, err := os.Stat(kvs.oldLog)
 				if err != nil {
@@ -1620,7 +1620,7 @@ func main() {
 				}
 
 				fileSizeGB := float64(fileInfo.Size()) / (1024 * 1024 * 1024)
-				if fileSizeGB <= 2 {
+				if fileSizeGB <= 8 {
 					fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.oldLog, fileSizeGB)
 					continue
 				}
@@ -1653,7 +1653,7 @@ func main() {
 
 				kvs.raft.Kill() // 关闭Raft层
 				return          // 退出main函数
-			}
+			// }
 		}
 	}()
 	wg.Add(1 + 1)
