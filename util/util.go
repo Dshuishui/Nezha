@@ -164,6 +164,7 @@ func BecomeSyncMap(argMap map[string]int32) sync.Map {
 	return res
 }
 
+//	因果一致性
 // 判断vectorClock是否更大（key都有，并且value>=other.value）
 func IsUpper(vectorClock sync.Map, arg_vc sync.Map) bool {
 	DPrintf("IsUpper(): vectorClock: %v, arg_vc: %v", BecomeMap(vectorClock), BecomeMap(arg_vc))
