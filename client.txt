@@ -8,3 +8,14 @@ go run ./benchmark/scan/scan.go -cnums 100 -dnums 2500 -servers 192.168.1.104:30
 
 go run . -address 192.168.1.104:3088 -internalAddress 192.168.1.104:30881 -peers 192.168.1.104:30881,192.168.1.100:30881 -gap 40000
 
+===================================================
+serverF : ~/Gitee/FlexSync/kvstore/FlexSync$ go run . -address 192.168.1.104:3088 -internalAddress 192.168.1.104:30881 -peers 192.168.1.104:30881,192.168.1.105:30881 -gap 40000
+serverL : ~/Gitee/FlexSync$ go run ./kvstore/LevelDB/LevelDB.go -address 192.168.1.104:3088 -internalAddress 192.168.1.104:30881 -peers 192.168.1.104:30881,192.168.1.105:30881 -gap 40000
+
+write : ~/Gitee/FlexSync$ go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go -cnums 100 -dnums 39062 -vsize 256000 -servers 192.168.1.104:3088,192.168.1.105:3088
+read  : ~/Gitee/FlexSync$ go run ./benchmark/zipf_read/zipf_read.go -cnums 100 -dnums 10000 -servers 192.168.1.104:3088,192.168.1.105:3088
+scan  : ~/Gitee/FlexSync$ go run ./benchmark/scan_pro/scan_pro.go -cnums 1 -dnums 4 -servers 192.168.1.104:3088,192.168.1.105:3088
+
+YCSB-ABCD: ~/Gitee/FlexSync$ go run ./ycsb/A/mixLoad.go -cnums 100 -dnums 100000 -vsize 64000 -wratio 0.5 -servers 192.168.1.104:3088,192.168.1.105:3088
+YCSB-F  : ~/Gitee/FlexSync$ go run ./ycsb/F/RMW.go -cnums 100 -dnums 1000000 -vsize 4000 -wratio 0.5 -servers 192.168.1.104:3088,192.168.1.105:3088
+YCSB-E  : ~/Gitee/FlexSync$ go run ./ycsb/E/mixLoad_scan.go -cnums 1 -dnums 4 -scansize 100 -vsize 64000 -wratio 0.05 -servers 192.168.1.104:3088,192.168.1.105:3088
