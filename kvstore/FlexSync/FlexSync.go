@@ -1605,8 +1605,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
-	kvs.startGC = true
-	kvs.endGC = true                 // 测试效果
+	kvs.startGC = false
+	kvs.endGC = false                 // 测试效果
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
 
 	// 初始化存储value的文件
@@ -1631,7 +1631,7 @@ func main() {
 	// ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 20 * time.Second
+		timeout := 20000 * time.Second
 		time1 := 500000 * time.Second
 		for {
 			time.Sleep(timeout)
