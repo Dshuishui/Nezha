@@ -71,13 +71,14 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 			// var totalActualLatency time.Duration
 
 			for j := 0; j < base; j++ {
-				k1 := rand.Intn(39062)
-				k2 := k1 + gapkey
+				// k1 := rand.Intn(38062)
+				k1 := (i*base + j) * gapkey
+				k2 := k1 + gapkey - 1
 				startKey := strconv.Itoa(k1)
 				endKey := strconv.Itoa(k2)
-				if startKey > endKey {
-					startKey, endKey = endKey, startKey
-				}
+				// if startKey > endKey {
+				// 	startKey, endKey = endKey, startKey
+				// }
 
 				start := time.Now()
 				reply, err := kvc.rangeGet(startKey, endKey)
@@ -88,6 +89,10 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 				// fmt.Printf("有问题：%v\n",err)
 				if err == nil && reply != nil && len(reply.KeyValuePairs) != 0 {
 					count := len(reply.KeyValuePairs)
+					// fmt.Printf("一次读出多少键值对：%v\n", count)
+					// for key, _ := range reply.KeyValuePairs {
+					// 	fmt.Printf("the map is: key-%v\n", key)
+					// }
 					localResult.totalCount += count
 					// localResult.scanCount++
 
