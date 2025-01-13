@@ -141,6 +141,7 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 	startKey := args.GetStartKey()
 	endKey := args.GetEndKey()
 	reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
+	// fmt.Printf("startkey:%v,endkey:%v\n", startKey, endKey)
 
 	// commitindex, isleader := kvs.raft.GetReadIndex()
 	// if !isleader {
