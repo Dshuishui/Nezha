@@ -843,12 +843,12 @@ func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInR
 	}
 	defer conn.Close()
 	client := raftrpc.NewRaftClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
 	reply, err := client.AppendEntriesInRaft(ctx, args)
 
 	if err != nil {
-		util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ", err, address)
+		// util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ", err, address)
 		return reply, false
 	}
 	return reply, true
@@ -1109,6 +1109,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
 			if rf.currentTerm != int(args.Term) {
 				rf.SyncChans[peerId] <- "NotLeader"
+				fmt.Printf("rf.currentTerm-%v,args.Term-%v\n",rf.currentTerm,args.Term)
 				return
 			}
 			if reply.Term > int32(rf.currentTerm) { // 变成follower
@@ -1118,6 +1119,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				rf.votedFor = -1
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				rf.SyncChans[peerId] <- "NotLeader"
+				fmt.Printf("reply.Term-%v,rf.currentTerm-%v\n",reply.Term,rf.currentTerm)
 				return
 			}
 			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
@@ -1344,7 +1346,7 @@ func (rf *Raft) appendEntriesLoop() {
 			select {
 			case value1 := <-rf.SyncChans[0]:
 				if value1 == "NotLeader" {
-					fmt.Println("被告知不是NotLeader，退出")
+					fmt.Println("被 server 0 告知不是NotLeader，退出")
 					return
 				}
 				rf.doAppendEntries(0)
@@ -1354,7 +1356,7 @@ func (rf *Raft) appendEntriesLoop() {
 			select {
 			case value2 := <-rf.SyncChans[1]:
 				if value2 == "NotLeader" {
-					fmt.Println("被告知不是NotLeader，退出")
+					fmt.Println("被 server 1 告知不是NotLeader，退出")
 					return
 				}
 				rf.doAppendEntries(1)
@@ -1364,7 +1366,7 @@ func (rf *Raft) appendEntriesLoop() {
 			select {
 			case value3 := <-rf.SyncChans[2]:
 				if value3 == "NotLeader" {
-					fmt.Println("被告知不是NotLeader，退出")
+					fmt.Println("被 server 2 告知不是NotLeader，退出")
 					return
 				}
 				rf.doAppendEntries(2)
