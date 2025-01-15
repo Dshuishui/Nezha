@@ -686,6 +686,12 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 }
 
 func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResponse {
+	// 判断数据应该写入的哪个文件
+	Newversion := -1
+	if kvs.startGC {
+		Newversion = 1
+	}
+
 	reply := &kvrpc.PutInRaftResponse{Err: raft.OK, LeaderId: 0}
 	op := raftrpc.DetailCod{
 		OpType:   args.Op,
@@ -693,6 +699,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 		Value:    args.Value,
 		ClientId: args.ClientId,
 		SeqId:    args.SeqId,
+		FileVersion:  int64(Newversion),
 	}
 
 	// 写入raft层
@@ -1538,7 +1545,13 @@ func (kvs *KVServer) applyLoop() {
 						// positionBytes = positionBytes[:n]
 						// fmt.Printf("此时put进去的offsetL%v\n", offset)
 						// fmt.Printf("转换后的offset：%v\n", positionBytes)
-						kvs.persister.Put_opt(op.Key, offset)
+
+						if op.FileVersion == 1 {	// GC了就将偏移量存新文件
+							kvs.persister.Put_opt(op.Key, offset)
+						} else {	// 否则存旧文件
+							kvs.oldPersister.Put_opt(op.Key, offset)
+						}
+						
 
 						// kvs.persister.Put(op.Key, []byte(op.Value))
 						// fmt.Println("length:",len(positionBytes))

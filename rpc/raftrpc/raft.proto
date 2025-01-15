@@ -34,6 +34,7 @@ message DetailCod{
   string Value = 5;
   int64 SeqId = 6;
   int64 ClientId = 7;
+  int64 FileVersion = 8;
 }
 
 message AppendEntriesInRaftResponse{
