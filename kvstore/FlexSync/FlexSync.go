@@ -1645,7 +1645,7 @@ func main() {
 	// ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 5 * time.Second
+		timeout := 4 * time.Second
 		time1 := 500000 * time.Second
 		for {
 			time.Sleep(timeout)
@@ -1663,11 +1663,11 @@ func main() {
 
 			fileSizeGB := float64(fileInfo.Size()) / (1024 * 1024 * 1024)
 			if fileSizeGB <= 8 {
-				fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.oldLog, fileSizeGB)
+				// fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.oldLog, fileSizeGB)
 				continue
 			}
 
-			// fmt.Printf("文件 %s 大小为 %.2f GB，开始垃圾回收\n", kvs.oldLog, fileSizeGB)
+			fmt.Printf("文件 %s 大小为 %.2f GB，开始垃圾回收\n", kvs.oldLog, fileSizeGB)
 			startTime := time.Now()
 
 			err = kvs.GarbageCollection()
