@@ -116,6 +116,7 @@ type Raft struct {
 	batchLogSize   int64
 	currentLog     string // 存储value的磁盘文件的描述符
 	nullLogEntry *raftrpc.LogEntry // 用于替换已应用的日志
+	lastNulled int
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -1554,9 +1555,9 @@ func (rf *Raft) applyLogLoop() {
 
 func (rf *Raft) memoryControlLoop() {
     const (
-        checkInterval = 20 * time.Second  // 检查间隔
-        logThreshold = 100000         // 内存中保留的日志数量阈值
-        batchSize    = 50000          // 每次清理的日志数量
+        checkInterval = 60 * time.Second  // 检查间隔
+        logThreshold = 200000         // 内存中保留的日志数量阈值
+        batchSize    = 100000          // 每次清理的日志数量
     )
 
     // 初始化空日志条目
@@ -1574,16 +1575,23 @@ func (rf *Raft) memoryControlLoop() {
 
         // 检查日志数量是否超过阈值
         if len(rf.log) > logThreshold {
+			startIndex := rf.lastNulled
             // 只处理已经应用到状态机的日志
             endIndex := rf.lastApplied
-            if endIndex > batchSize {
-                endIndex = batchSize
+            if endIndex > startIndex {
+                if endIndex-startIndex>batchSize {
+					endIndex=startIndex+batchSize
+				}
+				for i:=startIndex; i<endIndex;i++ {
+					rf.log[i].Command.Value = "NULL" 
+				}
+				rf.lastNulled=endIndex
             }
 
             // 将已应用的日志替换为空日志
-            for i := 0; i < endIndex; i++ {
-                rf.log[i].Command.Value = "NULL" 
-            }
+            // for i := 0; i < endIndex; i++ {
+            //     rf.log[i].Command.Value = "NULL" 
+            // }
 
             util.DPrintf("RaftNode[%d] replaced %d logs with null entries, total logs: %d", 
                 rf.me, endIndex, len(rf.log))
