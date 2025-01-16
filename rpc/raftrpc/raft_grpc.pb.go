@@ -28,7 +28,7 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type RaftClient interface {
-	AppendEntriesInRaft(ctx context.Context, in *AppendEntriesInRaftRequest, opts ...grpc.CallOption) (*AppendEntriesInRaftResponse, error)
+	AppendEntriesInRaft(ctx context.Context, opts ...grpc.CallOption) (Raft_AppendEntriesInRaftClient, error)
 	HeartbeatInRaft(ctx context.Context, in *AppendEntriesInRaftRequest, opts ...grpc.CallOption) (*AppendEntriesInRaftResponse, error)
 	RequestVote(ctx context.Context, in *RequestVoteRequest, opts ...grpc.CallOption) (*RequestVoteResponse, error)
 }
@@ -41,13 +41,35 @@ func NewRaftClient(cc grpc.ClientConnInterface) RaftClient {
 	return &raftClient{cc}
 }
 
-func (c *raftClient) AppendEntriesInRaft(ctx context.Context, in *AppendEntriesInRaftRequest, opts ...grpc.CallOption) (*AppendEntriesInRaftResponse, error) {
-	out := new(AppendEntriesInRaftResponse)
-	err := c.cc.Invoke(ctx, Raft_AppendEntriesInRaft_FullMethodName, in, out, opts...)
+func (c *raftClient) AppendEntriesInRaft(ctx context.Context, opts ...grpc.CallOption) (Raft_AppendEntriesInRaftClient, error) {
+	stream, err := c.cc.NewStream(ctx, &Raft_ServiceDesc.Streams[0], Raft_AppendEntriesInRaft_FullMethodName, opts...)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	x := &raftAppendEntriesInRaftClient{stream}
+	return x, nil
+}
+
+type Raft_AppendEntriesInRaftClient interface {
+	Send(*AppendEntriesInRaftRequest) error
+	Recv() (*AppendEntriesInRaftResponse, error)
+	grpc.ClientStream
+}
+
+type raftAppendEntriesInRaftClient struct {
+	grpc.ClientStream
+}
+
+func (x *raftAppendEntriesInRaftClient) Send(m *AppendEntriesInRaftRequest) error {
+	return x.ClientStream.SendMsg(m)
+}
+
+func (x *raftAppendEntriesInRaftClient) Recv() (*AppendEntriesInRaftResponse, error) {
+	m := new(AppendEntriesInRaftResponse)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 func (c *raftClient) HeartbeatInRaft(ctx context.Context, in *AppendEntriesInRaftRequest, opts ...grpc.CallOption) (*AppendEntriesInRaftResponse, error) {
@@ -72,7 +94,7 @@ func (c *raftClient) RequestVote(ctx context.Context, in *RequestVoteRequest, op
 // All implementations must embed UnimplementedRaftServer
 // for forward compatibility
 type RaftServer interface {
-	AppendEntriesInRaft(context.Context, *AppendEntriesInRaftRequest) (*AppendEntriesInRaftResponse, error)
+	AppendEntriesInRaft(Raft_AppendEntriesInRaftServer) error
 	HeartbeatInRaft(context.Context, *AppendEntriesInRaftRequest) (*AppendEntriesInRaftResponse, error)
 	RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteResponse, error)
 	mustEmbedUnimplementedRaftServer()
@@ -82,8 +104,8 @@ type RaftServer interface {
 type UnimplementedRaftServer struct {
 }
 
-func (UnimplementedRaftServer) AppendEntriesInRaft(context.Context, *AppendEntriesInRaftRequest) (*AppendEntriesInRaftResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method AppendEntriesInRaft not implemented")
+func (UnimplementedRaftServer) AppendEntriesInRaft(Raft_AppendEntriesInRaftServer) error {
+	return status.Errorf(codes.Unimplemented, "method AppendEntriesInRaft not implemented")
 }
 func (UnimplementedRaftServer) HeartbeatInRaft(context.Context, *AppendEntriesInRaftRequest) (*AppendEntriesInRaftResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method HeartbeatInRaft not implemented")
@@ -104,22 +126,30 @@ func RegisterRaftServer(s grpc.ServiceRegistrar, srv RaftServer) {
 	s.RegisterService(&Raft_ServiceDesc, srv)
 }
 
-func _Raft_AppendEntriesInRaft_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(AppendEntriesInRaftRequest)
-	if err := dec(in); err != nil {
+func _Raft_AppendEntriesInRaft_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(RaftServer).AppendEntriesInRaft(&raftAppendEntriesInRaftServer{stream})
+}
+
+type Raft_AppendEntriesInRaftServer interface {
+	Send(*AppendEntriesInRaftResponse) error
+	Recv() (*AppendEntriesInRaftRequest, error)
+	grpc.ServerStream
+}
+
+type raftAppendEntriesInRaftServer struct {
+	grpc.ServerStream
+}
+
+func (x *raftAppendEntriesInRaftServer) Send(m *AppendEntriesInRaftResponse) error {
+	return x.ServerStream.SendMsg(m)
+}
+
+func (x *raftAppendEntriesInRaftServer) Recv() (*AppendEntriesInRaftRequest, error) {
+	m := new(AppendEntriesInRaftRequest)
+	if err := x.ServerStream.RecvMsg(m); err != nil {
 		return nil, err
 	}
-	if interceptor == nil {
-		return srv.(RaftServer).AppendEntriesInRaft(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Raft_AppendEntriesInRaft_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(RaftServer).AppendEntriesInRaft(ctx, req.(*AppendEntriesInRaftRequest))
-	}
-	return interceptor(ctx, in, info, handler)
+	return m, nil
 }
 
 func _Raft_HeartbeatInRaft_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -166,10 +196,6 @@ var Raft_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*RaftServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "AppendEntriesInRaft",
-			Handler:    _Raft_AppendEntriesInRaft_Handler,
-		},
-		{
 			MethodName: "HeartbeatInRaft",
 			Handler:    _Raft_HeartbeatInRaft_Handler,
 		},
@@ -178,6 +204,13 @@ var Raft_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Raft_RequestVote_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "AppendEntriesInRaft",
+			Handler:       _Raft_AppendEntriesInRaft_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+	},
 	Metadata: "raft.proto",
 }
