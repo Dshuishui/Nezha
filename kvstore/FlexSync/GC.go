@@ -16,11 +16,6 @@ import (
 	"github.com/tecbot/gorocksdb"
 )
 
-// type keyOffset struct{
-// 	key string
-// 	offset int64
-// }
-
 func (kvs *KVServer) GarbageCollection() error {
 	fmt.Println("Starting garbage collection...")
 	startTime := time.Now()
@@ -199,14 +194,6 @@ func (kvs *KVServer) CreateIndex(sortedFilePath string) error {
 	kvs.warmupCache(sortedFilePath)
 
 	fmt.Println("建立了索引，得到了针对已排序文件的稀疏索引")
-	kvs.filePool, err = NewFileDescriptorPool(sortedFilePath, 50)
-	if err != nil {
-		fmt.Printf("Failed to create file descriptor pool: %v\n", err)
-		panic("创建文件描述符池失败")
-	}
-	fmt.Println("创建文件描述符池成功")
-	// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
-
 
 	return nil
 
@@ -278,17 +265,6 @@ func (kvs *KVServer) CreateSortedFileIndex(filePath string) (*SortedFileIndex, e
 			// fmt.Printf("Processed %d entries, current offset: %d\n", entryCount, offset)
 		}
 	}
-	// 给索引排序
-	// entries := make([]keyOffset, 0, len(index))
-	// for k, v := range index {
-	// 	// 排序前得先填充
-	// 	key := kvs.oldPersister.PadKey(k)
-	// 	entries = append(entries, keyOffset{key: key, offset: v})
-	// }
-	// // 按 key 排序
-	// sort.Slice(entries, func(i, j int) bool {
-	// 	return entries[i].key < entries[j].key
-	// })
 
 	return &SortedFileIndex{Entries: index, FilePath: filePath}, nil
 }
