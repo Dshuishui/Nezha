@@ -1890,6 +1890,7 @@ func Make(peers []string, me int,
 
 	// 初始化 syncIndex
     rf.syncIndex = make([]int32, len(peers))
+	rf.portCount = 3
     // 初始化连接池
     rf.pools = make([][]pool.Pool, len(peers))
     for i := 0; i < len(peers); i++ {
