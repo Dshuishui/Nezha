@@ -1554,18 +1554,18 @@ func (rf *Raft) applyLogLoop() {
 
 func (rf *Raft) memoryControlLoop() {
     const (
-        checkInterval = 10 * time.Second  // 检查间隔
+        checkInterval = 20 * time.Second  // 检查间隔
         logThreshold = 100000         // 内存中保留的日志数量阈值
         batchSize    = 50000          // 每次清理的日志数量
     )
 
     // 初始化空日志条目
-    rf.nullLogEntry = &raftrpc.LogEntry{
-        Command: &raftrpc.DetailCod{
-            OpType: "NULL",  // 标记为空日志
-        },
-        Term: 0,
-    }
+    // rf.nullLogEntry = &raftrpc.LogEntry{
+    //     Command: &raftrpc.DetailCod{
+    //         OpType: "NULL",  // 标记为空日志
+    //     },
+    //     Term: 0,
+    // }
 
     for !rf.killed() {
         time.Sleep(checkInterval)
@@ -1582,7 +1582,7 @@ func (rf *Raft) memoryControlLoop() {
 
             // 将已应用的日志替换为空日志
             for i := 0; i < endIndex; i++ {
-                rf.log[i] = rf.nullLogEntry
+                rf.log[i].Command.Value = "NULL" 
             }
 
             util.DPrintf("RaftNode[%d] replaced %d logs with null entries, total logs: %d", 
