@@ -115,6 +115,7 @@ type Raft struct {
 	batchLog       []*Entry
 	batchLogSize   int64
 	currentLog     string // 存储value的磁盘文件的描述符
+	nullLogEntry *raftrpc.LogEntry // 用于替换已应用的日志
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -1551,6 +1552,48 @@ func (rf *Raft) applyLogLoop() {
 	}
 }
 
+func (rf *Raft) memoryControlLoop() {
+    const (
+        checkInterval = 10 * time.Second  // 检查间隔
+        logThreshold = 100000         // 内存中保留的日志数量阈值
+        batchSize    = 50000          // 每次清理的日志数量
+    )
+
+    // 初始化空日志条目
+    rf.nullLogEntry = &raftrpc.LogEntry{
+        Command: &raftrpc.DetailCod{
+            OpType: "NULL",  // 标记为空日志
+        },
+        Term: 0,
+    }
+
+    for !rf.killed() {
+        time.Sleep(checkInterval)
+        
+        rf.mu.Lock()
+
+        // 检查日志数量是否超过阈值
+        if len(rf.log) > logThreshold {
+            // 只处理已经应用到状态机的日志
+            endIndex := rf.lastApplied
+            if endIndex > batchSize {
+                endIndex = batchSize
+            }
+
+            // 将已应用的日志替换为空日志
+            for i := 0; i < endIndex; i++ {
+                rf.log[i] = rf.nullLogEntry
+            }
+
+            util.DPrintf("RaftNode[%d] replaced %d logs with null entries, total logs: %d", 
+                rf.me, endIndex, len(rf.log))
+        }
+
+        rf.mu.Unlock()
+    }
+}
+
+
 // 最后的index
 func (rf *Raft) lastIndex() int {
 	return len(rf.log)
@@ -1621,6 +1664,8 @@ func Make(peers []string, me int,
 	go rf.applyLogLoop()
 	// 检查有没有收到日志同步的消息，若没有则连接有问题
 	go rf.AppendMonitor()
+
+	go rf.memoryControlLoop()
 
 	// 设置一个定时器，每十秒检查一次条件
 	ticker := time.NewTicker(5 * time.Second)
