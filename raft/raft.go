@@ -871,7 +871,7 @@ func (rf *Raft) sendHeartbeat(address string, args *raftrpc.AppendEntriesInRaftR
 	reply, err := client.HeartbeatInRaft(ctx, args)
 
 	if err != nil {
-		util.EPrintf("Error calling HeartbeatInRaft method on server side; err:%v; address:%v ", err, address)
+		// util.EPrintf("Error calling HeartbeatInRaft method on server side; err:%v; address:%v ", err, address)
 		return reply, false
 	}
 	return reply, true

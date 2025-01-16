@@ -1549,8 +1549,8 @@ func (kvs *KVServer) applyLoop() {
 						if op.FileVersion == 1 {	// GC了就将偏移量存新文件
 							kvs.persister.Put_opt(op.Key, offset)
 						} else {	// 否则存旧文件
-							// kvs.oldPersister.Put_opt(op.Key, offset)	//  Nezha
-							kvs.oldPersister.Put(op.Key, op.Value)		//  original
+							kvs.oldPersister.Put_opt(op.Key, offset)	//  Nezha
+							// kvs.oldPersister.Put(op.Key, op.Value)		//  original
 						}
 						
 
@@ -1646,7 +1646,7 @@ func main() {
 	// ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 40000000 * time.Second
+		timeout := 5 * time.Second
 		time1 := 500000 * time.Second
 		for {
 			time.Sleep(timeout)
