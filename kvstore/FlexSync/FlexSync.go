@@ -1645,7 +1645,7 @@ func main() {
 	// ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 4 * time.Second
+		timeout := 40000000 * time.Second
 		time1 := 500000 * time.Second
 		for {
 			time.Sleep(timeout)
@@ -1654,7 +1654,7 @@ func main() {
 			fileInfo, err := os.Stat(kvs.oldLog)
 			if err != nil {
 				if os.IsNotExist(err) {
-					fmt.Printf("文件 %s 不存在，跳过垃圾回收\n", kvs.oldLog)
+					// fmt.Printf("文件 %s 不存在，跳过垃圾回收\n", kvs.oldLog)
 					continue
 				}
 				fmt.Printf("检查文件 %s 时出错: %v\n", kvs.oldLog, err)
