@@ -6,10 +6,8 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/gob"
-	"io"
 	"log"
 	"strconv"
-	"strings"
 
 	// "encoding/gob"
 	// "encoding/json"
@@ -105,11 +103,7 @@ type Raft struct {
 	// lastBroadcastTime time.Time // 作为leader，上次的广播时间
 
 	applyCh chan ApplyMsg // 应用层的提交队列
-	// pools   []pool.Pool   // 用于日志同步的连接池
-	pools     [][]pool.Pool   // 修改为二维数组,每个peer有多个连接池
-    portCount int            // 每个peer的端口数量
-    syncIndex []int32        // 记录每个peer当前使用的端口索引
-	basePorts []int // 每个节点监听的基础端口
+	pools   []pool.Pool   // 用于日志同步的连接池
 	// kvrpc.UnimplementedKVServer
 	raftrpc.UnimplementedRaftServer
 	LastAppendTime time.Time
@@ -511,277 +505,160 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 	return reply, nil
 }
 
-// AppendEntriesInRaft 处理流式日志复制请求
-func (rf *Raft) AppendEntriesInRaft(stream raftrpc.Raft_AppendEntriesInRaftServer) error {
-    for {
-        // 接收流式请求
-        req, err := stream.Recv()
-        if err == io.EOF {
-            return nil
-        }
-        if err != nil {
-            return err
-        }
-
-        rf.mu.Lock()
-        reply := &raftrpc.AppendEntriesInRaftResponse{
-            Term:          int32(rf.currentTerm),
-            Success:       false,
-            ConflictIndex: -1,
-            ConflictTerm:  -1,
-        }
-
-        if req.Term < int32(rf.currentTerm) {
-            rf.mu.Unlock()
-            if err := stream.Send(reply); err != nil {
-                return err
-            }
-            continue
-        }
-
-        // 更新任期
-        if req.Term > int32(rf.currentTerm) {
-            rf.currentTerm = int(req.Term)
-            rf.role = ROLE_FOLLOWER
-            rf.votedFor = -1
-        }
-
-        // 认识新的leader并刷新活跃时间
-        rf.leaderId = int(req.LeaderId)
-        rf.lastActiveTime = time.Now()
-        rf.LastAppendTime = time.Now()
-
-        // 处理日志条目
-        if len(req.Entries) > 0 {
-            // 验证PrevLogIndex的日志
-            if req.PrevLogIndex > int32(rf.lastIndex()) {
-                reply.ConflictIndex = int32(rf.lastIndex() + 1)
-                rf.mu.Unlock()
-                if err := stream.Send(reply); err != nil {
-                    return err
-                }
-                continue
-            }
-
-            if req.PrevLogIndex != 0 && rf.log[rf.index2LogPos(int(req.PrevLogIndex))].Term != req.PrevLogTerm {
-                reply.ConflictTerm = rf.log[rf.index2LogPos(int(req.PrevLogIndex))].Term
-                for index := 1; index <= int(req.PrevLogIndex); index++ {
-                    if rf.log[rf.index2LogPos(index)].Term == int32(reply.ConflictTerm) {
-                        reply.ConflictIndex = int32(index)
-                        break
-                    }
-                }
-                rf.mu.Unlock()
-                if err := stream.Send(reply); err != nil {
-                    return err
-                }
-                continue
-            }
-
-            // 处理日志条目
-            for i, logEntry := range req.Entries {
-                index := int(req.PrevLogIndex) + 1 + i
-                logPos := rf.index2LogPos(index)
-                entry := Entry{
-                    Index:       uint32(logEntry.GetCommand().Index),
-                    CurrentTerm: uint32(logEntry.GetCommand().Term),
-                    VotedFor:    uint32(rf.leaderId),
-                    Key:         logEntry.GetCommand().Key,
-                    Value:       logEntry.GetCommand().Value,
-                }
-
-                if index > rf.lastIndex() {
-                    rf.log = append(rf.log, logEntry)
-                    if logEntry.Command.OpType != "TermLog" {
-                        rf.batchLog = append(rf.batchLog, &entry)
-                    }
-
-                    if index == rf.lastIndex() && logEntry.Command.OpType != "TermLog" {
-                        rf.WriteEntryToFile(rf.batchLog, rf.currentLog, 0)
-                        rf.batchLog = rf.batchLog[:0]
-                    }
-                } else if rf.log[logPos].Term != logEntry.Term {
-                    rf.log = rf.log[:logPos]
-                    rf.log = append(rf.log, logEntry)
-                    offset := rf.Offsets[index-rf.shotOffset-1]
-                    rf.Offsets = rf.Offsets[:logPos-rf.shotOffset]
-                    arrEntry := []*Entry{&entry}
-                    rf.WriteEntryToFile(arrEntry, rf.currentLog, offset)
-                }
-            }
-        }
-
-        // 更新commitIndex
-        if req.LeaderCommit > int32(rf.commitIndex) {
-            rf.commitIndex = int(req.LeaderCommit)
-            if rf.lastIndex() < rf.commitIndex {
-                rf.commitIndex = rf.lastIndex()
-            }
-        }
-
-        reply.Success = true
-        rf.mu.Unlock()
-        
-        if err := stream.Send(reply); err != nil {
-            return err
-        }
-    }
-}
-
 // 已兼容snapshot
-// func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEntriesInRaftRequest) (*raftrpc.AppendEntriesInRaftResponse, error) {
-// 	rf.mu.Lock()
-// 	defer rf.mu.Unlock()
+func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEntriesInRaftRequest) (*raftrpc.AppendEntriesInRaftResponse, error) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-// 	// util.DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
-// 	// rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
-// 	reply := &raftrpc.AppendEntriesInRaftResponse{}
-// 	reply.Term = int32(rf.currentTerm)
-// 	reply.Success = false
-// 	reply.ConflictIndex = -1
-// 	reply.ConflictTerm = -1
-// 	// var logEntrys []*raftrpc.LogEntry
-// 	// json.Unmarshal(args.Entries, &logEntrys)
-// 	logEntrys := args.Entries
-// 	// if len(logEntrys) != 0 { // 除去普通的心跳
-// 	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
-// 	// fmt.Println("重置lastAppendTime")
-// 	// }
+	// util.DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
+	// rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
+	reply := &raftrpc.AppendEntriesInRaftResponse{}
+	reply.Term = int32(rf.currentTerm)
+	reply.Success = false
+	reply.ConflictIndex = -1
+	reply.ConflictTerm = -1
+	// var logEntrys []*raftrpc.LogEntry
+	// json.Unmarshal(args.Entries, &logEntrys)
+	logEntrys := args.Entries
+	// if len(logEntrys) != 0 { // 除去普通的心跳
+	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
+	// fmt.Println("重置lastAppendTime")
+	// }
 
-// 	// defer func() {
-// 	// 	util.DPrintf("RaftNode[%d] Return AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] Success[%v] commitIndex[%d] log[%v] ConflictIndex[%d]",
-// 	// 		rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, reply.Success, rf.commitIndex, len(rf.log), reply.ConflictIndex)
-// 	// }()
+	// defer func() {
+	// 	util.DPrintf("RaftNode[%d] Return AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] Success[%v] commitIndex[%d] log[%v] ConflictIndex[%d]",
+	// 		rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, reply.Success, rf.commitIndex, len(rf.log), reply.ConflictIndex)
+	// }()
 
-// 	if args.Term < int32(rf.currentTerm) {
-// 		return reply, nil
-// 	}
+	if args.Term < int32(rf.currentTerm) {
+		return reply, nil
+	}
 
-// 	// 发现更大的任期，则转为该任期的follower
-// 	if args.Term > int32(rf.currentTerm) {
-// 		rf.currentTerm = int(args.Term)
-// 		rf.role = ROLE_FOLLOWER
-// 		rf.votedFor = -1
-// 		// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-// 	}
+	// 发现更大的任期，则转为该任期的follower
+	if args.Term > int32(rf.currentTerm) {
+		rf.currentTerm = int(args.Term)
+		rf.role = ROLE_FOLLOWER
+		rf.votedFor = -1
+		// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+	}
 
-// 	// 认识新的leader
-// 	rf.leaderId = int(args.LeaderId)
-// 	// 刷新活跃时间
-// 	rf.lastActiveTime = time.Now()
-// 	if len(logEntrys) == 0 {
-// 		reply.Success = true                           // 成功心跳
-// 		if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
-// 			rf.commitIndex = int(args.LeaderCommit)
-// 			if rf.lastIndex() < rf.commitIndex { // 感觉，不存在这种情况，走到这里基本都是日志与leader一样了，怎么还会索引比commitindex小
-// 				rf.commitIndex = rf.lastIndex()
-// 			}
-// 		}
-// 		return reply, nil
-// 	}
+	// 认识新的leader
+	rf.leaderId = int(args.LeaderId)
+	// 刷新活跃时间
+	rf.lastActiveTime = time.Now()
+	if len(logEntrys) == 0 {
+		reply.Success = true                           // 成功心跳
+		if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
+			rf.commitIndex = int(args.LeaderCommit)
+			if rf.lastIndex() < rf.commitIndex { // 感觉，不存在这种情况，走到这里基本都是日志与leader一样了，怎么还会索引比commitindex小
+				rf.commitIndex = rf.lastIndex()
+			}
+		}
+		return reply, nil
+	}
 
-// 	if args.PrevLogIndex > int32(rf.lastIndex()) { // prevLogIndex位置没有日志的情况
-// 		reply.ConflictIndex = int32(rf.lastIndex() + 1)
-// 		return reply, nil
-// 	}
-// 	// prevLogIndex位置有日志，那么判断term必须相同，否则false
-// 	if args.PrevLogIndex != 0 && (rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term != int32(args.PrevLogTerm)) {
-// 		reply.ConflictTerm = rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term
-// 		for index := 1; index <= int(args.PrevLogIndex); index++ { // 找到冲突term的首次出现位置，最差就是PrevLogIndex
-// 			if rf.log[rf.index2LogPos(index)].Term == int32(reply.ConflictTerm) {
-// 				reply.ConflictIndex = int32(index)
-// 				break
-// 			}
-// 		}
-// 		return reply, nil
-// 	}
-// 	// fmt.Printf("此时同步的日志为%v\n",len(logEntrys))
-// 	// 找到了第一个不同的index，开始同步日志
-// 	// var tempLogs []*Entry // 自动会在写入磁盘文件后进行清零的操作
-// 	var entry Entry
-// 	var index int
-// 	var logPos int
-// 	for i, logEntry := range logEntrys {
-// 		if logEntry == nil || logEntry.GetCommand() == nil {
-// 			fmt.Println("此时logEntry为nil，或者logEntry中的Command为nil。太抽象了")
-// 			continue
-// 		}
-// 		index = int(args.PrevLogIndex) + 1 + i
-// 		logPos = rf.index2LogPos(index)
-// 		entry = Entry{
-// 			Index:       uint32(logEntry.GetCommand().Index),
-// 			CurrentTerm: uint32(logEntry.GetCommand().Term),
-// 			VotedFor:    uint32(rf.leaderId),
-// 			Key:         logEntry.GetCommand().Key,
-// 			Value:       logEntry.GetCommand().Value,
-// 		}
-// 		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
-// 			rf.log = append(rf.log, logEntry)
-// 			if logEntry.Command.OpType!="TermLog" {
-// 				rf.batchLog = append(rf.batchLog, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
-// 			}
+	if args.PrevLogIndex > int32(rf.lastIndex()) { // prevLogIndex位置没有日志的情况
+		reply.ConflictIndex = int32(rf.lastIndex() + 1)
+		return reply, nil
+	}
+	// prevLogIndex位置有日志，那么判断term必须相同，否则false
+	if args.PrevLogIndex != 0 && (rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term != int32(args.PrevLogTerm)) {
+		reply.ConflictTerm = rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term
+		for index := 1; index <= int(args.PrevLogIndex); index++ { // 找到冲突term的首次出现位置，最差就是PrevLogIndex
+			if rf.log[rf.index2LogPos(index)].Term == int32(reply.ConflictTerm) {
+				reply.ConflictIndex = int32(index)
+				break
+			}
+		}
+		return reply, nil
+	}
+	// fmt.Printf("此时同步的日志为%v\n",len(logEntrys))
+	// 找到了第一个不同的index，开始同步日志
+	// var tempLogs []*Entry // 自动会在写入磁盘文件后进行清零的操作
+	var entry Entry
+	var index int
+	var logPos int
+	for i, logEntry := range logEntrys {
+		if logEntry == nil || logEntry.GetCommand() == nil {
+			fmt.Println("此时logEntry为nil，或者logEntry中的Command为nil。太抽象了")
+			continue
+		}
+		index = int(args.PrevLogIndex) + 1 + i
+		logPos = rf.index2LogPos(index)
+		entry = Entry{
+			Index:       uint32(logEntry.GetCommand().Index),
+			CurrentTerm: uint32(logEntry.GetCommand().Term),
+			VotedFor:    uint32(rf.leaderId),
+			Key:         logEntry.GetCommand().Key,
+			Value:       logEntry.GetCommand().Value,
+		}
+		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
+			rf.log = append(rf.log, logEntry)
+			if logEntry.Command.OpType!="TermLog" {
+				rf.batchLog = append(rf.batchLog, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
+			}
 
-// 			if index == rf.lastIndex()&&logEntry.Command.OpType!="TermLog" { // 已经将日志补足后，开始批量写入，同时为了与leader在偏移量上的统一，对于空指令，也不写入
-// 				// offsets1, err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
-// 				// rf.mu.Unlock()
-// 				rf.WriteEntryToFile(rf.batchLog, rf.currentLog, 0)
-// 				rf.batchLog = rf.batchLog[:0] // 清空暂存日志的数组
-// 				// go func() {
-// 				// 	err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
-// 				// 	if err != nil {
-// 				// 		fmt.Println("Error in WriteEntryToFile:", err)
-// 				// 	}
-// 				// }()
-// 				// rf.mu.Lock()
-// 				// rf.Offsets = append(rf.Offsets, offsets1...)
-// 				// if err != nil {
-// 				// 	fmt.Println("这里有问题嘛")
-// 				// 	panic(err)
-// 				// }
-// 			}
-// 			// util.DPrintf("追加RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] Index[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, index, rf.Offsets)
-// 		} else { // 重叠部分
-// 			if rf.log[logPos].Term != logEntry.Term {
-// 				fmt.Println("还有重叠的情况嘛？？？")
-// 				rf.log = rf.log[:logPos]          // 删除当前以及后续所有log
-// 				rf.log = append(rf.log, logEntry) // 把新log加入进来
+			if index == rf.lastIndex()&&logEntry.Command.OpType!="TermLog" { // 已经将日志补足后，开始批量写入，同时为了与leader在偏移量上的统一，对于空指令，也不写入
+				// offsets1, err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
+				// rf.mu.Unlock()
+				rf.WriteEntryToFile(rf.batchLog, rf.currentLog, 0)
+				rf.batchLog = rf.batchLog[:0] // 清空暂存日志的数组
+				// go func() {
+				// 	err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
+				// 	if err != nil {
+				// 		fmt.Println("Error in WriteEntryToFile:", err)
+				// 	}
+				// }()
+				// rf.mu.Lock()
+				// rf.Offsets = append(rf.Offsets, offsets1...)
+				// if err != nil {
+				// 	fmt.Println("这里有问题嘛")
+				// 	panic(err)
+				// }
+			}
+			// util.DPrintf("追加RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] Index[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, index, rf.Offsets)
+		} else { // 重叠部分
+			if rf.log[logPos].Term != logEntry.Term {
+				fmt.Println("还有重叠的情况嘛？？？")
+				rf.log = rf.log[:logPos]          // 删除当前以及后续所有log
+				rf.log = append(rf.log, logEntry) // 把新log加入进来
 
-// 				// offset := rf.Offsets[index]      // 截取后面错误的offset
-// 				offset := rf.Offsets[index-rf.shotOffset-1] // 这个要减一
-// 				// offset := rf.Offsets[index-rf.shotOffset] // 将上面的改为加一了
-// 				// rf.Offsets = rf.Offsets[:logPos] // 删除当前错误的offset，以及后续的所有
-// 				rf.Offsets = rf.Offsets[:logPos-rf.shotOffset] // 不用减一，因为logPos已经是减一了的
-// 				arrEntry := []*Entry{&entry}                   // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
-// 				// offsets2, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
-// 				// rf.mu.Unlock()
-// 				rf.WriteEntryToFile(arrEntry, rf.currentLog, offset)
-// 				// go func() {
-// 				// 	err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
-// 				// 	if err != nil {
-// 				// 		fmt.Println("Error in WriteEntryToFile:", err)
-// 				// 	}
-// 				// }()
-// 				// rf.mu.Lock()
-// 				// rf.Offsets = append(rf.Offsets, offsets2[0])
-// 				// if err != nil {
-// 				// 	panic(err)
-// 				// }
-// 				// util.DPrintf("重叠RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
-// 			} // term一样啥也不用做，继续向后比对Log
-// 		} // 每追加一个日志就持久化，并将offset和index绑定，存储到内存中。后续可以考虑这里实现批量持久化
-// 	}
-// 	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+				// offset := rf.Offsets[index]      // 截取后面错误的offset
+				offset := rf.Offsets[index-rf.shotOffset-1] // 这个要减一
+				// offset := rf.Offsets[index-rf.shotOffset] // 将上面的改为加一了
+				// rf.Offsets = rf.Offsets[:logPos] // 删除当前错误的offset，以及后续的所有
+				rf.Offsets = rf.Offsets[:logPos-rf.shotOffset] // 不用减一，因为logPos已经是减一了的
+				arrEntry := []*Entry{&entry}                   // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
+				// offsets2, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
+				// rf.mu.Unlock()
+				rf.WriteEntryToFile(arrEntry, rf.currentLog, offset)
+				// go func() {
+				// 	err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
+				// 	if err != nil {
+				// 		fmt.Println("Error in WriteEntryToFile:", err)
+				// 	}
+				// }()
+				// rf.mu.Lock()
+				// rf.Offsets = append(rf.Offsets, offsets2[0])
+				// if err != nil {
+				// 	panic(err)
+				// }
+				// util.DPrintf("重叠RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
+			} // term一样啥也不用做，继续向后比对Log
+		} // 每追加一个日志就持久化，并将offset和index绑定，存储到内存中。后续可以考虑这里实现批量持久化
+	}
+	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
-// 	// 更新提交下标
-// 	if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
-// 		rf.commitIndex = int(args.LeaderCommit)
-// 		if rf.lastIndex() < rf.commitIndex { // 感觉，不存在这种情况，走到这里基本都是日志与leader一样了，怎么还会索引比commitindex小
-// 			rf.commitIndex = rf.lastIndex()
-// 		}
-// 	}
-// 	reply.Success = true
-// 	return reply, nil
-// }
+	// 更新提交下标
+	if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
+		rf.commitIndex = int(args.LeaderCommit)
+		if rf.lastIndex() < rf.commitIndex { // 感觉，不存在这种情况，走到这里基本都是日志与leader一样了，怎么还会索引比commitindex小
+			rf.commitIndex = rf.lastIndex()
+		}
+	}
+	reply.Success = true
+	return reply, nil
+}
 
 func (rf *Raft) HeartbeatInRaft(ctx context.Context, args *raftrpc.AppendEntriesInRaftRequest) (*raftrpc.AppendEntriesInRaftResponse, error) {
 	rf.mu.Lock()
@@ -894,61 +771,44 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) RegisterRaftServer(ctx context.Context, baseAddr string) {
-    // 从基础地址中获取主机名和基础端口
-    host := strings.Split(baseAddr, ":")[0]
-    basePort, _ := strconv.Atoi(strings.Split(baseAddr, ":")[1])
-    
-    // 创建多个监听器，每个都在不同的端口上
-    for portOffset := 0; portOffset < 3; portOffset++ { // 使用3个端口
-        port := basePort + portOffset
-        address := fmt.Sprintf("%s:%d", host, port)
-        
-        // 为每个端口启动一个独立的gRPC服务器
-        go func(addr string) {
-            for {
-                lis, err := net.Listen("tcp", addr)
-                if err != nil {
-                    util.FPrintf("failed to listen on %s: %v", addr, err)
-                    time.Sleep(time.Second) // 如果监听失败，等待一会再重试
-                    continue
-                }
-                
-                grpcServer := grpc.NewServer(
-                    grpc.InitialWindowSize(pool.InitialWindowSize),
-                    grpc.InitialConnWindowSize(pool.InitialConnWindowSize),
-                    grpc.MaxSendMsgSize(pool.MaxSendMsgSize),
-                    grpc.MaxRecvMsgSize(pool.MaxRecvMsgSize),
-                    grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-                        PermitWithoutStream: true,
-                        MinTime:             10 * time.Second,
-                    }),
-                    grpc.KeepaliveParams(keepalive.ServerParameters{
-                        Time:                  pool.KeepAliveTime,
-                        Timeout:               pool.KeepAliveTimeout,
-                        MaxConnectionAgeGrace: 20 * time.Second,
-                    }),
-                )
-                
-                raftrpc.RegisterRaftServer(grpcServer, rf)
-                reflection.Register(grpcServer)
-                
-                // 处理服务器优雅关闭
-                go func() {
-                    <-ctx.Done()
-                    grpcServer.GracefulStop()
-                    fmt.Printf("Raft stopped on port %s due to context cancellation\n", addr)
-                }()
-                
-                util.DPrintf("Starting Raft server on: %s", addr)
-                if err := grpcServer.Serve(lis); err != nil {
-                    util.FPrintf("failed to serve on %s: %v", addr, err)
-                }
-                
-                break // 如果Serve返回错误，跳出循环
-            }
-        }(address)
-    }
+func (rf *Raft) RegisterRaftServer(ctx context.Context, address string) { // 传入的地址是internalAddress，节点间交流用的地址（用于类似日志同步等）
+	util.DPrintf("RegisterRaftServer: %s", address)
+	for { // 创建一个TCP监听器，并在指定的地址（）上监听传入的连接。如果监听失败，则会打印错误信息。
+		lis, err := net.Listen("tcp", address)
+		if err != nil {
+			util.FPrintf("failed to listen: %v", err)
+		}
+		grpcServer := grpc.NewServer(
+			grpc.InitialWindowSize(pool.InitialWindowSize),
+			grpc.InitialConnWindowSize(pool.InitialConnWindowSize),
+			grpc.MaxSendMsgSize(pool.MaxSendMsgSize),
+			grpc.MaxRecvMsgSize(pool.MaxRecvMsgSize),
+			grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+				PermitWithoutStream: true,
+				MinTime:             10 * time.Second, // 这里设置与client的keepalive探测的最小时间间隔。
+			}),
+			grpc.KeepaliveParams(keepalive.ServerParameters{
+				Time:                  pool.KeepAliveTime,
+				Timeout:               pool.KeepAliveTimeout,
+				MaxConnectionAgeGrace: 20 * time.Second,
+			}),
+		)
+		raftrpc.RegisterRaftServer(grpcServer, rf)
+		reflection.Register(grpcServer)
+
+		go func() {
+			<-ctx.Done()
+			grpcServer.GracefulStop()
+			fmt.Println("Raft stopped due to context cancellation-Raft.")
+		}()
+
+		if err := grpcServer.Serve(lis); err != nil { // 调用Serve方法来启动gRPC服务器，监听传入的连接，并处理相应的请求
+			util.FPrintf("failed to serve: %v", err)
+		}
+
+		fmt.Println("跳出Raftserver的for循环，日志同步完成")
+		break
+	}
 }
 
 func (rf *Raft) sendRequestVote(address string, args *raftrpc.RequestVoteRequest) (bool, *raftrpc.RequestVoteResponse) {
@@ -973,117 +833,46 @@ func (rf *Raft) sendRequestVote(address string, args *raftrpc.RequestVoteRequest
 	}
 }
 
-// func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInRaftRequest, p pool.Pool) (*raftrpc.AppendEntriesInRaftResponse, bool) {
-// 	// 用grpc连接池同步日志
-// 	conn, err := p.Get()
-// 	if err != nil {
-// 		util.EPrintf("failed to get conn: %v", err)
-// 		return nil, false
+func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInRaftRequest, p pool.Pool) (*raftrpc.AppendEntriesInRaftResponse, bool) {
+	// 用grpc连接池同步日志
+	conn, err := p.Get()
+	if err != nil {
+		util.EPrintf("failed to get conn: %v", err)
+		return nil, false
 
-// 	}
-// 	defer conn.Close()
-// 	client := raftrpc.NewRaftClient(conn.Value())
-// 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
-// 	defer cancel()
-// 	reply, err := client.AppendEntriesInRaft(ctx, args)
+	}
+	defer conn.Close()
+	client := raftrpc.NewRaftClient(conn.Value())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+	reply, err := client.AppendEntriesInRaft(ctx, args)
 
-// 	if err != nil {
-// 		// util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ", err, address)
-// 		return reply, false
-// 	}
-// 	return reply, true
-// }
-
-// sendAppendEntries 发送流式日志复制请求
-func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInRaftRequest, peerId int) (*raftrpc.AppendEntriesInRaftResponse, bool) {
-    poolIndex := atomic.AddInt32(&rf.syncIndex[peerId], 1) % int32(rf.portCount)
-    p := rf.pools[peerId][poolIndex]
-    
-    conn, err := p.Get()
-    if err != nil {
-        return nil, false
-    }
-    defer conn.Close()
-    
-    client := raftrpc.NewRaftClient(conn.Value())
-    ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
-    defer cancel()
-
-    // 建立双向流
-    stream, err := client.AppendEntriesInRaft(ctx)
-    if err != nil {
-        return nil, false
-    }
-
-    // 发送请求
-    if err := stream.Send(args); err != nil {
-        return nil, false
-    }
-
-    // 接收响应
-    reply, err := stream.Recv()
-    if err != nil {
-        return nil, false
-    }
-
-    // 关闭发送
-    if err := stream.CloseSend(); err != nil {
-        return nil, false
-    }
-
-    return reply, true
+	if err != nil {
+		// util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ", err, address)
+		return reply, false
+	}
+	return reply, true
 }
 
-// // 修改sendAppendEntries函数使用多端口
-// func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInRaftRequest, peerId int) (*raftrpc.AppendEntriesInRaftResponse, bool) {
-//     // 轮询选择端口
-//     poolIndex := atomic.AddInt32(&rf.syncIndex[peerId], 1) % int32(rf.portCount)
-//     p := rf.pools[peerId][poolIndex]
-    
-//     conn, err := p.Get()
-//     if err != nil {
-//         util.EPrintf("failed to get conn: %v", err)
-//         return nil, false
-//     }
-//     defer conn.Close()
-    
-//     client := raftrpc.NewRaftClient(conn.Value())
-//     ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
-//     defer cancel()
-    
-//     reply, err := client.AppendEntriesInRaft(ctx, args)
-//     if err != nil {
-// 		// util.EPrintf("Error calling AppendEntriesInRaft method on server side; err:%v; address:%v ", err, address)
-//         return reply, false
-//     }
-//     return reply, true
-// }
+func (rf *Raft) sendHeartbeat(address string, args *raftrpc.AppendEntriesInRaftRequest, p pool.Pool) (*raftrpc.AppendEntriesInRaftResponse, bool) {
+	// 用grpc连接池同步日志
+	conn, err := p.Get()
+	if err != nil {
+		util.EPrintf("failed to get conn: %v", err)
+		return nil, false
 
-func (rf *Raft) sendHeartbeat(address string, args *raftrpc.AppendEntriesInRaftRequest, peerId int) (*raftrpc.AppendEntriesInRaftResponse, bool) {
-    // 轮询选择一个连接池
-    poolIndex := atomic.AddInt32(&rf.syncIndex[peerId], 1) % int32(len(rf.pools[peerId]))
-    p := rf.pools[peerId][poolIndex]
-    
-    // 使用选择的连接池获取连接
-    conn, err := p.Get()
-    if err != nil {
-        util.EPrintf("failed to get conn for heartbeat: %v", err)
-        return nil, false
-    }
-    defer conn.Close()
+	}
+	defer conn.Close()
+	client := raftrpc.NewRaftClient(conn.Value())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
+	defer cancel()
+	reply, err := client.HeartbeatInRaft(ctx, args)
 
-    client := raftrpc.NewRaftClient(conn.Value())
-    ctx, cancel := context.WithTimeout(context.Background(), time.Second*4)
-    defer cancel()
-
-    reply, err := client.HeartbeatInRaft(ctx, args)
-
-    if err != nil {
-        util.EPrintf("Error calling HeartbeatInRaft method on server side; err:%v; address:%v poolIndex:%d", 
-            err, address, poolIndex)
-        return reply, false
-    }
-    return reply, true
+	if err != nil {
+		util.EPrintf("Error calling HeartbeatInRaft method on server side; err:%v; address:%v ", err, address)
+		return reply, false
+	}
+	return reply, true
 }
 
 func (rf *Raft) AppendMonitor() {
@@ -1109,7 +898,7 @@ func (rf *Raft) electionLoop() {
 			defer rf.mu.Unlock()
 			// fmt.Println("释放electionLoop的锁1或者")
 			now := time.Now()
-			timeout := time.Duration(5000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
+			timeout := time.Duration(3000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
 			elapses := now.Sub(rf.lastActiveTime)
 			// follower -> candidates
 			if rf.role == ROLE_FOLLOWER {
@@ -1247,300 +1036,212 @@ func (rf *Raft) updateCommitIndex() {
 	// util.DPrintf("RaftNode[%d] updateCommitIndex, newCommitIndex[%d] matchIndex[%v]", rf.me, rf.commitIndex, sortedMatchIndex)
 }
 
-// doAppendEntries 准备并发送流式日志
+// 已兼容snapshot
 func (rf *Raft) doAppendEntries(peerId int) {
-    var buffer bytes.Buffer
-    enc := gob.NewEncoder(&buffer)
-    var totalSize int64
-    var appendLog []*raftrpc.LogEntry
+	var buffer bytes.Buffer
+	enc := gob.NewEncoder(&buffer)
+	var totalSize int64
+	var appendLog []*raftrpc.LogEntry
 
-    args := raftrpc.AppendEntriesInRaftRequest{
-        Term:         int32(rf.currentTerm),
-        LeaderId:     int32(rf.me),
-        LeaderCommit: int32(rf.commitIndex),
-        PrevLogIndex: int32(rf.nextIndex[peerId] - 1),
-        PrevLogTerm:  0,
-    }
+	args := raftrpc.AppendEntriesInRaftRequest{}
+	args.Term = int32(rf.currentTerm)
+	args.LeaderId = int32(rf.me)
+	args.LeaderCommit = int32(rf.commitIndex)
+	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)	// 减一是为了拿到下标
+	if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
+		args.PrevLogTerm = 0
+	} else {
+		// fmt.Printf("此时log%v,PrevLogIndex%v\n",len(rf.log),args.PrevLogIndex)
+		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
+	}
+	// start := rf.index2LogPos(int(args.PrevLogIndex)+1)
+	// if (start + 0)<len(rf.log)  {
+	// 	appendLog = rf.log[start:start + 100]
+	// }else{
+	// 	appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
+	// }
 
-    if args.PrevLogIndex != 0 {
-        args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
-    }
+	// 设置日志同步的阈值
+	// fmt.Println("The length of appendlog:",len(rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]))
+	for i := rf.index2LogPos(int(args.PrevLogIndex) + 1); i < len(rf.log); i++ {
+		if rf.log[i] == nil {
+			fmt.Printf("rf.log的第%v个为nil\n", i)
+			continue
+		}
+		if err := enc.Encode(rf.log[i]); err != nil { // 将 rf.log[i] 日志项编码后的字节序列写入到 buffer 缓冲区中
+			fmt.Println("Encode error：", err)
+		}
+		totalSize += int64(buffer.Len())
+		// 如果总大小超过3MB，截取日志数组并退出循环
+		if totalSize >= threshold {
+			appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i]	// 不包括第i个索引
+			break
+		}
+	}
+	if totalSize < threshold {
+		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
+	}
+	buffer.Reset()
+	args.Entries = appendLog
 
-    // 准备日志条目
-    for i := rf.index2LogPos(int(args.PrevLogIndex) + 1); i < len(rf.log); i++ {
-        if rf.log[i] == nil {
-            continue
-        }
-        if err := enc.Encode(rf.log[i]); err != nil {
-            fmt.Println("Encode error：", err)
-        }
-        totalSize += int64(buffer.Len())
-        if totalSize >= threshold {
-            appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i]
-            break
-        }
-    }
-    if totalSize < threshold {
-        appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
-    }
-    buffer.Reset()
-    args.Entries = appendLog
+	// fmt.Printf("此时下标会不会有问题，log长度：%v，下标：%v", len(rf.log), args.PrevLogIndex+1)
+	// data, _ := json.Marshal(appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
+	// args.Entries = data
+	// args.Entries = append(args.Entries, rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]...)
+	// util.DPrintf("RaftNode[%d] appendEntries starts,  currentTerm[%d] peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] args.Entries[%d] commitIndex[%d]",
+	// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
 
-    rf.LastAppendTime = time.Now()
+	// if len(appendLog) != 0 { // 除去普通的心跳
+	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
+	// 	// fmt.Println("重置lastAppendTime")
+	// }
 
-    go func(peerId int) {
-        if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, peerId); ok {
-            rf.mu.Lock()
-            defer rf.mu.Unlock()
+	go func(peerId int) {
+		// util.DPrintf("RaftNode[%d] appendEntries starts, myTerm[%d] peerId[%d]", rf.me, args.Term, args.LeaderId)
+		if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			// defer func() {
+			// 	util.DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
+			// 		rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
+			// }()
 
-            if rf.currentTerm != int(args.Term) {
-                rf.SyncChans[peerId] <- "NotLeader"
-                return
-            }
+			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
+			if rf.currentTerm != int(args.Term) {
+				rf.SyncChans[peerId] <- "NotLeader"
+				fmt.Printf("rf.currentTerm-%v,args.Term-%v\n",rf.currentTerm,args.Term)
+				return
+			}
+			if reply.Term > int32(rf.currentTerm) { // 变成follower
+				rf.role = ROLE_FOLLOWER
+				rf.leaderId = 0
+				rf.currentTerm = int(reply.Term)
+				rf.votedFor = -1
+				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+				rf.SyncChans[peerId] <- "NotLeader"
+				fmt.Printf("reply.Term-%v,rf.currentTerm-%v\n",reply.Term,rf.currentTerm)
+				return
+			}
+			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
+			// 因此这里得根据发出RPC请求时的状态做更新，而不要直接对nextIndex和matchIndex做相对加减
+			if reply.Success { // 同步日志成功
+				rf.nextIndex[peerId] = int(args.PrevLogIndex) + len(appendLog) + 1
+				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // 记录已经复制到其他server的日志的最后index的情况
+				rf.updateCommitIndex()                           // 更新commitIndex
+			} else {
+				// 回退优化，参考：https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations
+				// nextIndexBefore := rf.nextIndex[peerId] // 仅为打印log
 
-            if reply.Term > int32(rf.currentTerm) {
-                rf.role = ROLE_FOLLOWER
-                rf.leaderId = 0
-                rf.currentTerm = int(reply.Term)
-                rf.votedFor = -1
-                rf.SyncChans[peerId] <- "NotLeader"
-                return
-            }
-
-            if reply.Success {
-                rf.nextIndex[peerId] = int(args.PrevLogIndex) + len(appendLog) + 1
-                rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1
-                rf.updateCommitIndex()
-            } else {
-                if reply.ConflictTerm != -1 {
-                    conflictTermIndex := -1
-                    for index := args.PrevLogIndex; index > 0; index-- {
-                        if rf.log[rf.index2LogPos(int(index))].Term != reply.ConflictTerm {
-                            conflictTermIndex = int(index + 1)
-                            break
-                        }
-                    }
-                    if conflictTermIndex != -1 {
-                        rf.nextIndex[peerId] = conflictTermIndex
-                    } else {
-                        rf.nextIndex[peerId] = int(reply.ConflictIndex)
-                    }
-                } else {
-                    rf.nextIndex[peerId] = int(reply.ConflictIndex)
-                }
-            }
-            rf.SyncChans[peerId] <- strconv.Itoa(peerId)
-        } else {
-            rf.SyncChans[peerId] <- strconv.Itoa(peerId)
-        }
-    }(peerId)
+				if reply.ConflictTerm != -1 { // follower的prevLogIndex位置term冲突了
+					// 我们找leader log中conflictTerm最后出现位置，如果找到了就用它作为nextIndex，否则用follower的conflictIndex
+					conflictTermIndex := -1
+					for index := args.PrevLogIndex; index > 0; index-- {
+						// if rf.log[rf.index2LogPos(int(index))].Term == reply.ConflictTerm {
+						// 	conflictTermIndex = int(index)
+						// 	break
+						// }
+						// 我认为下方这个效果更好，这样PrevLogIndex的值就为 index
+						if rf.log[rf.index2LogPos(int(index))].Term != reply.ConflictTerm {
+							conflictTermIndex = int(index + 1)
+							break
+						}
+					}
+					if conflictTermIndex != -1 { // leader log出现了这个term，那么从这里prevLogIndex之前的最晚出现位置尝试同步
+						rf.nextIndex[peerId] = conflictTermIndex
+					} else {
+						rf.nextIndex[peerId] = int(reply.ConflictIndex) // 用follower首次出现term的index作为同步开始
+					}
+				} else {
+					// follower没有发现prevLogIndex term冲突, 可能是被snapshot了或者日志长度不够
+					// 这时候我们将返回的conflictIndex设置为nextIndex即可
+					rf.nextIndex[peerId] = int(reply.ConflictIndex)
+				}
+				// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
+			}
+			// rf.SyncChans[peerId] <- rf.peers[peerId]
+			rf.SyncChans[peerId] <- strconv.Itoa(peerId)
+		} else {
+			// rf.SyncChans[peerId] <- rf.peers[peerId]	// 同步日志失败也要重新发起日志同步
+			rf.SyncChans[peerId] <- strconv.Itoa(peerId)
+		}
+	}(peerId)
 }
 
-// 已兼容snapshot
-// func (rf *Raft) doAppendEntries(peerId int) {
-// 	var buffer bytes.Buffer
-// 	enc := gob.NewEncoder(&buffer)
-// 	var totalSize int64
-// 	var appendLog []*raftrpc.LogEntry
-
-// 	args := raftrpc.AppendEntriesInRaftRequest{}
-// 	args.Term = int32(rf.currentTerm)
-// 	args.LeaderId = int32(rf.me)
-// 	args.LeaderCommit = int32(rf.commitIndex)
-// 	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)	// 减一是为了拿到下标
-// 	if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
-// 		args.PrevLogTerm = 0
-// 	} else {
-// 		// fmt.Printf("此时log%v,PrevLogIndex%v\n",len(rf.log),args.PrevLogIndex)
-// 		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
-// 	}
-// 	// start := rf.index2LogPos(int(args.PrevLogIndex)+1)
-// 	// if (start + 0)<len(rf.log)  {
-// 	// 	appendLog = rf.log[start:start + 100]
-// 	// }else{
-// 	// 	appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
-// 	// }
-
-// 	// 设置日志同步的阈值
-// 	// fmt.Println("The length of appendlog:",len(rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]))
-// 	for i := rf.index2LogPos(int(args.PrevLogIndex) + 1); i < len(rf.log); i++ {
-// 		if rf.log[i] == nil {
-// 			fmt.Printf("rf.log的第%v个为nil\n", i)
-// 			continue
-// 		}
-// 		if err := enc.Encode(rf.log[i]); err != nil { // 将 rf.log[i] 日志项编码后的字节序列写入到 buffer 缓冲区中
-// 			fmt.Println("Encode error：", err)
-// 		}
-// 		totalSize += int64(buffer.Len())
-// 		// 如果总大小超过3MB，截取日志数组并退出循环
-// 		if totalSize >= threshold {
-// 			appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i]	// 不包括第i个索引
-// 			break
-// 		}
-// 	}
-// 	if totalSize < threshold {
-// 		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
-// 	}
-// 	buffer.Reset()
-// 	args.Entries = appendLog
-
-// 	// fmt.Printf("此时下标会不会有问题，log长度：%v，下标：%v", len(rf.log), args.PrevLogIndex+1)
-// 	// data, _ := json.Marshal(appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
-// 	// args.Entries = data
-// 	// args.Entries = append(args.Entries, rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]...)
-// 	// util.DPrintf("RaftNode[%d] appendEntries starts,  currentTerm[%d] peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] args.Entries[%d] commitIndex[%d]",
-// 	// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
-
-// 	// if len(appendLog) != 0 { // 除去普通的心跳
-// 	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
-// 	// 	// fmt.Println("重置lastAppendTime")
-// 	// }
-
-// 	go func(peerId int) {
-// 		// util.DPrintf("RaftNode[%d] appendEntries starts, myTerm[%d] peerId[%d]", rf.me, args.Term, args.LeaderId)
-// 		if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, peerId); ok {
-// 			rf.mu.Lock()
-// 			defer rf.mu.Unlock()
-// 			// defer func() {
-// 			// 	util.DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
-// 			// 		rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
-// 			// }()
-
-// 			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
-// 			if rf.currentTerm != int(args.Term) {
-// 				rf.SyncChans[peerId] <- "NotLeader"
-// 				return
-// 			}
-// 			if reply.Term > int32(rf.currentTerm) { // 变成follower
-// 				rf.role = ROLE_FOLLOWER
-// 				rf.leaderId = 0
-// 				rf.currentTerm = int(reply.Term)
-// 				rf.votedFor = -1
-// 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-// 				rf.SyncChans[peerId] <- "NotLeader"
-// 				return
-// 			}
-// 			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
-// 			// 因此这里得根据发出RPC请求时的状态做更新，而不要直接对nextIndex和matchIndex做相对加减
-// 			if reply.Success { // 同步日志成功
-// 				rf.nextIndex[peerId] = int(args.PrevLogIndex) + len(appendLog) + 1
-// 				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // 记录已经复制到其他server的日志的最后index的情况
-// 				rf.updateCommitIndex()                           // 更新commitIndex
-// 			} else {
-// 				// 回退优化，参考：https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations
-// 				// nextIndexBefore := rf.nextIndex[peerId] // 仅为打印log
-
-// 				if reply.ConflictTerm != -1 { // follower的prevLogIndex位置term冲突了
-// 					// 我们找leader log中conflictTerm最后出现位置，如果找到了就用它作为nextIndex，否则用follower的conflictIndex
-// 					conflictTermIndex := -1
-// 					for index := args.PrevLogIndex; index > 0; index-- {
-// 						// if rf.log[rf.index2LogPos(int(index))].Term == reply.ConflictTerm {
-// 						// 	conflictTermIndex = int(index)
-// 						// 	break
-// 						// }
-// 						// 我认为下方这个效果更好，这样PrevLogIndex的值就为 index
-// 						if rf.log[rf.index2LogPos(int(index))].Term != reply.ConflictTerm {
-// 							conflictTermIndex = int(index + 1)
-// 							break
-// 						}
-// 					}
-// 					if conflictTermIndex != -1 { // leader log出现了这个term，那么从这里prevLogIndex之前的最晚出现位置尝试同步
-// 						rf.nextIndex[peerId] = conflictTermIndex
-// 					} else {
-// 						rf.nextIndex[peerId] = int(reply.ConflictIndex) // 用follower首次出现term的index作为同步开始
-// 					}
-// 				} else {
-// 					// follower没有发现prevLogIndex term冲突, 可能是被snapshot了或者日志长度不够
-// 					// 这时候我们将返回的conflictIndex设置为nextIndex即可
-// 					rf.nextIndex[peerId] = int(reply.ConflictIndex)
-// 				}
-// 				// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
-// 			}
-// 			// rf.SyncChans[peerId] <- rf.peers[peerId]
-// 			rf.SyncChans[peerId] <- strconv.Itoa(peerId)
-// 		} else {
-// 			// rf.SyncChans[peerId] <- rf.peers[peerId]	// 同步日志失败也要重新发起日志同步
-// 			rf.SyncChans[peerId] <- strconv.Itoa(peerId)
-// 		}
-// 	}(peerId)
-// }
-
-// 对应地需要修改调用sendHeartbeat的地方，比如在doHeartBeat中
 func (rf *Raft) doHeartBeat(peerId int) {
-    args := raftrpc.AppendEntriesInRaftRequest{
-        Term:         int32(rf.currentTerm),
-        LeaderId:     int32(rf.me),
-        LeaderCommit: int32(rf.commitIndex),
-        PrevLogIndex: int32(rf.nextIndex[peerId] - 1),
-    }
-    
-    if args.PrevLogIndex == 0 {
-        args.PrevLogTerm = 0
-    } else {
-        args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
-    }
-    args.Entries = []*raftrpc.LogEntry{}
-
-    go func(peerId int) {
-        if reply, ok := rf.sendHeartbeat(rf.peers[peerId], &args, peerId); ok {
-            rf.mu.Lock()
-            defer rf.mu.Unlock()
-            
-            if rf.currentTerm != int(args.Term) {
-                return
-            }
-            
-            if reply.Term > int32(rf.currentTerm) {
-                rf.role = ROLE_FOLLOWER
-                rf.currentTerm = int(reply.Term)
-                rf.votedFor = -1
-                return
-            }
-        }
-    }(peerId)
+	args := raftrpc.AppendEntriesInRaftRequest{}
+	args.Term = int32(rf.currentTerm)
+	args.LeaderId = int32(rf.me)
+	args.LeaderCommit = int32(rf.commitIndex)
+	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)
+	if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
+		args.PrevLogTerm = 0
+	} else {
+		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
+	}
+	args.Entries = []*raftrpc.LogEntry{}
+	go func(peerId int) {
+		if reply, ok := rf.sendHeartbeat(rf.peers[peerId], &args, rf.pools[peerId]); ok {
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			if rf.currentTerm != int(args.Term) {
+				return
+			}
+			if reply.Term > int32(rf.currentTerm) { // 变成follower
+				rf.role = ROLE_FOLLOWER
+				// rf.leaderId = 0
+				rf.currentTerm = int(reply.Term)
+				rf.votedFor = -1
+				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+				return
+			}
+			// rf.SyncChans[peerId] <- strconv.Itoa(peerId)
+		}
+		// rf.SyncChans[peerId] <- strconv.Itoa(peerId)
+	}(peerId)
 }
 
 func (rf *Raft) CheckActive(peerId int, resultChan chan<- bool) {
-    args := raftrpc.AppendEntriesInRaftRequest{
-        Term:         int32(rf.currentTerm),
-        LeaderId:     int32(rf.me),
-        LeaderCommit: int32(rf.commitIndex),
-        PrevLogIndex: int32(rf.nextIndex[peerId] - 1),
-    }
-    
-    if args.PrevLogIndex == 0 {
-        args.PrevLogTerm = 0
-    } else {
-        args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
-    }
-    args.Entries = []*raftrpc.LogEntry{}
-
-    if reply, ok := rf.sendHeartbeat(rf.peers[peerId], &args, peerId); ok {
-        rf.mu.Lock()
-        if rf.currentTerm != int(args.Term) {
-            rf.mu.Unlock()
-            return
-        }
-        
-        if reply.Term > int32(rf.currentTerm) {
-            rf.role = ROLE_FOLLOWER
-            rf.currentTerm = int(reply.Term)
-            rf.votedFor = -1
-            rf.mu.Unlock()
-            return
-        }
-        
-        if reply.Success {
-            resultChan <- true
-        } else {
-            resultChan <- false
-        }
-        rf.mu.Unlock()
-    } else {
-        resultChan <- false
-    }
+	args := raftrpc.AppendEntriesInRaftRequest{}
+	args.Term = int32(rf.currentTerm)
+	args.LeaderId = int32(rf.me)
+	args.LeaderCommit = int32(rf.commitIndex)
+	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)
+	if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
+		args.PrevLogTerm = 0
+	} else {
+		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
+	}
+	args.Entries = []*raftrpc.LogEntry{}
+	if reply, ok := rf.sendHeartbeat(rf.peers[peerId], &args, rf.pools[peerId]); ok {
+		rf.mu.Lock()
+		// defer rf.mu.Unlock()
+		if rf.currentTerm != int(args.Term) {
+			rf.mu.Unlock()
+			return
+		}
+		if reply.Term > int32(rf.currentTerm) { // 变成follower
+			rf.role = ROLE_FOLLOWER
+			// rf.leaderId = 0
+			rf.currentTerm = int(reply.Term)
+			rf.votedFor = -1
+			// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+			rf.mu.Unlock()
+			return
+		}
+		if reply.Success {
+			// fmt.Printf("receive true from node %v\n", peerId)
+			resultChan <- true
+		} else {
+			// fmt.Printf("receive false from node %v\n", peerId)
+			resultChan <- false
+		}
+		rf.mu.Unlock()
+	} else {
+		fmt.Printf("Failed to send heartbeat to node %v\n", peerId)
+		resultChan <- false
+		return
+	}
 }
-
 
 func (rf *Raft) GetReadIndex() (commitindex int, isleader bool) {
 	rf.mu.Lock()
@@ -1632,7 +1333,7 @@ func (rf *Raft) appendEntriesLoop() {
 				First = false
 			}
 			now := time.Now() // 心跳
-			if now.Sub(rf.LastAppendTime) > 500*time.Millisecond {
+			if now.Sub(rf.LastAppendTime) > 1000*time.Millisecond {
 				for peerId := 0; peerId < len(rf.peers); peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
 					if peerId == rf.me {
 						continue
@@ -1645,7 +1346,7 @@ func (rf *Raft) appendEntriesLoop() {
 			select {
 			case value1 := <-rf.SyncChans[0]:
 				if value1 == "NotLeader" {
-					fmt.Println("被告知不是NotLeader，退出")
+					fmt.Println("被 server 0 告知不是NotLeader，退出")
 					return
 				}
 				rf.doAppendEntries(0)
@@ -1655,7 +1356,7 @@ func (rf *Raft) appendEntriesLoop() {
 			select {
 			case value2 := <-rf.SyncChans[1]:
 				if value2 == "NotLeader" {
-					fmt.Println("被告知不是NotLeader，退出")
+					fmt.Println("被 server 1 告知不是NotLeader，退出")
 					return
 				}
 				rf.doAppendEntries(1)
@@ -1665,7 +1366,7 @@ func (rf *Raft) appendEntriesLoop() {
 			select {
 			case value3 := <-rf.SyncChans[2]:
 				if value3 == "NotLeader" {
-					fmt.Println("被告知不是NotLeader，退出")
+					fmt.Println("被 server 2 告知不是NotLeader，退出")
 					return
 				}
 				rf.doAppendEntries(2)
@@ -1888,34 +1589,24 @@ func Make(peers []string, me int,
 	rf.applyCh = applyCh
 	rf.Offsets = append(rf.Offsets, 0) // 初始化时添加一个0，使得后续对index的访问和raft的对其，从1开始
 
-	// 初始化 syncIndex
-    rf.syncIndex = make([]int32, len(peers))
-	rf.portCount = 3
-    // 初始化连接池
-    rf.pools = make([][]pool.Pool, len(peers))
-    for i := 0; i < len(peers); i++ {
-        rf.pools[i] = make([]pool.Pool, 3) // 为每个peer创建3个连接池
-        
-        // 解析基础地址
-        peerHost := strings.Split(peers[i], ":")[0]
-        basePort, _ := strconv.Atoi(strings.Split(peers[i], ":")[1])
-        
-        // 为每个端口创建连接池
-        for j := 0; j < 3; j++ {
-            addr := fmt.Sprintf("%s:%d", peerHost, basePort+j)
-            p, err := pool.New([]string{addr}, pool.Options{
-                Dial:                 pool.Dial,
-                MaxIdle:              50,
-                MaxActive:            150,
-                MaxConcurrentStreams: 400,
-                Reuse:               true,
-            })
-            if err != nil {
-                util.EPrintf("failed to new pool for %s: %v", addr, err)
-            }
-            rf.pools[i][j] = p
-        }
-    }
+	// 这就是自己修改grpc线程池option参数的做法
+	DesignOptions := pool.Options{
+		Dial:                 pool.Dial,
+		MaxIdle:              150,
+		MaxActive:            300,
+		MaxConcurrentStreams: 800,
+		Reuse:                true,
+	}
+	// 根据servers的地址，创建了一一对应server地址的grpc连接池
+	for i := 0; i < len(peers); i++ {
+		peers_single := []string{peers[i]}
+		p, err := pool.New(peers_single, DesignOptions)
+		if err != nil {
+			util.EPrintf("failed to new pool: %v", err)
+		}
+		// grpc连接池组
+		rf.pools = append(rf.pools, p)
+	}
 
 	util.DPrintf("RaftNode[%d] Make again", rf.me)
 	rf.LastAppendTime = time.Now()
@@ -1937,10 +1628,8 @@ func Make(peers []string, me int,
 	go func() {
 		for range ticker.C {
 			if rf.killed() { // 如果上次KVS关闭了Raft，则可以关闭pool
-				for i := range rf.pools {
-					for j := range rf.pools[i] {
-						rf.pools[i][j].Close()
-					}
+				for _, pool := range rf.pools {
+					pool.Close()
 				}
 				util.DPrintf("The raft pool has been closed")
 				util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
