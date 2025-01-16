@@ -1777,7 +1777,7 @@ func main() {
 	// ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 20000 * time.Second
+		timeout := 400000 * time.Second
 		time1 := 500000 * time.Second
 		for {
 			time.Sleep(timeout)
