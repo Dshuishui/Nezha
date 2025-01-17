@@ -117,6 +117,9 @@ type KVServer struct {
 	filePool        *FileDescriptorPool
 
 	sortedFileCache *lru.Cache // 用于缓存key到offset的映射
+
+	// multiGC
+	numGC int
 }
 
 // ValueLog represents the Value Log file for storing values.
