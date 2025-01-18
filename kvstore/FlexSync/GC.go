@@ -20,18 +20,21 @@ import (
 // 	key string
 // 	offset int64
 // }
+var firstSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
+var firstNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/RaftState_new.log"
+var firstNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/db_key_index_new"
 
-func (kvs *KVServer) GarbageCollection() error {
+func (kvs *KVServer) FirstGarbageCollection() error {
 	fmt.Println("Starting garbage collection...")
 	startTime := time.Now()
 
 	// Create a new file for sorted entries
-	sortedFilePath := "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
-	if _, err := os.Stat(sortedFilePath); err == nil {
+	
+	if _, err := os.Stat(firstSortedFilePath); err == nil {
 		fmt.Println("Sorted file already exists. Skipping garbage collection.")
 		return nil
 	}
-	sortedFile, err := os.Create(sortedFilePath)
+	sortedFile, err := os.Create(firstSortedFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to create sorted file: %v", err)
 	}
@@ -49,17 +52,16 @@ func (kvs *KVServer) GarbageCollection() error {
 	if err != nil {
 		return fmt.Errorf("failed to create new persister: %v", err)
 	}
-	newPersister, err := persister_new.Init("/home/DYC/Gitee/FlexSync/kvstore/FlexSync/db_key_index_new", true)
+	newPersister, err := persister_new.Init(firstNewPersisterPath, true)
 	if err != nil {
 		return fmt.Errorf("failed to initialize new RocksDB: %v", err)
 	}
 
 	// 创建新的RaftState日志文件
-	newRaftStateLogPath := "/home/DYC/Gitee/FlexSync/raft/RaftState_new.log"
-	if _, err := os.Stat(newRaftStateLogPath); err == nil {
+	if _, err := os.Stat(firstNewRaftStateLogPath); err == nil {
 		fmt.Println("New RaftState log file already exists. Skipping creation.")
 	} else if os.IsNotExist(err) {
-		newRaftStateLog, err := os.Create(newRaftStateLogPath)
+		newRaftStateLog, err := os.Create(firstNewRaftStateLogPath)
 		if err != nil {
 			return fmt.Errorf("failed to create new RaftState log: %v", err)
 		}
@@ -71,7 +73,7 @@ func (kvs *KVServer) GarbageCollection() error {
 	kvs.startGC = true
 
 	// 切换到新的文件和RocksDB
-	kvs.SwitchToNewFiles(newRaftStateLogPath, newPersister)
+	kvs.SwitchToNewFiles(firstNewRaftStateLogPath, newPersister)
 
 	// Create a buffered writer for the sorted file
 	writer := bufio.NewWriter(sortedFile)
@@ -114,13 +116,13 @@ func (kvs *KVServer) GarbageCollection() error {
 	}
 
 	// Update KVServer to use the new sorted file
-	err = kvs.CreateIndex(sortedFilePath)
+	err = kvs.CreateIndex(firstSortedFilePath)
 	if err != nil {
 		fmt.Println("创建索引有问题：", err)
 	}
 
 	// 添加验证步骤
-	err = VerifySortedFile(sortedFilePath)
+	err = VerifySortedFile(firstSortedFilePath)
 	if err != nil {
 		return fmt.Errorf("verification of sorted file failed: %v", err)
 	}
@@ -173,19 +175,19 @@ func (kvs *KVServer) WriteEntryToSortedFile(writer *bufio.Writer, entry *raft.En
 	return err
 }
 
-func (kvs *KVServer) CreateIndex(sortedFilePath string) error {
+func (kvs *KVServer) CreateIndex(firstSortedFilePath string) error {
 	kvs.mu.Lock()
 	defer kvs.mu.Unlock()
 
-	kvs.sortedFilePath = sortedFilePath
+	kvs.firstSortedFilePath = firstSortedFilePath
 
 	// 创建索引，假设每1个条目记录一次索引，稀疏索引，间隔一部分创建一个索引，找到第一个合适的，再进行线性查询
-	index, err := kvs.CreateSortedFileIndex(sortedFilePath)
+	index, err := kvs.CreateSortedFileIndex(firstSortedFilePath)
 	if err != nil {
 		// 处理错误
 		return err
 	}
-	kvs.sortedFileIndex = index
+	kvs.firstSortedFileIndex = index
 
 	// 初始化LRU缓存，设置合适的缓存大小
 	// 这里假设缓存40000个key-value对
@@ -196,10 +198,10 @@ func (kvs *KVServer) CreateIndex(sortedFilePath string) error {
 	}
 
 	// 预热缓存
-	kvs.warmupCache(sortedFilePath)
+	kvs.warmupCache(firstSortedFilePath)
 
 	fmt.Println("建立了索引，得到了针对已排序文件的稀疏索引")
-	kvs.filePool, err = NewFileDescriptorPool(sortedFilePath, 50)
+	kvs.filePool, err = NewFileDescriptorPool(firstSortedFilePath, 50)
 	if err != nil {
 		fmt.Printf("Failed to create file descriptor pool: %v\n", err)
 		panic("创建文件描述符池失败")
@@ -525,13 +527,13 @@ func (kvs *KVServer) checkLogDBConsistency() error {
 // 	fmt.Printf("Processed %d entries from old file\n", len(sortedEntries))
 
 // 	// 写入新的排序文件
-// 	sortedFilePath := "./raft/RaftState_sorted.log"
-// 	err = GC4.WriteEntriesToNewFile(sortedEntries, sortedFilePath)
+// 	firstSortedFilePath := "./raft/RaftState_sorted.log"
+// 	err = GC4.WriteEntriesToNewFile(sortedEntries, firstSortedFilePath)
 // 	if err != nil {
 // 		return fmt.Errorf("failed to write sorted file: %v", err)
 // 	}
 
-// 	fileInfo, err := os.Stat(sortedFilePath)
+// 	fileInfo, err := os.Stat(firstSortedFilePath)
 // 	if err != nil {
 // 		return fmt.Errorf("failed to stat new file: %v", err)
 // 	}
@@ -551,7 +553,7 @@ func (kvs *KVServer) checkLogDBConsistency() error {
 // 	// }
 
 // 	// 更新KVServer的查询方法
-// 	kvs.updateQueryMethods(sortedFilePath)
+// 	kvs.updateQueryMethods(firstSortedFilePath)
 
 // 	fmt.Printf("Garbage collection completed in %v\n", time.Since(startTime))
 // 	return nil
@@ -561,12 +563,18 @@ func (kvs *KVServer) SwitchToNewFiles(newLog string, newPersister *raft.Persiste
 	kvs.mu.Lock()
 	defer kvs.mu.Unlock()
 
+	// 赋值旧文件变量
+	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
+	kvs.oldLog = kvs.InitialRaftStateLog // 给old log文件赋值
+
 	// 更新两个路径，使得垃圾回收与客户端请求并行执行
 	kvs.currentLog = newLog
 	fmt.Println("设置kvs.currentLog为", newLog)
 	kvs.raft.SetCurrentLog(kvs.currentLog)
 	// kvs.raft.currentLog = newLog		// 存储value的磁盘文件由raft操作，raft接触到的只有存储value的log文件
+
 	kvs.persister = newPersister // 存储key和偏移量的rocksdb文件由kvs操作
+	kvs.raft.SetCurrentPersister(kvs.persister)
 	// 可能还需要更新其他相关的状态
 }
 

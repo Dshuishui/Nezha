@@ -129,6 +129,12 @@ func (rf *Raft) SetCurrentLog(currentLog string) {
 	rf.currentLog = currentLog
 }
 
+func (rf *Raft) SetCurrentPersister(persister *Persister) {
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
+	rf.persister = persister
+}
+
 // func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 // 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 // 	if err != nil {
