@@ -192,13 +192,23 @@ func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeReq
 
 	// for {
 	// 	if kvs.raft.GetApplyIndex() >= commitIndex {
-	result, err := kvs.scanFromSortedOrNew(in.StartKey, in.EndKey)
+	if !kvs.anotherStartGC {
+		result, err := kvs.firstGCScan(in.StartKey, in.EndKey)
+		if err != nil {
+			reply.Err = "error in scan"
+			return reply, nil
+		}
+		reply.KeyValuePairs = result
+		return reply, nil
+	}
+	result, err := kvs.anotherGCScan(in.StartKey, in.EndKey)
 	if err != nil {
 		reply.Err = "error in scan"
 		return reply, nil
 	}
 	reply.KeyValuePairs = result
 	return reply, nil
+
 	// }
 	// 	time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
 	// }
@@ -222,7 +232,172 @@ func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeReq
 	// return reply, nil
 }
 
-func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]string, error) {
+func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, error) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	type scanResult struct {
+		data map[string]string
+		err  error
+	}
+
+	oldChan := make(chan scanResult, 1)
+	sortedChan := make(chan scanResult, 1)
+	newChan := make(chan scanResult, 1)
+
+	if !kvs.anotherStartGC {
+		// GC前：并行查询上一轮新文件，上一轮排序文件
+		go func() {
+			defer wg.Done()
+			result, err := kvs.scanFromSortedFile(startKey, endKey, kvs.lastSortedFileIndex)
+			sortedChan <- scanResult{data: result, err: err}
+		}()
+
+		// 查询新文件
+		go func() {
+			defer wg.Done()
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{
+				StartKey: startKey,
+				EndKey:   endKey,
+			}, kvs.oldPersister, kvs.oldLog)
+			oldChan <- scanResult{data: result.KeyValuePairs, err: nil}
+		}()
+
+		wg.Wait()
+		close(sortedChan)
+		close(oldChan)
+
+		sortedResult := <-sortedChan
+		oldResult := <-oldChan
+
+		if sortedResult.err != nil {
+			return nil, fmt.Errorf("error scanning sorted file: %v", sortedResult.err)
+		}
+		if oldResult.err != nil {
+			return nil, fmt.Errorf("error scanning new file: %v", oldResult.err)
+		}
+
+		// 合并结果，new的结果优先级高于sorted
+		result := make(map[string]string)
+		for k, v := range sortedResult.data {
+			result[k] = v
+		}
+		for k, v := range oldResult.data {
+			result[k] = v
+		}
+		return result, nil
+	} else if kvs.anotherStartGC && !kvs.anotherEndGC {
+		// GC中：并行查询上一轮新文件、上一轮排序文件和本轮new文件
+		wg.Add(1) // 增加一个等待，因为要查询三个文件
+
+		// 查询旧文件
+		go func() {
+			defer wg.Done()
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{
+				StartKey: startKey,
+				EndKey:   endKey,
+			}, kvs.oldPersister, kvs.oldLog)
+			oldChan <- scanResult{data: result.KeyValuePairs, err: nil}
+		}()
+
+		// 查询已排序文件
+		go func() {
+			defer wg.Done()
+			result, err := kvs.scanFromSortedFile(startKey, endKey, kvs.lastSortedFileIndex)
+			sortedChan <- scanResult{data: result, err: err}
+		}()
+
+		// 查询新文件
+		go func() {
+			defer wg.Done()
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{
+				StartKey: startKey,
+				EndKey:   endKey,
+			}, kvs.persister, kvs.currentLog)
+			newChan <- scanResult{data: result.KeyValuePairs, err: nil}
+		}()
+
+		wg.Wait()
+		close(oldChan)
+		close(sortedChan)
+		close(newChan)
+
+		oldResult := <-oldChan
+		sortedResult := <-sortedChan
+		newResult := <-newChan
+
+		if oldResult.err != nil {
+			return nil, fmt.Errorf("error scanning old file: %v", oldResult.err)
+		}
+		if sortedResult.err != nil {
+			return nil, fmt.Errorf("error scanning sorted file: %v", sortedResult.err)
+		}
+		if newResult.err != nil {
+			return nil, fmt.Errorf("error scanning new file: %v", newResult.err)
+		}
+
+		// 合并结果，优先级：new > old > sorted
+		result := make(map[string]string)
+		// 先加入sorted的结果
+		for k, v := range sortedResult.data {
+			result[k] = v
+		}
+		// 加入old的结果，覆盖sorted的
+		for k, v := range oldResult.data {
+			result[k] = v
+		}
+		// 最后加入new的结果，覆盖之前的
+		for k, v := range newResult.data {
+			result[k] = v
+		}
+		return result, nil
+
+	} else {
+		// GC后：并行查询本轮sorted和本轮new文件
+		// 查询已排序文件
+		go func() {
+			defer wg.Done()
+			result, err := kvs.scanFromSortedFile(startKey, endKey, kvs.anothersortedFileIndex)
+			sortedChan <- scanResult{data: result, err: err}
+		}()
+
+		// 查询新文件
+		go func() {
+			defer wg.Done()
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{
+				StartKey: startKey,
+				EndKey:   endKey,
+			}, kvs.persister, kvs.currentLog)
+			newChan <- scanResult{data: result.KeyValuePairs, err: nil}
+		}()
+
+		wg.Wait()
+		close(sortedChan)
+		close(newChan)
+
+		sortedResult := <-sortedChan
+		newResult := <-newChan
+
+		if sortedResult.err != nil {
+			return nil, fmt.Errorf("error scanning sorted file: %v", sortedResult.err)
+		}
+		if newResult.err != nil {
+			return nil, fmt.Errorf("error scanning new file: %v", newResult.err)
+		}
+
+		// 合并结果，new的结果优先级高于sorted
+		result := make(map[string]string)
+		for k, v := range sortedResult.data {
+			result[k] = v
+		}
+		for k, v := range newResult.data {
+			result[k] = v
+		}
+		return result, nil
+	}
+}
+
+func (kvs *KVServer) firstGCScan(startKey, endKey string) (map[string]string, error) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -257,7 +432,7 @@ func (kvs *KVServer) scanFromSortedOrNew(startKey, endKey string) (map[string]st
 		// 并发查询排序文件
 		go func() {
 			defer wg.Done()
-			result, err := kvs.scanFromSortedFile(startKey, endKey)
+			result, err := kvs.scanFromSortedFile(startKey, endKey, kvs.firstSortedFileIndex)
 			sortedChan <- scanResult{data: result, err: err}
 		}()
 
@@ -436,63 +611,6 @@ func ReadEntry(reader *bufio.Reader, currentOffset int64) (*raft.Entry, int64, e
 }
 
 // ==================================================
-
-func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeResponse {
-	startKey := args.GetStartKey()
-	endKey := args.GetEndKey()
-	reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
-
-	commitIndex, isLeader := kvs.raft.GetReadIndex()
-	if !isLeader {
-		reply.Err = raft.ErrWrongLeader
-		reply.LeaderId = kvs.raft.GetLeaderId()
-		return reply // 不是leader，拿不到commitindex直接退出，找其它leader
-	}
-
-	for {
-		if kvs.raft.GetApplyIndex() >= commitIndex {
-			// 执行范围查询
-			result, err := kvs.persister.ScanRange_opt(startKey, endKey)
-			if err != nil {
-				log.Printf("Scan error: %v", err)
-				reply.Err = "error in scan"
-				return reply
-			}
-
-			// 处理查询结果
-			finalResult := make(map[string]string)
-			// var mu sync.Mutex
-			var wg sync.WaitGroup
-
-			for key, position := range result {
-				wg.Add(1)
-				go func(k string, pos int64) {
-					defer wg.Done()
-					_, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, pos)
-					if err != nil {
-						// log.Printf("Error reading value for key %s: %v", k, err)
-						// mu.Lock()
-						// finalResult[k] = raft.NoKey
-						// mu.Unlock()
-						fmt.Println("scan时，拿取单个key有问题")
-						panic(err)
-					} else { // 迭代器在rocksdb中找到的key和偏移量数组，里面的key不重复，可以并发修改数组
-						// mu.Lock()
-						finalResult[k] = value
-						// mu.Unlock()
-					}
-				}(key, position)
-			}
-
-			wg.Wait()
-
-			// 构造响应并返回
-			reply.KeyValuePairs = finalResult
-			return reply
-		}
-		time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
-	}
-}
 
 func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvrpc.GetInRaftResponse {
 	if !kvs.startGC { // 还未开始GC，先去旧的rocksdb查询
@@ -826,7 +944,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 	newFileResult := make(chan searchResult, 1)
 	anotherSortedFileResult := make(chan searchResult, 1)
 
-	// 并行搜索旧文件（上一轮的新文件）
+	// 并行搜索新文件（本轮的新文件）
 	go func() {
 		positionBytes, err := kvs.persister.Get_opt(key)
 		if err != nil {
@@ -892,8 +1010,9 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	// for { // 证明了此服务器就是leader
 	// if kvs.raft.GetApplyIndex() >= commitindex {
 	key := args.GetKey()
-	if kvs.FirstGC {
+	if !kvs.anotherStartGC { // 未开始第二轮GC
 		reply = kvs.firstGCGet(key, reply)
+		return reply
 	}
 	reply = kvs.anotherGCGet(key, reply)
 	return reply
@@ -1489,8 +1608,8 @@ func (kvs *KVServer) getNextPossibleKey(key string) string {
 }
 
 // 带内存映射的，使用了哈希表存储索引的
-func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]string, error) {
-	index := kvs.firstSortedFileIndex
+func (kvs *KVServer) scanFromSortedFile(startKey, endKey string, index *SortedFileIndex) (map[string]string, error) {
+
 	paddedStartKey := kvs.persister.PadKey(startKey)
 	paddedEndKey := kvs.persister.PadKey(endKey)
 	startOffset := int64(-1)
@@ -1915,6 +2034,7 @@ func main() {
 
 	// 初始化存储value的文件
 	kvs.InitialRaftStateLog = "/home/DYC/Gitee/FlexSync/raft/RaftState.log"
+	kvs.currentLog = kvs.InitialRaftStateLog
 	// InitialRaftStateLog, err := os.Create(currentLog)
 	// if err != nil {
 	// 	log.Fatalf("Failed to create new RaftState log: %v", err)
@@ -1979,17 +2099,19 @@ func main() {
 					fmt.Println("检查log文件出现了错误: ", err)
 				}
 				kvs.lastGCFinish = true
+				kvs.FirstGC = false
 				kvs.lastSortedFileIndex = kvs.firstSortedFileIndex // 更新本轮的变量为上一次
-				// 删除 oldLog指向的文件
-				err = os.Remove(kvs.oldLog)
-				if err != nil {
+				// Clean up old files
+				if err := os.Remove(kvs.oldLog); err != nil {
 					fmt.Println("第 1 轮删除旧文件出现了错误: ", err)
 				}
+				// if err := os.RemoveAll(kvs.oldPersister.GetPath()); err != nil {
+				// 	return fmt.Errorf("failed to remove old persister directory: %v", err)
+				// }
 				fmt.Println("第 1 轮垃圾回收完成，等待下 1 轮垃圾回收，且已删除 oldLog 指向的文件")
 			} else {
 				// 迭代GC
 				if kvs.lastGCFinish {
-					kvs.FirstGC = false
 					kvs.numGC++
 					kvs.lastGCFinish = false // make sure last gc process is finished
 					kvs.AnotherGarbageCollection()
@@ -1998,7 +2120,7 @@ func main() {
 					// 删除 oldLog指向的文件
 					err = os.Remove(kvs.oldLog)
 					if err != nil {
-						fmt.Printf("第 %v 轮垃圾回收删除旧文件出现了错误: %v\n",kvs.numGC, err)
+						fmt.Printf("第 %v 轮垃圾回收删除旧文件出现了错误: %v\n", kvs.numGC, err)
 					}
 					fmt.Printf("第 %v 轮垃圾回收完成，等待下一轮垃圾回收，且已删除 oldLog 指向的文件\n", kvs.numGC)
 				}
