@@ -102,14 +102,14 @@ type KVServer struct {
 	kvrpc.UnimplementedKVServer
 	// resultCh  chan *kvrpc.PutInRaftResponse
 
-	sortedFilePath  string // 用于存储已排序文件的位置
-	sortedFileIndex *SortedFileIndex
-	currentLog      string          // 排序后
-	oldLog          string          // 排序前
-	oldPersister    *raft.Persister // 排序前
-	startGC         bool            // GC是否开始
-	endGC           bool            // GC是否结束
-	valueSize       int             // valuesize
+	firstSortedFilePath  string // 用于存储已排序文件的位置
+	firstSortedFileIndex *SortedFileIndex
+	currentLog           string          // 排序后
+	oldLog               string          // 排序前
+	oldPersister         *raft.Persister // 排序前
+	startGC              bool            // GC是否开始
+	endGC                bool            // GC是否结束
+	valueSize            int             // valuesize
 	// currentPersister *raft.Persister
 	// getFromFile     func(string) (string, error)			// 对应与垃圾分离前后的两种查询方法。
 	// scanFromFile    func(string, string) (map[string]string, error)
@@ -119,7 +119,15 @@ type KVServer struct {
 	sortedFileCache *lru.Cache // 用于缓存key到offset的映射
 
 	// multiGC
-	numGC int
+	numGC                  int
+	FirstGC                bool
+	anotherStartGC         bool
+	anotherEndGC           bool
+	anotherSortedFilePath  string // 用于存储已排序文件的位置
+	anothersortedFileIndex *SortedFileIndex
+	lastSortedFileIndex    *SortedFileIndex
+	InitialRaftStateLog    string
+	lastGCFinish           bool
 }
 
 // ValueLog represents the Value Log file for storing values.
@@ -486,6 +494,393 @@ func (kvs *KVServer) StartScan(args *kvrpc.ScanRangeRequest) *kvrpc.ScanRangeRes
 	}
 }
 
+func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvrpc.GetInRaftResponse {
+	if !kvs.startGC { // 还未开始GC，先去旧的rocksdb查询
+		positionBytes, err := kvs.oldPersister.Get_opt(key)
+		if err != nil {
+			fmt.Println("去旧的rocksdb中拿取key对应的index有问题")
+			panic(err)
+		}
+		if positionBytes == -1 {
+			reply.Err = raft.ErrNoKey
+			reply.Value = raft.NoKey
+			return reply
+		}
+		read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
+		if err != nil {
+			fmt.Println("拿取value有问题")
+			panic(err)
+		}
+		if read_key == kvs.persister.PadKey(key) {
+			reply.Value = value
+		} else {
+			panic("错乱了，新的rocksdb中的key与index不匹配！！！")
+		}
+		return reply
+	}
+
+	type searchResult struct {
+		found bool
+		value string
+		err   error
+	}
+
+	if kvs.startGC && !kvs.endGC {
+		// 创建用于接收结果的通道
+		newFileResult := make(chan searchResult, 1)
+		oldFileResult := make(chan searchResult, 1)
+
+		// 并行搜索新文件
+		go func() {
+			positionBytes, err := kvs.persister.Get_opt(key)
+			if err != nil {
+				newFileResult <- searchResult{false, "", err}
+				return
+			}
+			if positionBytes == -1 {
+				newFileResult <- searchResult{false, "", nil}
+				return
+			}
+			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
+			if err != nil {
+				newFileResult <- searchResult{false, "", err}
+				return
+			}
+			if read_key == kvs.persister.PadKey(key) {
+				newFileResult <- searchResult{true, value, nil}
+			} else {
+				newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
+			}
+		}()
+
+		// 并行搜索旧文件
+		go func() {
+			positionBytes, err := kvs.oldPersister.Get_opt(key)
+			if err != nil {
+				oldFileResult <- searchResult{false, "", err}
+				return
+			}
+			if positionBytes == -1 {
+				oldFileResult <- searchResult{false, "", nil}
+				return
+			}
+			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
+			if err != nil {
+				oldFileResult <- searchResult{false, "", err}
+				return
+			}
+			if read_key == kvs.persister.PadKey(key) {
+				oldFileResult <- searchResult{true, value, nil}
+			} else {
+				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in old file")}
+			}
+		}()
+
+		// 首先检查新文件的结果
+		select {
+		case result := <-newFileResult:
+			if result.err != nil {
+				panic("去新的rocksdb中拿取key对应的index有问题")
+			}
+			if result.found {
+				reply.Value = result.value
+				return reply
+			}
+			// 如果新文件没找到，等待旧文件的结果
+			result = <-oldFileResult
+			if result.err != nil {
+				panic("去旧的rocksdb中拿取key对应的index有问题")
+			}
+			if result.found {
+				reply.Value = result.value
+				return reply
+			}
+			reply.Err = raft.ErrNoKey
+			reply.Value = raft.NoKey
+			return reply
+		}
+	}
+
+	if kvs.startGC && kvs.endGC {
+		// 创建用于接收结果的通道
+		newFileResult := make(chan searchResult, 1)
+		sortedFileResult := make(chan searchResult, 1)
+
+		// 并行搜索新文件
+		go func() {
+			positionBytes, err := kvs.persister.Get_opt(key)
+			if err != nil {
+				newFileResult <- searchResult{false, "", err}
+				return
+			}
+			if positionBytes == -1 {
+				newFileResult <- searchResult{false, "", nil}
+				return
+			}
+			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
+			if err != nil {
+				newFileResult <- searchResult{false, "", err}
+				return
+			}
+			if read_key == kvs.persister.PadKey(key) {
+				newFileResult <- searchResult{true, value, nil}
+			} else {
+				newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
+			}
+		}()
+
+		// 并行搜索排序文件
+		go func() {
+			value, err := kvs.getFromSortedFile(key, kvs.firstSortedFileIndex)
+			if err != nil {
+				sortedFileResult <- searchResult{false, "", err}
+				return
+			}
+			sortedFileResult <- searchResult{true, value, nil}
+		}()
+
+		// 首先检查新文件的结果
+		select {
+		case result := <-newFileResult:
+			if result.err != nil {
+				panic("去新的rocksdb中拿取key对应的index有问题")
+			}
+			if result.found {
+				reply.Value = result.value
+				return reply
+			}
+			// 如果新文件没找到，等待排序文件的结果
+			result = <-sortedFileResult
+			if result.err == nil {
+				reply.Value = result.value
+			} else {
+				reply.Err = raft.ErrNoKey
+				reply.Value = raft.NoKey
+			}
+			return reply
+		}
+	}
+	return reply
+}
+
+func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvrpc.GetInRaftResponse {
+	// before-GC
+	type searchResult struct {
+		found bool
+		value string
+		err   error
+	}
+	if !kvs.anotherStartGC {
+		// 创建用于接收结果的通道
+		oldFileResult := make(chan searchResult, 1)
+		lastSortedFileResult := make(chan searchResult, 1)
+
+		// 并行搜索旧文件（上一轮的新文件）
+		go func() {
+			positionBytes, err := kvs.oldPersister.Get_opt(key)
+			if err != nil {
+				oldFileResult <- searchResult{false, "", err}
+				return
+			}
+			if positionBytes == -1 {
+				oldFileResult <- searchResult{false, "", nil}
+				return
+			}
+			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
+			if err != nil {
+				oldFileResult <- searchResult{false, "", err}
+				return
+			}
+			if read_key == kvs.oldPersister.PadKey(key) {
+				oldFileResult <- searchResult{true, value, nil}
+			} else {
+				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
+			}
+		}()
+
+		// 并行搜索排序文件
+		go func() {
+			value, err := kvs.getFromSortedFile(key, kvs.lastSortedFileIndex)
+			if err != nil {
+				lastSortedFileResult <- searchResult{false, "", err}
+				return
+			}
+			lastSortedFileResult <- searchResult{true, value, nil}
+		}()
+
+		// 首先检查新文件的结果
+		select {
+		case result := <-oldFileResult:
+			if result.err != nil {
+				panic("去新的rocksdb中拿取key对应的index有问题")
+			}
+			if result.found {
+				reply.Value = result.value
+				return reply
+			}
+			// 如果新文件没找到，等待排序文件的结果
+			result = <-lastSortedFileResult
+			if result.err == nil {
+				reply.Value = result.value
+			} else {
+				reply.Err = raft.ErrNoKey
+				reply.Value = raft.NoKey
+			}
+			return reply
+		}
+	}
+	// during-GC
+	if !kvs.anotherEndGC {
+		// 创建用于接收结果的通道
+		newFileResult := make(chan searchResult, 1)
+		oldFileResult := make(chan searchResult, 1)
+		lastSortedFileResult := make(chan searchResult, 1)
+
+		// 并行搜索旧文件（上一轮的新文件）
+		go func() {
+			positionBytes, err := kvs.oldPersister.Get_opt(key)
+			if err != nil {
+				oldFileResult <- searchResult{false, "", err}
+				return
+			}
+			if positionBytes == -1 {
+				oldFileResult <- searchResult{false, "", nil}
+				return
+			}
+			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
+			if err != nil {
+				oldFileResult <- searchResult{false, "", err}
+				return
+			}
+			if read_key == kvs.oldPersister.PadKey(key) {
+				oldFileResult <- searchResult{true, value, nil}
+			} else {
+				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
+			}
+		}()
+
+		// 并行搜索新文件（本轮的新文件）
+		go func() {
+			positionBytes, err := kvs.persister.Get_opt(key)
+			if err != nil {
+				newFileResult <- searchResult{false, "", err}
+				return
+			}
+			if positionBytes == -1 {
+				newFileResult <- searchResult{false, "", nil}
+				return
+			}
+			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
+			if err != nil {
+				newFileResult <- searchResult{false, "", err}
+				return
+			}
+			if read_key == kvs.persister.PadKey(key) {
+				newFileResult <- searchResult{true, value, nil}
+			} else {
+				newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
+			}
+		}()
+
+		// 并行搜索排序文件
+		go func() {
+			value, err := kvs.getFromSortedFile(key, kvs.lastSortedFileIndex)
+			if err != nil {
+				lastSortedFileResult <- searchResult{false, "", err}
+				return
+			}
+			lastSortedFileResult <- searchResult{true, value, nil}
+		}()
+
+		// 首先检查新文件的结果，再旧文件，再排序文件
+		select {
+		case result := <-newFileResult:
+			if result.err != nil {
+				panic("去新的rocksdb中拿取key对应的index有问题")
+			}
+			if result.found {
+				reply.Value = result.value
+				return reply
+			}
+			result = <-oldFileResult
+			if result.err != nil {
+				panic("去新的rocksdb中拿取key对应的index有问题")
+			}
+			if result.found {
+				reply.Value = result.value
+				return reply
+			}
+			// 如果新文件没找到，等待排序文件的结果
+			result = <-lastSortedFileResult
+			if result.err == nil {
+				reply.Value = result.value
+			} else {
+				reply.Err = raft.ErrNoKey
+				reply.Value = raft.NoKey
+			}
+			return reply
+		}
+	}
+	// post-GC
+	// 创建用于接收结果的通道
+	newFileResult := make(chan searchResult, 1)
+	anotherSortedFileResult := make(chan searchResult, 1)
+
+	// 并行搜索旧文件（上一轮的新文件）
+	go func() {
+		positionBytes, err := kvs.persister.Get_opt(key)
+		if err != nil {
+			newFileResult <- searchResult{false, "", err}
+			return
+		}
+		if positionBytes == -1 {
+			newFileResult <- searchResult{false, "", nil}
+			return
+		}
+		read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
+		if err != nil {
+			newFileResult <- searchResult{false, "", err}
+			return
+		}
+		if read_key == kvs.persister.PadKey(key) {
+			newFileResult <- searchResult{true, value, nil}
+		} else {
+			newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
+		}
+	}()
+
+	// 并行搜索排序文件
+	go func() {
+		value, err := kvs.getFromSortedFile(key, kvs.anothersortedFileIndex)
+		if err != nil {
+			anotherSortedFileResult <- searchResult{false, "", err}
+			return
+		}
+		anotherSortedFileResult <- searchResult{true, value, nil}
+	}()
+
+	// 首先检查新文件的结果
+	select {
+	case result := <-newFileResult:
+		if result.err != nil {
+			panic("去新的rocksdb中拿取key对应的index有问题")
+		}
+		if result.found {
+			reply.Value = result.value
+			return reply
+		}
+		// 如果新文件没找到，等待排序文件的结果
+		result = <-anotherSortedFileResult
+		if result.err == nil {
+			reply.Value = result.value
+		} else {
+			reply.Err = raft.ErrNoKey
+			reply.Value = raft.NoKey
+		}
+		return reply
+	}
+}
+
 func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResponse {
 	reply := &kvrpc.GetInRaftResponse{Err: raft.OK}
 	// commitindex, isleader := kvs.raft.GetReadIndex()
@@ -497,117 +892,10 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	// for { // 证明了此服务器就是leader
 	// if kvs.raft.GetApplyIndex() >= commitindex {
 	key := args.GetKey()
-
-	if !kvs.startGC { // 还未开始GC，先去旧的rocksdb查询
-		// startTime := time.Now()
-		positionBytes, err := kvs.oldPersister.Get_opt(key)
-		if err != nil {
-			fmt.Println("去旧的rocksdb中拿取key对应的index有问题")
-			panic(err)
-		}
-		if positionBytes == -1 { // 旧rocksdb中没有，就是不存在该key
-			reply.Err = raft.ErrNoKey
-			reply.Value = raft.NoKey
-			return reply
-		} else {
-			// fmt.Printf("直接去rocksdb中找花费了%v\n", time.Since(startTime))
-			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
-			if err != nil {
-				fmt.Println("拿取value有问题")
-				panic(err)
-			}
-			if read_key == kvs.persister.PadKey(key) {
-				reply.Value = value
-			} else {
-				panic("错乱了，新的rocksdb中的key与index不匹配！！！")
-			}
-			return reply
-		}
+	if kvs.FirstGC {
+		reply = kvs.firstGCGet(key, reply)
 	}
-	if kvs.startGC && !kvs.endGC {
-		positionBytes, err := kvs.persister.Get_opt(key)
-		if err != nil {
-			fmt.Println("去新的rocksdb中拿取key对应的index有问题")
-			panic(err)
-		}
-		if positionBytes == -1 { // 新的没有，就去读旧文件的rocksdb
-			positionBytes, err := kvs.oldPersister.Get_opt(key)
-			if err != nil {
-				fmt.Println("新的文件中没有，转而去旧的rocksdb中拿取key对应的index有问题")
-				panic(err)
-			}
-			if positionBytes == -1 { // 旧rocksdb中没有，就是不存在该key
-				reply.Err = raft.ErrNoKey
-				reply.Value = raft.NoKey
-				return reply
-			} else {
-				// fmt.Printf("positionBytes:%v\n",positionBytes)
-				read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
-				if err != nil {
-					fmt.Println("拿取value有问题")
-					panic(err)
-				}
-				if read_key == kvs.persister.PadKey(key) {
-					reply.Value = value
-					// fmt.Println("找到了key", key)
-				} else {
-					panic("错乱了，旧的rocksdb中的key与index不匹配！！！")
-				}
-				return reply
-			}
-		} else { // 表明新的文件存在该key，则去新的log文件中找
-			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
-			// fmt.Println("此处——读完了磁盘文件")
-			if err != nil {
-				fmt.Println("拿取value有问题")
-				panic(err)
-			}
-			if read_key == kvs.persister.PadKey(key) {
-				reply.Value = value
-				// fmt.Println("找到了key", key)
-			} else {
-				panic("错乱了，rocksdb中的key与index不匹配！！！")
-			}
-			return reply
-		}
-	}
-	if kvs.startGC && kvs.endGC {
-		// start := time.Now()
-		positionBytes, err := kvs.persister.Get_opt(key)
-		// duration := time.Since(start)
-		if err != nil {
-			fmt.Println("去新的rocksdb中拿取key对应的index有问题")
-			panic(err)
-		}
-		if positionBytes == -1 {
-			// fmt.Println("去新文件找了")
-			// kvs.getMeasurements = append(kvs.getMeasurements, duration)  // 统计去新rocksdb文件中没有找到该key的时间
-			value, err := kvs.getFromSortedFile(key)
-			if err == nil {
-				reply.Value = value // 找到了，赋值
-				// fmt.Println("找到了找到了，通过索引找到的，key为: ",key)
-			} else {
-				reply.Err = raft.ErrNoKey // 已排序的文件中没有就是没有
-				reply.Value = raft.NoKey
-			}
-			// kvs.OutputMeasurements()
-			return reply
-		} else { // 表明新的文件存在该key，则去新的log文件中找
-			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
-			// fmt.Println("此处——读完了磁盘文件")
-			if err != nil {
-				fmt.Println("拿取value有问题")
-				panic(err)
-			}
-			if read_key == kvs.persister.PadKey(key) {
-				reply.Value = value
-				// fmt.Println("找到了key", key)
-			} else {
-				panic("错乱了，rocksdb中的key与index不匹配！！！")
-			}
-			return reply
-		}
-	}
+	reply = kvs.anotherGCGet(key, reply)
 	return reply
 	// }
 	// time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
@@ -690,19 +978,16 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 
 func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResponse {
 	// 判断数据应该写入的哪个文件
-	Newversion := -1
-	if kvs.startGC {
-		Newversion = 1
-	}
+	Newversion := kvs.numGC
 
 	reply := &kvrpc.PutInRaftResponse{Err: raft.OK, LeaderId: 0}
 	op := raftrpc.DetailCod{
-		OpType:   args.Op,
-		Key:      args.Key,
-		Value:    args.Value,
-		ClientId: args.ClientId,
-		SeqId:    args.SeqId,
-		FileVersion:  int64(Newversion),
+		OpType:      args.Op,
+		Key:         args.Key,
+		Value:       args.Value,
+		ClientId:    args.ClientId,
+		SeqId:       args.SeqId,
+		FileVersion: int64(Newversion),
 	}
 
 	// 写入raft层
@@ -825,7 +1110,7 @@ func (sfi *SortedFileIndex) GetOffset(key string) (int64, bool) {
 }
 
 // getFromSortedFile 增加直接缓存value的LRU缓存功能
-func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
+func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (string, error) {
 	// 先检查LRU缓存
 	if value, ok := kvs.sortedFileCache.Get(key); ok {
 		// 缓存命中，直接返回缓存的value
@@ -833,7 +1118,7 @@ func (kvs *KVServer) getFromSortedFile(key string) (string, error) {
 	}
 
 	// 缓存未命中，使用索引查找
-	index := kvs.sortedFileIndex
+	// index := kvs.sortedFileIndex
 	offset, exists := index.GetOffset(key)
 	if !exists {
 		return "", errors.New(raft.ErrNoKey)
@@ -1205,7 +1490,7 @@ func (kvs *KVServer) getNextPossibleKey(key string) string {
 
 // 带内存映射的，使用了哈希表存储索引的
 func (kvs *KVServer) scanFromSortedFile(startKey, endKey string) (map[string]string, error) {
-	index := kvs.sortedFileIndex
+	index := kvs.firstSortedFileIndex
 	paddedStartKey := kvs.persister.PadKey(startKey)
 	paddedEndKey := kvs.persister.PadKey(endKey)
 	startOffset := int64(-1)
@@ -1549,13 +1834,12 @@ func (kvs *KVServer) applyLoop() {
 						// fmt.Printf("此时put进去的offsetL%v\n", offset)
 						// fmt.Printf("转换后的offset：%v\n", positionBytes)
 
-						if op.FileVersion == 1 {	// GC了就将偏移量存新文件
+						if op.FileVersion == int64(kvs.numGC) { // 对于写入日志时，又进行了 GC ，需将偏移量存新文件
 							kvs.persister.Put_opt(op.Key, offset)
-						} else {	// 否则存旧文件
-							kvs.oldPersister.Put_opt(op.Key, offset)	//  Nezha
+						} else { // 否则存旧文件
+							kvs.oldPersister.Put_opt(op.Key, offset) //  Nezha
 							// kvs.oldPersister.Put(op.Key, op.Value)		//  original
 						}
-						
 
 						// kvs.persister.Put(op.Key, []byte(op.Value))
 						// fmt.Println("length:",len(positionBytes))
@@ -1624,17 +1908,18 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	kvs.startGC = false
-	kvs.endGC = false                 // 测试效果
-	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
+	kvs.endGC = false // 测试效果
+	kvs.numGC = 0
+	kvs.anotherStartGC = false
+	kvs.anotherEndGC = false
 
 	// 初始化存储value的文件
-	InitialRaftStateLog := "/home/DYC/Gitee/FlexSync/raft/RaftState.log"
+	kvs.InitialRaftStateLog = "/home/DYC/Gitee/FlexSync/raft/RaftState.log"
 	// InitialRaftStateLog, err := os.Create(currentLog)
 	// if err != nil {
 	// 	log.Fatalf("Failed to create new RaftState log: %v", err)
 	// }
 	// defer newRaftStateLog.Close()
-	kvs.oldLog = InitialRaftStateLog // 给old log文件赋值
 
 	// kvs.oldLog = "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
 	// kvs.currentLog = kvs.oldLog
@@ -1645,67 +1930,95 @@ func main() {
 	// defer persister.Close()
 
 	go kvs.applyLoop()
-	ctx, cancel := context.WithCancel(context.Background())
-	// ctx, _ := context.WithCancel(context.Background())
+	// ctx, cancel := context.WithCancel(context.Background())	// 用于控制goroutine的生命周期
+	ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 5 * time.Second
-		time1 := 500000 * time.Second
+		timeout := 6 * time.Second
+		// time1 := 500000 * time.Second
 		for {
 			time.Sleep(timeout)
 			// if time.Since(kvs.lastPutTime) > timeout {
 			// 检查文件是否存在并且大小是否超过4GB
-			fileInfo, err := os.Stat(kvs.oldLog)
+			fileInfo, err := os.Stat(kvs.currentLog)
 			if err != nil {
 				if os.IsNotExist(err) {
-					// fmt.Printf("文件 %s 不存在，跳过垃圾回收\n", kvs.oldLog)
+					// fmt.Printf("文件 %s 不存在，跳过垃圾回收\n", kvs.currentLog)
 					continue
 				}
-				fmt.Printf("检查文件 %s 时出错: %v\n", kvs.oldLog, err)
+				fmt.Printf("检查文件 %s 时出错: %v\n", kvs.currentLog, err)
 				continue
 			}
 
 			fileSizeGB := float64(fileInfo.Size()) / (1024 * 1024 * 1024)
-			if fileSizeGB <= 80 {
-				// fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.oldLog, fileSizeGB)
+			if fileSizeGB <= 10 {
+				// fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.currentLog, fileSizeGB)
 				continue
 			}
+			// 第一轮GC
+			if kvs.FirstGC {
+				kvs.numGC++
+				fmt.Printf("文件 %s 大小为 %.2f GB，开始垃圾回收\n", kvs.currentLog, fileSizeGB)
+				startTime := time.Now()
 
-			fmt.Printf("文件 %s 大小为 %.2f GB，开始垃圾回收\n", kvs.oldLog, fileSizeGB)
-			startTime := time.Now()
+				err = kvs.FirstGarbageCollection()
+				defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
+				if err != nil {
+					fmt.Println("垃圾回收出现了错误: ", err)
+				} else {
+					fmt.Printf("垃圾回收完成，共花费了%v\n", time.Since(startTime))
+				}
 
-			err = kvs.GarbageCollection()
-			defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
-			if err != nil {
-				fmt.Println("垃圾回收出现了错误: ", err)
+				err = kvs.CheckDatabaseContent()
+				if err != nil {
+					fmt.Println("检查GC后的数据库出现了错误: ", err)
+				}
+
+				err = CompareLeaderAndFollowerLogs()
+				if err != nil {
+					fmt.Println("检查log文件出现了错误: ", err)
+				}
+				kvs.lastGCFinish = true
+				kvs.lastSortedFileIndex = kvs.firstSortedFileIndex // 更新本轮的变量为上一次
+				// 删除 oldLog指向的文件
+				err = os.Remove(kvs.oldLog)
+				if err != nil {
+					fmt.Println("第 1 轮删除旧文件出现了错误: ", err)
+				}
+				fmt.Println("第 1 轮垃圾回收完成，等待下 1 轮垃圾回收，且已删除 oldLog 指向的文件")
 			} else {
-				fmt.Printf("垃圾回收完成，共花费了%v\n", time.Since(startTime))
+				// 迭代GC
+				if kvs.lastGCFinish {
+					kvs.FirstGC = false
+					kvs.numGC++
+					kvs.lastGCFinish = false // make sure last gc process is finished
+					kvs.AnotherGarbageCollection()
+					kvs.lastGCFinish = true
+					kvs.lastSortedFileIndex = kvs.anothersortedFileIndex // 更新本轮的变量为上一次
+					// 删除 oldLog指向的文件
+					err = os.Remove(kvs.oldLog)
+					if err != nil {
+						fmt.Printf("第 %v 轮垃圾回收删除旧文件出现了错误: %v\n",kvs.numGC, err)
+					}
+					fmt.Printf("第 %v 轮垃圾回收完成，等待下一轮垃圾回收，且已删除 oldLog 指向的文件\n", kvs.numGC)
+				}
 			}
 
-			err = kvs.CheckDatabaseContent()
-			if err != nil {
-				fmt.Println("检查GC后的数据库出现了错误: ", err)
-			}
+			// fmt.Println("等五秒再停止服务器")
+			// time.Sleep(time1)
+			// cancel() // 超时后取消上下文
+			// fmt.Println("38秒没有请求，停止服务器")
+			// wg.Done()
 
-			err = CompareLeaderAndFollowerLogs()
-			if err != nil {
-				fmt.Println("检查log文件出现了错误: ", err)
-			}
-
-			fmt.Println("等五秒再停止服务器")
-			time.Sleep(time1)
-			cancel() // 超时后取消上下文
-			fmt.Println("38秒没有请求，停止服务器")
-			wg.Done()
-
-			kvs.raft.Kill() // 关闭Raft层
-			return          // 退出main函数
+			// kvs.raft.Kill() // 关闭Raft层
+			// return          // 退出main函数
 			// }
+
 		}
 	}()
 	wg.Add(1 + 1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
-	kvs.raft.SetCurrentLog(InitialRaftStateLog)
+	kvs.raft.SetCurrentLog(kvs.InitialRaftStateLog)
 	kvs.raft.Gap = gap
 	kvs.raft.SyncTime = syncTime
 
