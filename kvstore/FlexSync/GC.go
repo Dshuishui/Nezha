@@ -16,10 +16,10 @@ import (
 	"github.com/tecbot/gorocksdb"
 )
 
-// type keyOffset struct{
-// 	key string
-// 	offset int64
-// }
+//	type keyOffset struct{
+//		key string
+//		offset int64
+//	}
 var firstSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
 var firstNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/RaftState_new.log"
 var firstNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/db_key_index_new"
@@ -29,7 +29,7 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	startTime := time.Now()
 
 	// Create a new file for sorted entries
-	
+
 	if _, err := os.Stat(firstSortedFilePath); err == nil {
 		fmt.Println("Sorted file already exists. Skipping garbage collection.")
 		return nil
@@ -39,6 +39,10 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 		return fmt.Errorf("failed to create sorted file: %v", err)
 	}
 	defer sortedFile.Close()
+
+	// 赋值旧文件变量
+	kvs.oldPersister = kvs.persister     // 给old 数据库文件赋初始值
+	kvs.oldLog = kvs.InitialRaftStateLog // 给old log文件赋值
 
 	// Open the original RaftState.log file
 	oldFile, err := os.Open(kvs.oldLog)
@@ -209,7 +213,6 @@ func (kvs *KVServer) CreateIndex(firstSortedFilePath string) error {
 	fmt.Println("创建文件描述符池成功")
 	// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
 
-
 	return nil
 
 	// kvs.getFromFile = kvs.getFromSortedOrNew
@@ -227,7 +230,7 @@ func (kvs *KVServer) warmupCache(filePath string) {
 
 	reader := bufio.NewReader(file)
 	count := 0
-	maxWarmupEntries := 2000 // 预热的条目数量
+	maxWarmupEntries := sortedFileCacheNums/2 // 预热的条目数量
 
 	for count < maxWarmupEntries {
 		entry, _, err := ReadEntry(reader, 0)
@@ -562,10 +565,6 @@ func (kvs *KVServer) checkLogDBConsistency() error {
 func (kvs *KVServer) SwitchToNewFiles(newLog string, newPersister *raft.Persister) {
 	kvs.mu.Lock()
 	defer kvs.mu.Unlock()
-
-	// 赋值旧文件变量
-	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
-	kvs.oldLog = kvs.InitialRaftStateLog // 给old log文件赋值
 
 	// 更新两个路径，使得垃圾回收与客户端请求并行执行
 	kvs.currentLog = newLog
