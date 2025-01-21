@@ -46,7 +46,7 @@ type getResult struct {
 }
 
 const (
-	KEY_SPACE = 390620 // 键空间大小
+	KEY_SPACE = 6400000 // 键空间大小
 	ZIPF_S    = 1.01   // Zipf 分布的偏度参数
 	ZIPF_V    = 1      // 最小值
 )
