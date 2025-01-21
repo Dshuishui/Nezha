@@ -2054,7 +2054,7 @@ func main() {
 	ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
-		timeout := 6 * time.Second
+		timeout := 7 * time.Second
 		// time1 := 500000 * time.Second
 		for {
 			time.Sleep(timeout)
@@ -2076,7 +2076,7 @@ func main() {
 				continue
 			}
 			// 第一轮GC
-			if kvs.FirstGC {
+			if !kvs.FirstGC {
 				kvs.numGC++
 				fmt.Printf("文件 %s 大小为 %.2f GB，开始垃圾回收\n", kvs.currentLog, fileSizeGB)
 				startTime := time.Now()
