@@ -328,7 +328,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 		}
 	}()
 
-	timer := time.NewTimer(10 * time.Second)
+	timer := time.NewTimer(60 * time.Second)
 	defer timer.Stop()
 	select {
 	// 通道关闭或者有数据传入都会执行以下的分支

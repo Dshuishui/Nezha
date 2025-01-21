@@ -73,7 +73,8 @@ const ROLE_LEADER = "Leader"
 const ROLE_FOLLOWER = "Follower"
 const ROLE_CANDIDATES = "Candidates"
 
-var threshold int64 = 30 * 1024 * 1024
+// var threshold int64 = 1 * 1024 * 1024 * 1024
+var threshold int64 = 100 * 1024 * 1024
 var entry_global Entry
 
 // A Go object implementing a single Raft peer.
@@ -892,7 +893,7 @@ func (rf *Raft) AppendMonitor() {
 
 func (rf *Raft) electionLoop() {
 	for !rf.killed() {
-		time.Sleep(10 * time.Millisecond) // 每隔一小段时间，检查是否超时，也就是说follower如果变成candidate，还得等10ms才能开始选举
+		time.Sleep(1000000000 * time.Millisecond) // 每隔一小段时间，检查是否超时，也就是说follower如果变成candidate，还得等10ms才能开始选举
 
 		func() {
 			rf.mu.Lock()
