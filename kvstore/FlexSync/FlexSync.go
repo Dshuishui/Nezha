@@ -2029,7 +2029,6 @@ func main() {
 	kvs.startGC = false
 	kvs.endGC = false // 测试效果
 	kvs.numGC = 0
-	kvs.raft.SetNumGC(kvs.numGC)
 	kvs.anotherStartGC = false
 	kvs.anotherEndGC = false
 	kvs.FirstGC = true
@@ -2146,6 +2145,7 @@ func main() {
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
 	kvs.raft.SetCurrentLog(kvs.InitialRaftStateLog)
 	kvs.raft.Gap = gap
+	kvs.raft.SetNumGC(kvs.numGC)
 	kvs.raft.SyncTime = syncTime
 
 	wg.Wait()
