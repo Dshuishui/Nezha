@@ -2099,7 +2099,7 @@ func main() {
 					fmt.Println("检查log文件出现了错误: ", err)
 				}
 				kvs.lastGCFinish = true
-				kvs.FirstGC = false
+				kvs.FirstGC = true
 				kvs.lastSortedFileIndex = kvs.firstSortedFileIndex // 更新本轮的变量为上一次
 				// Clean up old files
 				if err := os.Remove(kvs.oldLog); err != nil {
