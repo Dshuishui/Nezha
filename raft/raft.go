@@ -114,10 +114,10 @@ type Raft struct {
 	SyncChans      []chan string
 	batchLog       []*Entry
 	batchLogSize   int64
-	currentLog     string // 存储value的磁盘文件的描述符
-	nullLogEntry *raftrpc.LogEntry // 用于替换已应用的日志
-	lastNulled int
-	numGC int
+	currentLog     string            // 存储value的磁盘文件的描述符
+	nullLogEntry   *raftrpc.LogEntry // 用于替换已应用的日志
+	lastNulled     int
+	numGC          int
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -198,7 +198,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 	// 预分配足够大的偏移量切片，避免了在循环中动态扩容偏移量切片的操作
 	offsets = make([]int64, len(e))
 
-	if startPos == 0 {	// 0是直接追加
+	if startPos == 0 { // 0是直接追加
 		offset, err = file.Seek(0, os.SEEK_END)
 		if err != nil {
 			log.Fatalf("定位存储Raft日志的磁盘文件失败：%v", err)
@@ -370,19 +370,19 @@ func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, string
 	// 打开文件
 	file, err := os.Open(filename)
 	if err != nil {
-		return "","", err
+		return "", "", err
 	}
 	defer file.Close()
 
 	if offset == -1 {
-		return "NOKEY","", nil
+		return "NOKEY", "", nil
 	}
 
 	// 移动到指定偏移量
 	_, err = file.Seek(offset, os.SEEK_SET)
 	if err != nil {
 		fmt.Println("get时，seek文件的位置有问题")
-		return "","", err
+		return "", "", err
 	}
 
 	// 获取文件信息
@@ -400,12 +400,12 @@ func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, string
 	// fmt.Printf("读取了几个字节的数据%v\n",n)
 	if err != nil {
 		fmt.Println("get时，读取key和value的前20个固定字节时有问题")
-		return "","", err
+		return "", "", err
 	}
 	// 确保读取的字节数足够
 	if n < 20 {
 		fmt.Printf("not enough data: expected 20 bytes, got %d\n", n)
-		return "","", err
+		return "", "", err
 	}
 
 	// 解析固定长度的字段
@@ -415,7 +415,7 @@ func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, string
 	// 读取Key和Value
 	keyValueBuffer := make([]byte, keySize+valueSize)
 	if _, err := file.Read(keyValueBuffer); err != nil {
-		return "","", err
+		return "", "", err
 	}
 
 	// Key是从buffer的开始部分
@@ -598,8 +598,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			fmt.Println("此时logEntry为nil，或者logEntry中的Command为nil。太抽象了")
 			continue
 		}
-		// follower在处理日志的时候更新numGC,leader则是在startput的时候
-		logEntry.Command.FileVersion = int64(rf.numGC)
+
 		index = int(args.PrevLogIndex) + 1 + i
 		logPos = rf.index2LogPos(index)
 		entry = Entry{
@@ -610,12 +609,14 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			Value:       logEntry.GetCommand().Value,
 		}
 		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
+			// follower在处理日志的时候更新numGC,leader则是在startput的时候
+			logEntry.Command.FileVersion = int64(rf.numGC)
 			rf.log = append(rf.log, logEntry)
-			if logEntry.Command.OpType!="TermLog" {
+			if logEntry.Command.OpType != "TermLog" {
 				rf.batchLog = append(rf.batchLog, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
 			}
 
-			if index == rf.lastIndex()&&logEntry.Command.OpType!="TermLog" { // 已经将日志补足后，开始批量写入，同时为了与leader在偏移量上的统一，对于空指令，也不写入
+			if index == rf.lastIndex() && logEntry.Command.OpType != "TermLog" { // 已经将日志补足后，开始批量写入，同时为了与leader在偏移量上的统一，对于空指令，也不写入
 				// offsets1, err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
 				// rf.mu.Unlock()
 				rf.WriteEntryToFile(rf.batchLog, rf.currentLog, 0)
@@ -637,7 +638,9 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		} else { // 重叠部分
 			if rf.log[logPos].Term != logEntry.Term {
 				fmt.Println("还有重叠的情况嘛？？？")
-				rf.log = rf.log[:logPos]          // 删除当前以及后续所有log
+				rf.log = rf.log[:logPos] // 删除当前以及后续所有log
+				// follower在处理日志的时候更新numGC,leader则是在startput的时候
+				logEntry.Command.FileVersion = int64(rf.numGC)
 				rf.log = append(rf.log, logEntry) // 把新log加入进来
 
 				// offset := rf.Offsets[index]      // 截取后面错误的offset
@@ -734,7 +737,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Term:    int32(rf.currentTerm),
 	}
 	// fmt.Println("到这了嘛4")
-	index = rf.lastIndex()+1	// 加一是为了除去空指令
+	index = rf.lastIndex() + 1 // 加一是为了除去空指令
 	term = rf.currentTerm
 	// fmt.Printf("11111offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
 	if logEntry.Command.OpType != "TermLog" { // 除去上任leader后的空指令
@@ -1064,8 +1067,8 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	args.Term = int32(rf.currentTerm)
 	args.LeaderId = int32(rf.me)
 	args.LeaderCommit = int32(rf.commitIndex)
-	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)	// 减一是为了拿到下标
-	if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
+	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1) // 减一是为了拿到下标
+	if args.PrevLogIndex == 0 {                         // 确保在从0开始的时候直接进行日志追加即可
 		args.PrevLogTerm = 0
 	} else {
 		// fmt.Printf("此时log%v,PrevLogIndex%v\n",len(rf.log),args.PrevLogIndex)
@@ -1091,7 +1094,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 		totalSize += int64(buffer.Len())
 		// 如果总大小超过3MB，截取日志数组并退出循环
 		if totalSize >= threshold {
-			appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i]	// 不包括第i个索引
+			appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i] // 不包括第i个索引
 			break
 		}
 	}
@@ -1126,7 +1129,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
 			if rf.currentTerm != int(args.Term) {
 				rf.SyncChans[peerId] <- "NotLeader"
-				fmt.Printf("rf.currentTerm-%v,args.Term-%v\n",rf.currentTerm,args.Term)
+				fmt.Printf("rf.currentTerm-%v,args.Term-%v\n", rf.currentTerm, args.Term)
 				return
 			}
 			if reply.Term > int32(rf.currentTerm) { // 变成follower
@@ -1136,7 +1139,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				rf.votedFor = -1
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				rf.SyncChans[peerId] <- "NotLeader"
-				fmt.Printf("reply.Term-%v,rf.currentTerm-%v\n",reply.Term,rf.currentTerm)
+				fmt.Printf("reply.Term-%v,rf.currentTerm-%v\n", reply.Term, rf.currentTerm)
 				return
 			}
 			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
@@ -1528,8 +1531,8 @@ func (rf *Raft) applyLogLoop() {
 			// fmt.Printf("此时的offset的长度是多少：%v",len(rf.Offsets))
 			if (rf.commitIndex > rf.lastApplied) && ((rf.lastApplied - rf.shotOffset) <
 				len(rf.Offsets)) {
-					// fmt.Printf("提交了一次commitidnex%v-lastapplied%v-shotoffset%v-len(off)%v\n",rf.commitIndex,rf.lastApplied,rf.shotOffset,len(rf.Offsets))
-					// fmt.Println("offset",rf.Offsets)
+				// fmt.Printf("提交了一次commitidnex%v-lastapplied%v-shotoffset%v-len(off)%v\n",rf.commitIndex,rf.lastApplied,rf.shotOffset,len(rf.Offsets))
+				// fmt.Println("offset",rf.Offsets)
 				// if rf.commitIndex > rf.lastApplied {
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				rf.lastApplied += 1
@@ -1569,53 +1572,52 @@ func (rf *Raft) applyLogLoop() {
 }
 
 func (rf *Raft) memoryControlLoop() {
-    const (
-        checkInterval = 60 * time.Second  // 检查间隔
-        logThreshold = 200000         // 内存中保留的日志数量阈值
-        batchSize    = 100000          // 每次清理的日志数量
-    )
+	const (
+		checkInterval = 60 * time.Second // 检查间隔
+		logThreshold  = 200000           // 内存中保留的日志数量阈值
+		batchSize     = 100000           // 每次清理的日志数量
+	)
 
-    // 初始化空日志条目
-    // rf.nullLogEntry = &raftrpc.LogEntry{
-    //     Command: &raftrpc.DetailCod{
-    //         OpType: "NULL",  // 标记为空日志
-    //     },
-    //     Term: 0,
-    // }
+	// 初始化空日志条目
+	// rf.nullLogEntry = &raftrpc.LogEntry{
+	//     Command: &raftrpc.DetailCod{
+	//         OpType: "NULL",  // 标记为空日志
+	//     },
+	//     Term: 0,
+	// }
 
-    for !rf.killed() {
-        time.Sleep(checkInterval)
-        
-        rf.mu.Lock()
+	for !rf.killed() {
+		time.Sleep(checkInterval)
 
-        // 检查日志数量是否超过阈值
-        if len(rf.log) > logThreshold {
+		rf.mu.Lock()
+
+		// 检查日志数量是否超过阈值
+		if len(rf.log) > logThreshold {
 			startIndex := rf.lastNulled
-            // 只处理已经应用到状态机的日志
-            endIndex := rf.lastApplied
-            if endIndex > startIndex {
-                if endIndex-startIndex>batchSize {
-					endIndex=startIndex+batchSize
+			// 只处理已经应用到状态机的日志
+			endIndex := rf.lastApplied
+			if endIndex > startIndex {
+				if endIndex-startIndex > batchSize {
+					endIndex = startIndex + batchSize
 				}
-				for i:=startIndex; i<endIndex;i++ {
-					rf.log[i].Command.Value = "NULL" 
+				for i := startIndex; i < endIndex; i++ {
+					rf.log[i].Command.Value = "NULL"
 				}
-				rf.lastNulled=endIndex
-            }
+				rf.lastNulled = endIndex
+			}
 
-            // 将已应用的日志替换为空日志
-            // for i := 0; i < endIndex; i++ {
-            //     rf.log[i].Command.Value = "NULL" 
-            // }
+			// 将已应用的日志替换为空日志
+			// for i := 0; i < endIndex; i++ {
+			//     rf.log[i].Command.Value = "NULL"
+			// }
 
-            util.DPrintf("RaftNode[%d] replaced %d logs with null entries, total logs: %d", 
-                rf.me, endIndex, len(rf.log))
-        }
+			util.DPrintf("RaftNode[%d] replaced %d logs with null entries, total logs: %d",
+				rf.me, endIndex, len(rf.log))
+		}
 
-        rf.mu.Unlock()
-    }
+		rf.mu.Unlock()
+	}
 }
-
 
 // 最后的index
 func (rf *Raft) lastIndex() int {
