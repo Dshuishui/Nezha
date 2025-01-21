@@ -117,6 +117,7 @@ type Raft struct {
 	currentLog     string // 存储value的磁盘文件的描述符
 	nullLogEntry *raftrpc.LogEntry // 用于替换已应用的日志
 	lastNulled int
+	numGC int
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -133,6 +134,12 @@ func (rf *Raft) SetCurrentPersister(persister *Persister) {
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
 	rf.persister = persister
+}
+
+func (rf *Raft) SetNumGC(numGC int) {
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
+	rf.numGC = numGC
 }
 
 // func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
@@ -591,6 +598,8 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			fmt.Println("此时logEntry为nil，或者logEntry中的Command为nil。太抽象了")
 			continue
 		}
+		// follower在处理日志的时候更新numGC,leader则是在startput的时候
+		logEntry.Command.FileVersion = int64(rf.numGC)
 		index = int(args.PrevLogIndex) + 1 + i
 		logPos = rf.index2LogPos(index)
 		entry = Entry{
@@ -898,7 +907,7 @@ func (rf *Raft) AppendMonitor() {
 
 func (rf *Raft) electionLoop() {
 	for !rf.killed() {
-		time.Sleep(10 * time.Millisecond) // 每隔一小段时间，检查是否超时，也就是说follower如果变成candidate，还得等10ms才能开始选举
+		time.Sleep(1000000000 * time.Millisecond) // 每隔一小段时间，检查是否超时，也就是说follower如果变成candidate，还得等10ms才能开始选举
 
 		func() {
 			rf.mu.Lock()

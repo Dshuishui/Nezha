@@ -2029,6 +2029,7 @@ func main() {
 	kvs.startGC = false
 	kvs.endGC = false // 测试效果
 	kvs.numGC = 0
+	kvs.raft.SetNumGC(kvs.numGC)
 	kvs.anotherStartGC = false
 	kvs.anotherEndGC = false
 	kvs.FirstGC = true
@@ -2079,6 +2080,7 @@ func main() {
 			// 第一轮GC
 			if kvs.FirstGC {
 				kvs.numGC++
+				kvs.raft.SetNumGC(kvs.numGC)
 				fmt.Printf("文件 %s 大小为 %.2f GB，开始垃圾回收\n", kvs.currentLog, fileSizeGB)
 				startTime := time.Now()
 
@@ -2114,6 +2116,7 @@ func main() {
 				// 迭代GC
 				if kvs.lastGCFinish {
 					kvs.numGC++
+					kvs.raft.SetNumGC(kvs.numGC)
 					kvs.lastGCFinish = false // make sure last gc process is finished
 					kvs.AnotherGarbageCollection()
 					kvs.lastGCFinish = true
