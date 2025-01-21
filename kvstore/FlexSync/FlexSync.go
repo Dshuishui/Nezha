@@ -2031,6 +2031,7 @@ func main() {
 	kvs.numGC = 0
 	kvs.anotherStartGC = false
 	kvs.anotherEndGC = false
+	kvs.FirstGC = true
 
 	// 初始化存储value的文件
 	kvs.InitialRaftStateLog = "/home/DYC/Gitee/FlexSync/raft/RaftState.log"
@@ -2076,7 +2077,7 @@ func main() {
 				continue
 			}
 			// 第一轮GC
-			if !kvs.FirstGC {
+			if kvs.FirstGC {
 				kvs.numGC++
 				fmt.Printf("文件 %s 大小为 %.2f GB，开始垃圾回收\n", kvs.currentLog, fileSizeGB)
 				startTime := time.Now()
@@ -2099,7 +2100,7 @@ func main() {
 					fmt.Println("检查log文件出现了错误: ", err)
 				}
 				kvs.lastGCFinish = true
-				kvs.FirstGC = true
+				kvs.FirstGC = false
 				kvs.lastSortedFileIndex = kvs.firstSortedFileIndex // 更新本轮的变量为上一次
 				// Clean up old files
 				if err := os.Remove(kvs.oldLog); err != nil {
