@@ -241,7 +241,7 @@ func nrand() int64 {
 
 func main() {
 	flag.Parse()
-	gapkey := 64000
+	gapkey := 256000
 	servers := strings.Split(*ser, ",")
 	kvc := new(KVClient)
 	kvc.Kvservers = servers
