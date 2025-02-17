@@ -1236,13 +1236,13 @@ func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (stri
 		return value.(string), nil
 	}
 	// 增加参数检查
-    if index == nil {
-        return "", errors.New("invalid index: index is nil")
-    }
+	if index == nil {
+		return "", errors.New("invalid index: index is nil")
+	}
 
 	// 缓存未命中，使用索引查找
 	// index := kvs.sortedFileIndex
-	offset, exists := GetOffset(key,index)
+	offset, exists := GetOffset(key, index)
 	if !exists {
 		return "", errors.New(raft.ErrNoKey)
 	}
@@ -1623,7 +1623,7 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string, index *SortedFi
 	paddedCurrentKey := paddedStartKey
 	for paddedCurrentKey <= paddedEndKey {
 		// 创建的索引中的 key 是未填充的
-		offset, exists := GetOffset(currentKey,index)
+		offset, exists := GetOffset(currentKey, index)
 		if exists {
 			startOffset = offset
 			break
@@ -2042,7 +2042,7 @@ func main() {
 	kvs.currentLog = kvs.InitialRaftStateLog
 	// InitialRaftStateLog, err := os.Create(currentLog)
 	// if err != nil {
-	// 	log.Fatalf("Failed to create new RaftState log: %v", err) 
+	// 	log.Fatalf("Failed to create new RaftState log: %v", err)
 	// }
 	// defer newRaftStateLog.Close()
 
@@ -2059,6 +2059,7 @@ func main() {
 	ctx, _ := context.WithCancel(context.Background())
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
+		// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
 		timeout := 7 * time.Second
 		// time1 := 500000 * time.Second
 		for {
@@ -2088,7 +2089,7 @@ func main() {
 				startTime := time.Now()
 
 				err = kvs.FirstGarbageCollection()
-				defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
+				// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
 				if err != nil {
 					fmt.Println("垃圾回收出现了错误: ", err)
 				} else {
@@ -2121,7 +2122,11 @@ func main() {
 					kvs.numGC++
 					kvs.raft.SetNumGC(kvs.numGC)
 					kvs.lastGCFinish = false // make sure last gc process is finished
-					kvs.AnotherGarbageCollection()
+					err = kvs.AnotherGarbageCollection()
+					if err != nil {
+						fmt.Println("垃圾回收出现了错误: ", err)
+						panic(err)
+					}
 					kvs.lastGCFinish = true
 					kvs.lastSortedFileIndex = kvs.anothersortedFileIndex // 更新本轮的变量为上一次
 					// 删除 oldLog指向的文件
