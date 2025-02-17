@@ -910,7 +910,7 @@ func (rf *Raft) AppendMonitor() {
 
 func (rf *Raft) electionLoop() {
 	for !rf.killed() {
-		time.Sleep(1000000000 * time.Millisecond) // 每隔一小段时间，检查是否超时，也就是说follower如果变成candidate，还得等10ms才能开始选举
+		time.Sleep(10 * time.Millisecond) // 每隔一小段时间，检查是否超时，也就是说follower如果变成candidate，还得等10ms才能开始选举
 
 		func() {
 			rf.mu.Lock()

@@ -20,9 +20,9 @@ import (
 //		key string
 //		offset int64
 //	}
-var firstSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
-var firstNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/RaftState_new.log"
-var firstNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/db_key_index_new"
+var firstSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_sorted.log"
+var firstNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_new.log"
+var firstNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/db_key_index_new"
 
 func (kvs *KVServer) FirstGarbageCollection() error {
 	fmt.Println("Starting garbage collection...")
@@ -305,7 +305,7 @@ func (kvs *KVServer) processSortedFile() ([]*raft.Entry, error) {
 	cache, _ := lru.New(5000000)
 
 	// 打开原始文件
-	file, err := os.Open("/home/DYC/Gitee/FlexSync/raft/RaftState.log")
+	file, err := os.Open("/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState.log")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %v", err)
 	}
@@ -632,7 +632,7 @@ func CheckLogFileStart(filename string, bytesToRead int) error {
 
 // 使用示例
 func CompareLeaderAndFollowerLogs() error {
-	leaderLogFile := "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
+	leaderLogFile := "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_sorted.log"
 	// followerLogFile := "./follower/raft/RaftState.log"
 
 	fmt.Println("Checking Leader log:")

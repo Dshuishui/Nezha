@@ -20,9 +20,9 @@ import (
 //		key string
 //		offset int64
 //	}
-var anotherSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/RaftState_anotherSorted.log"
-var anotherNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/RaftState_anotherNew.log"
-var anotherNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/db_key_index_anotherNew"
+var anotherSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_anotherSorted.log"
+var anotherNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_anotherNew.log"
+var anotherNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/db_key_index_anotherNew"
 
 const sortedFileCacheNums = 4000
 
@@ -221,6 +221,8 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	if err := kvs.AnotherCreateIndex(mergedSortedFilePath); err != nil {
 		return fmt.Errorf("failed to create index for merged file: %v", err)
 	}
+
+	kvs.anotherEndGC = true
 
 	fmt.Printf("Merged garbage collection completed in %v\n - round %v", time.Since(startTime), kvs.numGC)
 	return nil

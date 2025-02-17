@@ -2021,7 +2021,7 @@ func main() {
 	kvs.reqMap = make(map[int]*OpContext)
 	kvs.seqMap = make(map[int64]int64)
 	kvs.lastAppliedIndex = 0
-	InitialPersister := "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/db_key_index"
+	InitialPersister := "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/db_key_index"
 	_, err := kvs.persister.Init(InitialPersister, true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
@@ -2034,7 +2034,7 @@ func main() {
 	kvs.FirstGC = true
 
 	// 初始化存储value的文件
-	kvs.InitialRaftStateLog = "/home/DYC/Gitee/FlexSync/raft/RaftState.log"
+	kvs.InitialRaftStateLog = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState.log"
 	kvs.currentLog = kvs.InitialRaftStateLog
 	// InitialRaftStateLog, err := os.Create(currentLog)
 	// if err != nil {
@@ -2072,7 +2072,7 @@ func main() {
 			}
 
 			fileSizeGB := float64(fileInfo.Size()) / (1024 * 1024 * 1024)
-			if fileSizeGB <= 10 {
+			if fileSizeGB <= 8 {
 				// fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.currentLog, fileSizeGB)
 				continue
 			}
