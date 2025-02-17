@@ -1223,7 +1223,7 @@ func min(a, b int) int {
 }
 
 // 添加一个方法来快速查找键的偏移量
-func (sfi *SortedFileIndex) GetOffset(key string) (int64, bool) {
+func GetOffset(key string, sfi *SortedFileIndex) (int64, bool) {
 	offset, exists := sfi.Entries[key]
 	return offset, exists
 }
@@ -1235,10 +1235,14 @@ func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (stri
 		// 缓存命中，直接返回缓存的value
 		return value.(string), nil
 	}
+	// 增加参数检查
+    if index == nil {
+        return "", errors.New("invalid index: index is nil")
+    }
 
 	// 缓存未命中，使用索引查找
 	// index := kvs.sortedFileIndex
-	offset, exists := index.GetOffset(key)
+	offset, exists := GetOffset(key,index)
 	if !exists {
 		return "", errors.New(raft.ErrNoKey)
 	}
@@ -1619,7 +1623,7 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string, index *SortedFi
 	paddedCurrentKey := paddedStartKey
 	for paddedCurrentKey <= paddedEndKey {
 		// 创建的索引中的 key 是未填充的
-		offset, exists := index.GetOffset(currentKey)
+		offset, exists := GetOffset(currentKey,index)
 		if exists {
 			startOffset = offset
 			break
@@ -2038,7 +2042,7 @@ func main() {
 	kvs.currentLog = kvs.InitialRaftStateLog
 	// InitialRaftStateLog, err := os.Create(currentLog)
 	// if err != nil {
-	// 	log.Fatalf("Failed to create new RaftState log: %v", err)
+	// 	log.Fatalf("Failed to create new RaftState log: %v", err) 
 	// }
 	// defer newRaftStateLog.Close()
 
