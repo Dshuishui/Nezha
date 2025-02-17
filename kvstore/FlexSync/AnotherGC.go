@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 
-	// "sort"
+	"sort"
 	"time"
 
 	// lru "github.com/hashicorp/golang-lru"
@@ -50,6 +50,226 @@ func (kvs *KVServer) AnotherSwitchToNewFiles(newLog string, newPersister *raft.P
 	// 可能还需要更新其他相关的状态
 }
 
+// func (kvs *KVServer) MergedGarbageCollection() error {
+// 	fmt.Printf("Starting garbage collection... -- another %v\n", kvs.numGC)
+// 	startTime := time.Now()
+
+// 	// 创建新的RocksDB实例===========
+// 	persister_new, err := kvs.NewPersister() // 创建一个新的用于保存key和index的persister
+// 	if err != nil {
+// 		return fmt.Errorf("failed to create new persister: %v", err)
+// 	}
+// 	anotherNewPersisterPath = fmt.Sprintf("%s_%d", anotherNewPersisterPath, kvs.numGC)
+// 	newPersister, err := persister_new.Init(anotherNewPersisterPath, true)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to initialize new RocksDB: %v", err)
+// 	}
+
+// 	// 创建新的RaftState日志文件=============
+// 	anotherNewRaftStateLogPath = fmt.Sprintf("%s_%d", anotherNewRaftStateLogPath, kvs.numGC)
+// 	if _, err := os.Stat(anotherNewRaftStateLogPath); err == nil {
+// 		fmt.Println("New RaftState log file already exists. Skipping creation.")
+// 	} else if os.IsNotExist(err) {
+// 		newRaftStateLog, err := os.Create(anotherNewRaftStateLogPath)
+// 		if err != nil {
+// 			return fmt.Errorf("failed to create new RaftState log: %v", err)
+// 		}
+// 		defer newRaftStateLog.Close()
+// 	} else {
+// 		return fmt.Errorf("error checking new RaftState log file: %v", err)
+// 	}
+
+// 	kvs.anotherStartGC = true
+
+// 	// 切换到新的文件和RocksDB
+// 	kvs.AnotherSwitchToNewFiles(anotherNewRaftStateLogPath, newPersister)
+
+// 	// Create a temporary file for the merged sorted entries  1
+// 	// mergedSortedFilePath := kvs.lastSortedFileIndex.FilePath + "_merged"
+// 	mergedSortedFilePath := fmt.Sprintf("%s_merged_%d", kvs.lastSortedFileIndex.FilePath, kvs.numGC)
+// 	kvs.anotherSortedFilePath = mergedSortedFilePath
+// 	if _, err := os.Stat(mergedSortedFilePath); err == nil {
+// 		fmt.Println("Sorted file already exists. Skipping garbage collection.")
+// 		return nil
+// 	}
+// 	mergedFile, err := os.Create(mergedSortedFilePath)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to create merged file: %v", err)
+// 	}
+// 	defer mergedFile.Close()
+
+// 	// Open the existing sorted file  2
+// 	existingSortedFile, err := os.Open(kvs.lastSortedFileIndex.FilePath)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to open existing sorted file: %v", err)
+// 	}
+// 	defer existingSortedFile.Close()
+
+// 	// Open the original RaftState.log file  3
+// 	oldFile, err := os.Open(kvs.oldLog)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to open original RaftState.log: %v", err)
+// 	}
+// 	defer oldFile.Close()
+
+// 	// Create buffered writer for the merged file   2 + 3 -> 1   =============
+// 	writer := bufio.NewWriter(mergedFile)
+
+// 	// Create a channel for entries from the old database
+// 	oldEntryChan := make(chan *raft.Entry, 1000)
+// 	existingEntryChan := make(chan *raft.Entry, 1000)
+
+// 	// Start goroutine to read from old database
+// 	go func() {
+// 		defer close(oldEntryChan)
+// 		it := kvs.oldPersister.GetDb().NewIterator(gorocksdb.NewDefaultReadOptions())
+// 		defer it.Close()
+
+// 		for it.SeekToFirst(); it.Valid(); it.Next() {
+// 			key := it.Key()
+// 			value := it.Value()
+// 			defer key.Free()
+// 			defer value.Free()
+
+// 			index := binary.LittleEndian.Uint64(value.Data())
+// 			entry, _, err := kvs.ReadEntryAtIndex(oldFile, int64(index))
+// 			if err != nil {
+// 				fmt.Printf("Error reading entry at index %d: %v\n", index, err)
+// 				continue
+// 			}
+// 			oldEntryChan <- entry
+// 		}
+// 	}()
+
+// 	// Start goroutine to read from existing sorted file
+// 	go func() {
+// 		defer close(existingEntryChan)
+// 		reader := bufio.NewReader(existingSortedFile)
+// 		for {
+// 			entry, _, err := ReadEntry(reader, 0)
+// 			if err != nil {
+// 				if err == io.EOF {
+// 					break
+// 				}
+// 				fmt.Printf("Error reading sorted file: %v\n", err)
+// 				break
+// 			}
+// 			existingEntryChan <- entry
+// 		}
+// 	}()
+
+// 	// Merge entries and write to new file
+// 	var oldEntry, existingEntry *raft.Entry
+// 	var oldOk, existingOk bool
+
+// 	oldEntry, oldOk = <-oldEntryChan
+// 	existingEntry, existingOk = <-existingEntryChan
+
+// 	writeCount := 0
+// 	for oldOk || existingOk {
+// 		var entryToWrite *raft.Entry
+
+// 		switch {
+// 		case !existingOk: // Only old entries left
+// 			entryToWrite = oldEntry
+// 			oldEntry, oldOk = <-oldEntryChan
+// 		case !oldOk: // Only existing entries left
+// 			entryToWrite = existingEntry
+// 			existingEntry, existingOk = <-existingEntryChan
+// 		default: // Both channels have entries
+// 			if oldEntry.Key < existingEntry.Key {
+// 				entryToWrite = oldEntry
+// 				oldEntry, oldOk = <-oldEntryChan
+// 			} else if oldEntry.Key > existingEntry.Key {
+// 				entryToWrite = existingEntry
+// 				existingEntry, existingOk = <-existingEntryChan
+// 			} else { // Same key, take the newer one（that is the entry from old database, instead of the entry from the existing sorted file） from old database
+// 				entryToWrite = oldEntry
+// 				oldEntry, oldOk = <-oldEntryChan
+// 				existingEntry, existingOk = <-existingEntryChan
+// 			}
+// 		}
+
+// 		if entryToWrite != nil {
+// 			err := kvs.WriteEntryToSortedFile(writer, entryToWrite)
+// 			if err != nil {
+// 				return fmt.Errorf("failed to write merged entry: %v", err)
+// 			}
+// 			writeCount++
+// 			if writeCount%100000 == 0 {
+// 				fmt.Printf("Merged %d entries\n", writeCount)
+// 			}
+// 		}
+// 	}
+
+// 	// Flush the writer
+// 	if err := writer.Flush(); err != nil {
+// 		return fmt.Errorf("failed to flush writer: %v", err)
+// 	}
+
+// 	// Verify the merged file
+// 	if err := VerifySortedFile(mergedSortedFilePath); err != nil {
+// 		return fmt.Errorf("verification of merged file failed: %v", err)
+// 	}
+
+// 	// Replace the old sorted file with the merged one
+// 	// if err := os.Rename(mergedSortedFilePath, kvs.firstSortedFilePath); err != nil {
+// 	//     return fmt.Errorf("failed to replace old sorted file: %v", err)
+// 	// }
+
+// 	// Update the index for the merged file
+// 	if err := kvs.AnotherCreateIndex(mergedSortedFilePath); err != nil {
+// 		return fmt.Errorf("failed to create index for merged file: %v", err)
+// 	}
+
+// 	kvs.anotherEndGC = true
+
+// 	fmt.Printf("Merged garbage collection completed in %v\n - round %v", time.Since(startTime), kvs.numGC)
+// 	return nil
+// }
+
+func (kvs *KVServer) AnotherCreateIndex(SortedFilePath string) error {
+	kvs.mu.Lock()
+	defer kvs.mu.Unlock()
+
+	// 创建索引，假设每1个条目记录一次索引，稀疏索引，间隔一部分创建一个索引，找到第一个合适的，再进行线性查询
+	index, err := kvs.CreateSortedFileIndex(SortedFilePath)
+	if err != nil {
+		// 处理错误
+		return err
+	}
+	kvs.anothersortedFileIndex = index
+
+	// 初始化LRU缓存，设置合适的缓存大小
+	err = kvs.initSortedFileCache(sortedFileCacheNums)
+	if err != nil {
+		fmt.Printf("Failed to initialize LRU cache: %v\n", err)
+		return err
+	}
+
+	// 预热缓存
+	kvs.warmupCache(SortedFilePath)
+
+	fmt.Println("建立了索引，得到了针对已排序文件的稀疏索引")
+	kvs.filePool, err = NewFileDescriptorPool(SortedFilePath, 50)
+	if err != nil {
+		fmt.Printf("Failed to create file descriptor pool: %v\n", err)
+		panic("创建文件描述符池失败")
+	}
+	fmt.Println("创建文件描述符池成功")
+	// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
+
+	return nil
+
+	// kvs.getFromFile = kvs.getFromSortedOrNew
+	// kvs.scanFromFile = kvs.scanFromSortedOrNew
+}
+
+// 更新 GC 后合并的过程，之前的合并方式有问题，问题如下：
+// oldEntryChan是从无序的文件中读取的一个个entry，
+// 而exixstingEntryChan是从一个有序的文件中读取一个个entry，
+// 当有序的文件合并完时，无序的文件还有数据，则现有的代码会直接简单将剩余的无序读出的一个个entry写入，
+// 但是这是不对的，可能无序后面多余的entry写入会存在小于前者已经写入的entry的数据。
 func (kvs *KVServer) MergedGarbageCollection() error {
 	fmt.Printf("Starting garbage collection... -- another %v\n", kvs.numGC)
 	startTime := time.Now()
@@ -115,97 +335,102 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	// Create buffered writer for the merged file   2 + 3 -> 1   =============
 	writer := bufio.NewWriter(mergedFile)
 
-	// Create a channel for entries from the old database
-	oldEntryChan := make(chan *raft.Entry, 1000)
-	existingEntryChan := make(chan *raft.Entry, 1000)
+	// 1. 首先从旧的 RocksDB 中读取所有 entries 并排序
+    var oldEntries []*raft.Entry
+    it := kvs.oldPersister.GetDb().NewIterator(gorocksdb.NewDefaultReadOptions())
+    defer it.Close()
 
-	// Start goroutine to read from old database
-	go func() {
-		defer close(oldEntryChan)
-		it := kvs.oldPersister.GetDb().NewIterator(gorocksdb.NewDefaultReadOptions())
-		defer it.Close()
+    // 读取所有旧数据
+    for it.SeekToFirst(); it.Valid(); it.Next() {
+        key := it.Key()
+        value := it.Value()
+        defer key.Free()
+        defer value.Free()
 
-		for it.SeekToFirst(); it.Valid(); it.Next() {
-			key := it.Key()
-			value := it.Value()
-			defer key.Free()
-			defer value.Free()
+        index := binary.LittleEndian.Uint64(value.Data())
+        entry, _, err := kvs.ReadEntryAtIndex(oldFile, int64(index))
+        if err != nil {
+            fmt.Printf("Error reading entry at index %d: %v\n", index, err)
+            continue
+        }
+        oldEntries = append(oldEntries, entry)
+    }
 
-			index := binary.LittleEndian.Uint64(value.Data())
-			entry, _, err := kvs.ReadEntryAtIndex(oldFile, int64(index))
-			if err != nil {
-				fmt.Printf("Error reading entry at index %d: %v\n", index, err)
-				continue
-			}
-			oldEntryChan <- entry
-		}
-	}()
+    // 对旧数据进行排序
+    sort.Slice(oldEntries, func(i, j int) bool {
+        return oldEntries[i].Key < oldEntries[j].Key
+    })
 
-	// Start goroutine to read from existing sorted file
-	go func() {
-		defer close(existingEntryChan)
-		reader := bufio.NewReader(existingSortedFile)
-		for {
-			entry, _, err := ReadEntry(reader, 0)
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				fmt.Printf("Error reading sorted file: %v\n", err)
-				break
-			}
-			existingEntryChan <- entry
-		}
-	}()
+    // 2. 从已排序文件中读取 entries
+    var sortedEntries []*raft.Entry
+    reader := bufio.NewReader(existingSortedFile)
+    for {
+        entry, _, err := ReadEntry(reader, 0)
+        if err != nil {
+            if err == io.EOF {
+                break
+            }
+            return fmt.Errorf("error reading sorted file: %v", err)
+        }
+        sortedEntries = append(sortedEntries, entry)
+    }
 
-	// Merge entries and write to new file
-	var oldEntry, existingEntry *raft.Entry
-	var oldOk, existingOk bool
+    // 3. 合并两个已排序的切片
+    // writer := bufio.NewWriter(mergedFile)
+    i, j := 0, 0
+    writeCount := 0
 
-	oldEntry, oldOk = <-oldEntryChan
-	existingEntry, existingOk = <-existingEntryChan
+    // 合并写入函数
+    writeEntry := func(entry *raft.Entry) error {
+        err := kvs.WriteEntryToSortedFile(writer, entry)
+        if err != nil {
+            return fmt.Errorf("failed to write merged entry: %v", err)
+        }
+        writeCount++
+        if writeCount%100000 == 0 {
+            fmt.Printf("Merged %d entries\n", writeCount)
+        }
+        return nil
+    }
 
-	writeCount := 0
-	for oldOk || existingOk {
-		var entryToWrite *raft.Entry
+    // 合并两个已排序的数组
+    for i < len(oldEntries) && j < len(sortedEntries) {
+        if oldEntries[i].Key < sortedEntries[j].Key {
+            if err := writeEntry(oldEntries[i]); err != nil {
+                return err
+            }
+            i++
+        } else if oldEntries[i].Key > sortedEntries[j].Key {
+            if err := writeEntry(sortedEntries[j]); err != nil {
+                return err
+            }
+            j++
+        } else { // 相同key，使用旧数据库中的较新条目
+            if err := writeEntry(oldEntries[i]); err != nil {
+                return err
+            }
+            i++
+            j++
+        }
+    }
 
-		switch {
-		case !existingOk: // Only old entries left
-			entryToWrite = oldEntry
-			oldEntry, oldOk = <-oldEntryChan
-		case !oldOk: // Only existing entries left
-			entryToWrite = existingEntry
-			existingEntry, existingOk = <-existingEntryChan
-		default: // Both channels have entries
-			if oldEntry.Key < existingEntry.Key {
-				entryToWrite = oldEntry
-				oldEntry, oldOk = <-oldEntryChan
-			} else if oldEntry.Key > existingEntry.Key {
-				entryToWrite = existingEntry
-				existingEntry, existingOk = <-existingEntryChan
-			} else { // Same key, take the newer one（that is the entry from old database, instead of the entry from the existing sorted file） from old database
-				entryToWrite = oldEntry
-				oldEntry, oldOk = <-oldEntryChan
-				existingEntry, existingOk = <-existingEntryChan
-			}
-		}
+    // 写入剩余的条目
+    for ; i < len(oldEntries); i++ {
+        if err := writeEntry(oldEntries[i]); err != nil {
+            return err
+        }
+    }
 
-		if entryToWrite != nil {
-			err := kvs.WriteEntryToSortedFile(writer, entryToWrite)
-			if err != nil {
-				return fmt.Errorf("failed to write merged entry: %v", err)
-			}
-			writeCount++
-			if writeCount%100000 == 0 {
-				fmt.Printf("Merged %d entries\n", writeCount)
-			}
-		}
-	}
+    for ; j < len(sortedEntries); j++ {
+        if err := writeEntry(sortedEntries[j]); err != nil {
+            return err
+        }
+    }
 
-	// Flush the writer
-	if err := writer.Flush(); err != nil {
-		return fmt.Errorf("failed to flush writer: %v", err)
-	}
+    // 刷新写入器
+    if err := writer.Flush(); err != nil {
+        return fmt.Errorf("failed to flush writer: %v", err)
+    }
 
 	// Verify the merged file
 	if err := VerifySortedFile(mergedSortedFilePath); err != nil {
@@ -226,41 +451,4 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 
 	fmt.Printf("Merged garbage collection completed in %v\n - round %v", time.Since(startTime), kvs.numGC)
 	return nil
-}
-
-func (kvs *KVServer) AnotherCreateIndex(SortedFilePath string) error {
-	kvs.mu.Lock()
-	defer kvs.mu.Unlock()
-
-	// 创建索引，假设每1个条目记录一次索引，稀疏索引，间隔一部分创建一个索引，找到第一个合适的，再进行线性查询
-	index, err := kvs.CreateSortedFileIndex(SortedFilePath)
-	if err != nil {
-		// 处理错误
-		return err
-	}
-	kvs.anothersortedFileIndex = index
-
-	// 初始化LRU缓存，设置合适的缓存大小
-	err = kvs.initSortedFileCache(sortedFileCacheNums)
-	if err != nil {
-		fmt.Printf("Failed to initialize LRU cache: %v\n", err)
-		return err
-	}
-
-	// 预热缓存
-	kvs.warmupCache(SortedFilePath)
-
-	fmt.Println("建立了索引，得到了针对已排序文件的稀疏索引")
-	kvs.filePool, err = NewFileDescriptorPool(SortedFilePath, 50)
-	if err != nil {
-		fmt.Printf("Failed to create file descriptor pool: %v\n", err)
-		panic("创建文件描述符池失败")
-	}
-	fmt.Println("创建文件描述符池成功")
-	// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
-
-	return nil
-
-	// kvs.getFromFile = kvs.getFromSortedOrNew
-	// kvs.scanFromFile = kvs.scanFromSortedOrNew
 }
