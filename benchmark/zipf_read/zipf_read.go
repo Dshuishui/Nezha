@@ -79,7 +79,7 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 			startTime := time.Now()
 			for j := 0; j < base; j++ {
 				// 使用 Zipf 分布生成键
-				keyNum := zipf.Uint64() % uint64(KEY_SPACE) // 确保键在有效范围内
+				keyNum := zipf.Uint64() % uint64(KEY_SPACE)+1 // 确保键在有效范围内
 				targetKey := strconv.FormatUint(keyNum, 10)
 
 				value, keyExist, err := kvc.Get(targetKey)
@@ -89,9 +89,9 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 					// fmt.Printf("找到key:%v\n",targetKey)
 					continue
 				}
-				// if err != nil {
-				// 	fmt.Printf("有错误:%v\n",err)
-				// }
+				if err != nil {
+					fmt.Printf("读取key时有错误:%v\n",err)
+				}
 				// if !keyExist {
 				// 	fmt.Printf("key:%v 不存在\n",targetKey)
 				// }
