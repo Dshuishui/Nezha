@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"fmt"
+	"strings"
 
 	"io"
 	"os"
@@ -20,7 +21,7 @@ import (
 //		key string
 //		offset int64
 //	}
-var anotherSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_anotherSorted.log"
+// var anotherSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_anotherSorted.log"
 var anotherNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_anotherNew.log"
 var anotherNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/db_key_index_anotherNew"
 
@@ -34,6 +35,8 @@ func (kvs *KVServer) AnotherGarbageCollection() error {
 func (kvs *KVServer) AnotherSwitchToNewFiles(newLog string, newPersister *raft.Persister) {
 	kvs.mu.Lock()
 	defer kvs.mu.Unlock()
+	kvs.numGC++
+	kvs.raft.SetNumGC(kvs.numGC)
 
 	// 赋值旧文件变量
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
@@ -66,7 +69,14 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	}
 
 	// 创建新的RaftState日志文件=============
-	anotherNewRaftStateLogPath = fmt.Sprintf("%s_%d", anotherNewRaftStateLogPath, kvs.numGC)
+	parts := strings.SplitN(anotherNewRaftStateLogPath,".",2)
+	if len(parts) ==2 {
+		anotherNewRaftStateLogPath = fmt.Sprintf("%s%d.%s",parts[0],kvs.numGC,parts[1])
+	}else{
+		// 如果没有扩展名
+		anotherNewRaftStateLogPath = fmt.Sprintf("%s%d", anotherNewRaftStateLogPath, kvs.numGC)
+	}
+	// anotherNewRaftStateLogPath = fmt.Sprintf("%s_%d", anotherNewRaftStateLogPath, kvs.numGC)
 	if _, err := os.Stat(anotherNewRaftStateLogPath); err == nil {
 		fmt.Println("New RaftState log file already exists. Skipping creation.")
 	} else if os.IsNotExist(err) {
@@ -86,7 +96,15 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 
 	// Create a temporary file for the merged sorted entries  1
 	// mergedSortedFilePath := kvs.lastSortedFileIndex.FilePath + "_merged"
-	mergedSortedFilePath := fmt.Sprintf("%s_merged_%d", kvs.lastSortedFileIndex.FilePath, kvs.numGC)
+	var mergedSortedFilePath string
+	parts2 := strings.SplitN(kvs.lastSortedFileIndex.FilePath,".",2)
+	if len(parts) ==2 {
+		mergedSortedFilePath = fmt.Sprintf("%s%d.%s",parts2[0],kvs.numGC,parts2[1])
+	}else{
+		// 如果没有扩展名
+		mergedSortedFilePath = fmt.Sprintf("%s%d", anotherNewRaftStateLogPath, kvs.numGC)
+	}
+	// mergedSortedFilePath := fmt.Sprintf("%s_merged_%d", kvs.lastSortedFileIndex.FilePath, kvs.numGC)
 	kvs.anotherSortedFilePath = mergedSortedFilePath
 	if _, err := os.Stat(mergedSortedFilePath); err == nil {
 		fmt.Println("Sorted file already exists. Skipping garbage collection.")
@@ -114,6 +132,15 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 
 	// Create buffered writer for the merged file   2 + 3 -> 1   =============
 	writer := bufio.NewWriter(mergedFile)
+
+	// 在合并之前验证两个输入源的有序性
+	// if err := kvs.verifyOldDatabaseOrder(oldFile); err != nil {
+	// 	return err
+	// }
+
+	// if err := kvs.verifySortedFileOrder(); err != nil {
+	// 	return err
+	// }
 
 	// Create a channel for entries from the old database
 	oldEntryChan := make(chan *raft.Entry, 1000)
@@ -225,6 +252,80 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	kvs.anotherEndGC = true
 
 	fmt.Printf("Merged garbage collection completed in %v\n - round %v", time.Since(startTime), kvs.numGC)
+	return nil
+}
+
+// 分别验证两个数据源的有序性
+func (kvs *KVServer) verifyOldDatabaseOrder(file *os.File) error {
+	fmt.Println("开始验证旧数据库的有序性...")
+	var prevKey string
+	count := 0
+
+	it := kvs.oldPersister.GetDb().NewIterator(gorocksdb.NewDefaultReadOptions())
+	defer it.Close()
+
+	for it.SeekToFirst(); it.Valid(); it.Next() {
+		key := it.Key()
+		value := it.Value()
+		defer key.Free()
+		defer value.Free()
+
+		index := binary.LittleEndian.Uint64(value.Data())
+		entry, _, err := kvs.ReadEntryAtIndex(file, int64(index))
+		if err != nil {
+			return fmt.Errorf("读取索引 %d 失败: %v", index, err)
+		}
+
+		if prevKey != "" && entry.Key <= prevKey {
+			return fmt.Errorf("旧数据库无序: 键值 %s 出现在 %s 之后，在第 %d 个条目",
+				entry.Key, prevKey, count)
+		}
+		prevKey = entry.Key
+		count++
+
+		if count%100000 == 0 {
+			fmt.Printf("已验证 %d 个条目\n", count)
+		}
+	}
+
+	fmt.Printf("旧数据库验证完成: 共 %d 个条目，确认有序\n", count)
+	return nil
+}
+
+func (kvs *KVServer) verifySortedFileOrder() error {
+	fmt.Println("开始验证已排序文件的有序性...")
+	var prevKey string
+	count := 0
+
+	file, err := os.Open(kvs.lastSortedFileIndex.FilePath)
+	if err != nil {
+		return fmt.Errorf("打开排序文件失败: %v", err)
+	}
+	defer file.Close()
+
+	reader := bufio.NewReader(file)
+	for {
+		entry, _, err := ReadEntry(reader, 0)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("读取排序文件失败: %v", err)
+		}
+
+		if prevKey != "" && entry.Key <= prevKey {
+			return fmt.Errorf("排序文件无序: 键值 %s 出现在 %s 之后，在第 %d 个条目",
+				entry.Key, prevKey, count)
+		}
+		prevKey = entry.Key
+		count++
+
+		if count%100000 == 0 {
+			fmt.Printf("已验证 %d 个条目\n", count)
+		}
+	}
+
+	fmt.Printf("排序文件验证完成: 共 %d 个条目，确认有序\n", count)
 	return nil
 }
 

@@ -86,8 +86,15 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 				if err == nil && keyExist && value != "ErrNoKey" {
 					localResult.count++
 					localResult.valueSize = len([]byte(value))
+					// fmt.Printf("找到key:%v\n",targetKey)
+					continue
 				}
-				// fmt.Printf("exist? %v\n",keyExist)
+				// if err != nil {
+				// 	fmt.Printf("有错误:%v\n",err)
+				// }
+				// if !keyExist {
+				// 	fmt.Printf("key:%v 不存在\n",targetKey)
+				// }
 			}
 
 			localResult.duration = time.Since(startTime)

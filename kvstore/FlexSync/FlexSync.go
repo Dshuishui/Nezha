@@ -2083,8 +2083,8 @@ func main() {
 			}
 			// 第一轮GC
 			if kvs.FirstGC {
-				kvs.numGC++
-				kvs.raft.SetNumGC(kvs.numGC)
+				// kvs.numGC++
+				// kvs.raft.SetNumGC(kvs.numGC)
 				fmt.Printf("文件 %s 大小为 %.2f GB，开始垃圾回收\n", kvs.currentLog, fileSizeGB)
 				startTime := time.Now()
 
@@ -2096,15 +2096,15 @@ func main() {
 					fmt.Printf("垃圾回收完成，共花费了%v\n", time.Since(startTime))
 				}
 
-				err = kvs.CheckDatabaseContent()
-				if err != nil {
-					fmt.Println("检查GC后的数据库出现了错误: ", err)
-				}
+				// err = kvs.CheckDatabaseContent()
+				// if err != nil {
+				// 	fmt.Println("检查GC后的数据库出现了错误: ", err)
+				// }
 
-				err = CompareLeaderAndFollowerLogs()
-				if err != nil {
-					fmt.Println("检查log文件出现了错误: ", err)
-				}
+				// err = CompareLeaderAndFollowerLogs()
+				// if err != nil {
+				// 	fmt.Println("检查log文件出现了错误: ", err)
+				// }
 				kvs.lastGCFinish = true
 				kvs.FirstGC = false
 				kvs.lastSortedFileIndex = kvs.firstSortedFileIndex // 更新本轮的变量为上一次
@@ -2119,8 +2119,8 @@ func main() {
 			} else {
 				// 迭代GC
 				if kvs.lastGCFinish {
-					kvs.numGC++
-					kvs.raft.SetNumGC(kvs.numGC)
+					// kvs.numGC++
+					// kvs.raft.SetNumGC(kvs.numGC)
 					kvs.lastGCFinish = false // make sure last gc process is finished
 					err = kvs.AnotherGarbageCollection()
 					if err != nil {

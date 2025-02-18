@@ -82,6 +82,11 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	// Create a buffered writer for the sorted file
 	writer := bufio.NewWriter(sortedFile)
 
+	// // 在合并之前验证两个输入源的有序性
+	// if err := kvs.verifyOldDatabaseOrder(oldFile); err != nil {
+	// 	return err
+	// }
+
 	// Iterate through RocksDB
 	it := kvs.oldPersister.GetDb().NewIterator(gorocksdb.NewDefaultReadOptions())
 	defer it.Close()
@@ -230,7 +235,7 @@ func (kvs *KVServer) warmupCache(filePath string) {
 
 	reader := bufio.NewReader(file)
 	count := 0
-	maxWarmupEntries := sortedFileCacheNums/2 // 预热的条目数量
+	maxWarmupEntries := sortedFileCacheNums / 2 // 预热的条目数量
 
 	for count < maxWarmupEntries {
 		entry, _, err := ReadEntry(reader, 0)
@@ -406,27 +411,27 @@ func (kvs *KVServer) CheckDatabaseContent() error {
 		if key == nil || value == nil {
 			fmt.Printf("DB entry %d: <nil key or value>\n", count)
 		} else {
-			// keyStr := string(key.Data())
-			// valueBytes := value.Data()
+			keyStr := string(key.Data())
+			valueBytes := value.Data()
 
 			// 尝试将值解释为 int64
-			// if len(valueBytes) == 8 {
-			// intValue := int64(binary.LittleEndian.Uint64(valueBytes))
-			// fmt.Printf("DB entry %d: key=%s, value as int64=%d\n", count, keyStr, intValue)
-			// } else {
-			// 如果不是 8 字节，则显示十六进制表示
-			// fmt.Printf("DB entry %d: key=%s, value (hex)=%x\n", count, keyStr, valueBytes)
-			// }
+			if len(valueBytes) == 8 {
+				intValue := int64(binary.LittleEndian.Uint64(valueBytes))
+				fmt.Printf("DB entry %d: key=%s, value as int64=%d\n", count, keyStr, intValue)
+			} else {
+				// 如果不是 8 字节，则显示十六进制表示
+				fmt.Printf("DB entry %d: key=%s, value (hex)=%x\n", count, keyStr, valueBytes)
+			}
 		}
 
 		key.Free()
 		value.Free()
 
 		count++
-		// if count >= 10 {
-		// 	fmt.Printf("Stopping after %v entries...\n",count)
-		// 	break
-		// }
+		if count >= 10 {
+			fmt.Printf("Stopping after %v entries...\n", count)
+			break
+		}
 	}
 
 	if err := iter.Err(); err != nil {
@@ -565,6 +570,8 @@ func (kvs *KVServer) checkLogDBConsistency() error {
 func (kvs *KVServer) SwitchToNewFiles(newLog string, newPersister *raft.Persister) {
 	kvs.mu.Lock()
 	defer kvs.mu.Unlock()
+	kvs.numGC++
+	kvs.raft.SetNumGC(kvs.numGC)
 
 	// 更新两个路径，使得垃圾回收与客户端请求并行执行
 	kvs.currentLog = newLog
