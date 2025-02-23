@@ -2038,7 +2038,7 @@ func main() {
 		return
 	}
 
-	InitialPersister := "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/db_key_index"
+	InitialPersister := "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/keyIndex"
 	_, err := kvs.persister.Init(InitialPersister, true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)

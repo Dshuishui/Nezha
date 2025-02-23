@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"strings"
 
 	// "io"
 	"os"
@@ -21,15 +22,21 @@ import (
 //		offset int64
 //	}
 var firstSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_sorted.log"
-var firstNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_new.log"
-var firstNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/db_key_index_new"
+var firstNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/newRaftState.log"
+var firstNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/newKeyIndex_1"
 
 func (kvs *KVServer) FirstGarbageCollection() error {
 	fmt.Println("Starting garbage collection...")
 	startTime := time.Now()
 
 	// Create a new file for sorted entries
-
+	parts := strings.SplitN(firstSortedFilePath, ".", 2)
+	if len(parts) == 2 {
+		firstSortedFilePath = fmt.Sprintf("%s%d.%s", parts[0], kvs.numGC, parts[1])
+	} else {
+		// 如果没有扩展名
+		firstSortedFilePath = fmt.Sprintf("%s%d", firstSortedFilePath, kvs.numGC)
+	}
 	if _, err := os.Stat(firstSortedFilePath); err == nil {
 		fmt.Println("Sorted file already exists. Skipping garbage collection.")
 		return nil
@@ -62,6 +69,13 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	}
 
 	// 创建新的RaftState日志文件
+	parts = strings.SplitN(firstNewRaftStateLogPath, ".", 2)
+	if len(parts) == 2 {
+		firstNewRaftStateLogPath = fmt.Sprintf("%s%d.%s", parts[0], kvs.numGC, parts[1])
+	} else {
+		// 如果没有扩展名
+		firstNewRaftStateLogPath = fmt.Sprintf("%s%d", firstNewRaftStateLogPath, kvs.numGC)
+	}
 	if _, err := os.Stat(firstNewRaftStateLogPath); err == nil {
 		fmt.Println("New RaftState log file already exists. Skipping creation.")
 	} else if os.IsNotExist(err) {

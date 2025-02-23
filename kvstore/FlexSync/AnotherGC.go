@@ -25,8 +25,8 @@ import (
 // var anotherSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_anotherSorted.log"
 var logPathToCheck = "/home/DYC/Gitee/FlexSync/raft/valuelog"
 var dbPathToCheck = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile"
-var anotherNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_new.log"
-var anotherNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/db_key_index_new"
+var anotherNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/newRaftState.log"
+var anotherNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/newKeyIndex_1"
 
 const sortedFileCacheNums = 4000
 
@@ -84,7 +84,14 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	if err != nil {
 		return fmt.Errorf("failed to create new persister: %v", err)
 	}
-	anotherNewPersisterPath = fmt.Sprintf("%s_%d", anotherNewPersisterPath, kvs.numGC)
+	lastUnderscoreIndex := strings.LastIndex(anotherNewPersisterPath, "_")
+	if lastUnderscoreIndex == -1 {
+		// 如果没有下划线，直接追加 kvs.numGC
+		anotherNewPersisterPath = fmt.Sprintf("%s_%d", anotherNewPersisterPath, kvs.numGC)
+	} else {
+		// 提取下划线之前的部分，并追加新的 kvs.numGC
+		anotherNewPersisterPath = fmt.Sprintf("%s_%d", anotherNewPersisterPath[:lastUnderscoreIndex], kvs.numGC)
+	}
 	newPersister, err := persister_new.Init(anotherNewPersisterPath, true)
 	if err != nil {
 		return fmt.Errorf("failed to initialize new RocksDB: %v", err)
@@ -116,6 +123,7 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	// 切换到新的文件和RocksDB
 	kvs.AnotherSwitchToNewFiles(anotherNewRaftStateLogPath, newPersister)
 
+	// 创建合并文件
 	// Create a temporary file for the merged sorted entries  1
 	// mergedSortedFilePath := kvs.lastSortedFileIndex.FilePath + "_merged"
 	var mergedSortedFilePath string
