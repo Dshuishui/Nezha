@@ -71,7 +71,7 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 			// var totalActualLatency time.Duration
 
 			for j := 0; j < base; j++ {
-				k1 := rand.Intn(390000)
+				k1 := rand.Intn(20000000)
 				// k1 := (i*base + j) * gapkey
 				k2 := k1 + gapkey - 1
 				startKey := strconv.Itoa(k1)
@@ -241,7 +241,7 @@ func nrand() int64 {
 
 func main() {
 	flag.Parse()
-	gapkey := 3900
+	gapkey := 100
 	servers := strings.Split(*ser, ",")
 	kvc := new(KVClient)
 	kvc.Kvservers = servers
@@ -251,7 +251,7 @@ func main() {
 
 	var totalThroughput float64
 	var totalAvgLatency time.Duration
-	numTests := 3
+	numTests := 10
 
 	for i := 0; i < numTests; i++ {
 		startTime := time.Now()

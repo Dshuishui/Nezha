@@ -90,7 +90,8 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 		return fmt.Errorf("error checking new RaftState log file: %v", err)
 	}
 
-	kvs.startGC = true
+	// 放到切换文件的里面了
+	// kvs.startGC = true
 
 	// 切换到新的文件和RocksDB
 	kvs.SwitchToNewFiles(firstNewRaftStateLogPath, newPersister)
@@ -586,6 +587,7 @@ func (kvs *KVServer) checkLogDBConsistency() error {
 func (kvs *KVServer) SwitchToNewFiles(newLog string, newPersister *raft.Persister) {
 	kvs.mu.Lock()
 	defer kvs.mu.Unlock()
+	kvs.startGC = true
 	kvs.numGC++
 	kvs.raft.SetNumGC(kvs.numGC)
 

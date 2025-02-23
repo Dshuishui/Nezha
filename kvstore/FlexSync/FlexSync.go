@@ -614,7 +614,7 @@ func ReadEntry(reader *bufio.Reader, currentOffset int64) (*raft.Entry, int64, e
 
 func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvrpc.GetInRaftResponse {
 	if !kvs.startGC { // 还未开始GC，先去旧的rocksdb查询
-		positionBytes, err := kvs.oldPersister.Get_opt(key)
+		positionBytes, err := kvs.persister.Get_opt(key)
 		if err != nil {
 			fmt.Println("去旧的rocksdb中拿取key对应的index有问题")
 			panic(err)
