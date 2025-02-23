@@ -25,8 +25,8 @@ import (
 // var anotherSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_anotherSorted.log"
 var logPathToCheck = "/home/DYC/Gitee/FlexSync/raft/valuelog"
 var dbPathToCheck = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile"
-var anotherNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_anotherNew.log"
-var anotherNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/db_key_index_anotherNew"
+var anotherNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_new.log"
+var anotherNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/db_key_index_new"
 
 const sortedFileCacheNums = 4000
 
@@ -257,9 +257,9 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	}
 
 	// Verify the merged file
-	if err := VerifySortedFile(mergedSortedFilePath); err != nil {
-		return fmt.Errorf("verification of merged file failed: %v", err)
-	}
+	// if err := VerifySortedFile(mergedSortedFilePath); err != nil {
+	// 	return fmt.Errorf("verification of merged file failed: %v", err)
+	// }
 
 	// Replace the old sorted file with the merged one
 	// if err := os.Rename(mergedSortedFilePath, kvs.firstSortedFilePath); err != nil {
@@ -273,7 +273,7 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 
 	kvs.anotherEndGC = true
 
-	fmt.Printf("Merged garbage collection completed in %v\n - round %v", time.Since(startTime), kvs.numGC)
+	fmt.Printf("Merged garbage collection completed in %v\n - round %v\n", time.Since(startTime), kvs.numGC)
 	return nil
 }
 

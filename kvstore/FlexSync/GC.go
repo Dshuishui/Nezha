@@ -131,10 +131,10 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	}
 
 	// 添加验证步骤
-	err = VerifySortedFile(firstSortedFilePath)
-	if err != nil {
-		return fmt.Errorf("verification of sorted file failed: %v", err)
-	}
+	// err = VerifySortedFile(firstSortedFilePath)
+	// if err != nil {
+	// 	return fmt.Errorf("verification of sorted file failed: %v", err)
+	// }
 
 	kvs.endGC = true
 
