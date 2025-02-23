@@ -38,13 +38,13 @@ func ensurePathExists(path string) error {
 		if err != nil {
 			return fmt.Errorf("failed to create directory %s: %v", path, err)
 		}
-		fmt.Printf("Directory created: %s\n", path)
+		// fmt.Printf("Directory created: %s\n", path)
 	} else if err != nil {
 		// 如果其他错误发生
 		return fmt.Errorf("error checking directory %s: %v", path, err)
 	} else {
 		// 如果路径存在
-		fmt.Printf("Directory already exists: %s\n", path)
+		// fmt.Printf("Directory already exists: %s\n", path)
 	}
 	return nil
 }
