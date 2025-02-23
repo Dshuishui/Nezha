@@ -624,7 +624,7 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 			reply.Value = raft.NoKey
 			return reply
 		}
-		read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
+		read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
 		if err != nil {
 			fmt.Println("拿取value有问题")
 			panic(err)
@@ -2090,7 +2090,7 @@ func main() {
 			}
 
 			fileSizeGB := float64(fileInfo.Size()) / (1024 * 1024 * 1024)
-			if fileSizeGB <= 8 {
+			if fileSizeGB <= 8000 {
 				// fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.currentLog, fileSizeGB)
 				continue
 			}
