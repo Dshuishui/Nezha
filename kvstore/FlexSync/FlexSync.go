@@ -2025,6 +2025,19 @@ func main() {
 	kvs.reqMap = make(map[int]*OpContext)
 	kvs.seqMap = make(map[int64]int64)
 	kvs.lastAppliedIndex = 0
+
+	// 检查并创建 logPathToCheck
+	if err := ensurePathExists(logPathToCheck); err != nil {
+		fmt.Printf("Error with log path: %v\n", err)
+		return
+	}
+
+	// 检查并创建 dbPathToCheck
+	if err := ensurePathExists(dbPathToCheck); err != nil {
+		fmt.Printf("Error with db path: %v\n", err)
+		return
+	}
+
 	InitialPersister := "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/db_key_index"
 	_, err := kvs.persister.Init(InitialPersister, true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
 	if err != nil {

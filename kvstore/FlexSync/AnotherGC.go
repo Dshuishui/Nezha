@@ -79,18 +79,6 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	fmt.Printf("Starting garbage collection... -- another %v\n", kvs.numGC)
 	startTime := time.Now()
 
-	// 检查并创建 logPathToCheck
-	if err := ensurePathExists(logPathToCheck); err != nil {
-		fmt.Printf("Error with log path: %v\n", err)
-		return err
-	}
-
-	// 检查并创建 dbPathToCheck
-	if err := ensurePathExists(dbPathToCheck); err != nil {
-		fmt.Printf("Error with db path: %v\n", err)
-		return err
-	}
-
 	// 创建新的RocksDB实例===========
 	persister_new, err := kvs.NewPersister() // 创建一个新的用于保存key和index的persister
 	if err != nil {
