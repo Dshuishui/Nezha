@@ -87,10 +87,10 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	lastUnderscoreIndex := strings.LastIndex(anotherNewPersisterPath, "_")
 	if lastUnderscoreIndex == -1 {
 		// 如果没有下划线，直接追加 kvs.numGC
-		anotherNewPersisterPath = fmt.Sprintf("%s_%d", anotherNewPersisterPath, kvs.numGC)
+		anotherNewPersisterPath = fmt.Sprintf("%s_%d", anotherNewPersisterPath, kvs.numGC+1)
 	} else {
 		// 提取下划线之前的部分，并追加新的 kvs.numGC
-		anotherNewPersisterPath = fmt.Sprintf("%s_%d", anotherNewPersisterPath[:lastUnderscoreIndex], kvs.numGC)
+		anotherNewPersisterPath = fmt.Sprintf("%s_%d", anotherNewPersisterPath[:lastUnderscoreIndex], kvs.numGC+1)
 	}
 	newPersister, err := persister_new.Init(anotherNewPersisterPath, true)
 	if err != nil {
@@ -100,10 +100,10 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	// 创建新的RaftState日志文件=============
 	parts := strings.SplitN(anotherNewRaftStateLogPath, ".", 2)
 	if len(parts) == 2 {
-		anotherNewRaftStateLogPath = fmt.Sprintf("%s%d.%s", parts[0], kvs.numGC, parts[1])
+		anotherNewRaftStateLogPath = fmt.Sprintf("%s%d.%s", parts[0], kvs.numGC+1, parts[1])
 	} else {
 		// 如果没有扩展名
-		anotherNewRaftStateLogPath = fmt.Sprintf("%s%d", anotherNewRaftStateLogPath, kvs.numGC)
+		anotherNewRaftStateLogPath = fmt.Sprintf("%s%d", anotherNewRaftStateLogPath, kvs.numGC+1)
 	}
 	// anotherNewRaftStateLogPath = fmt.Sprintf("%s_%d", anotherNewRaftStateLogPath, kvs.numGC)
 	if _, err := os.Stat(anotherNewRaftStateLogPath); err == nil {
