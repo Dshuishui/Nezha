@@ -21,11 +21,33 @@ import (
 //		key string
 //		offset int64
 //	}
+//
 // var anotherSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_anotherSorted.log"
+var logPathToCheck = "/home/DYC/Gitee/FlexSync/raft/valuelog"
+var dbPathToCheck = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile"
 var anotherNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_anotherNew.log"
 var anotherNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/db_key_index_anotherNew"
 
 const sortedFileCacheNums = 4000
+
+// ensurePathExists 检查路径是否存在，如果不存在则创建它
+func ensurePathExists(path string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		// 如果路径不存在，创建该路径
+		err := os.MkdirAll(path, 0755) // 0755 是目录权限
+		if err != nil {
+			return fmt.Errorf("failed to create directory %s: %v", path, err)
+		}
+		fmt.Printf("Directory created: %s\n", path)
+	} else if err != nil {
+		// 如果其他错误发生
+		return fmt.Errorf("error checking directory %s: %v", path, err)
+	} else {
+		// 如果路径存在
+		fmt.Printf("Directory already exists: %s\n", path)
+	}
+	return nil
+}
 
 func (kvs *KVServer) AnotherGarbageCollection() error {
 	err := kvs.MergedGarbageCollection()
@@ -57,6 +79,18 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	fmt.Printf("Starting garbage collection... -- another %v\n", kvs.numGC)
 	startTime := time.Now()
 
+	// 检查并创建 logPathToCheck
+	if err := ensurePathExists(logPathToCheck); err != nil {
+		fmt.Printf("Error with log path: %v\n", err)
+		return err
+	}
+
+	// 检查并创建 dbPathToCheck
+	if err := ensurePathExists(dbPathToCheck); err != nil {
+		fmt.Printf("Error with db path: %v\n", err)
+		return err
+	}
+
 	// 创建新的RocksDB实例===========
 	persister_new, err := kvs.NewPersister() // 创建一个新的用于保存key和index的persister
 	if err != nil {
@@ -69,10 +103,10 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	}
 
 	// 创建新的RaftState日志文件=============
-	parts := strings.SplitN(anotherNewRaftStateLogPath,".",2)
-	if len(parts) ==2 {
-		anotherNewRaftStateLogPath = fmt.Sprintf("%s%d.%s",parts[0],kvs.numGC,parts[1])
-	}else{
+	parts := strings.SplitN(anotherNewRaftStateLogPath, ".", 2)
+	if len(parts) == 2 {
+		anotherNewRaftStateLogPath = fmt.Sprintf("%s%d.%s", parts[0], kvs.numGC, parts[1])
+	} else {
 		// 如果没有扩展名
 		anotherNewRaftStateLogPath = fmt.Sprintf("%s%d", anotherNewRaftStateLogPath, kvs.numGC)
 	}
@@ -97,10 +131,10 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	// Create a temporary file for the merged sorted entries  1
 	// mergedSortedFilePath := kvs.lastSortedFileIndex.FilePath + "_merged"
 	var mergedSortedFilePath string
-	parts2 := strings.SplitN(kvs.lastSortedFileIndex.FilePath,".",2)
-	if len(parts) ==2 {
-		mergedSortedFilePath = fmt.Sprintf("%s%d.%s",parts2[0],kvs.numGC,parts2[1])
-	}else{
+	parts2 := strings.SplitN(kvs.lastSortedFileIndex.FilePath, ".", 2)
+	if len(parts) == 2 {
+		mergedSortedFilePath = fmt.Sprintf("%s%d.%s", parts2[0], kvs.numGC, parts2[1])
+	} else {
 		// 如果没有扩展名
 		mergedSortedFilePath = fmt.Sprintf("%s%d", anotherNewRaftStateLogPath, kvs.numGC)
 	}
