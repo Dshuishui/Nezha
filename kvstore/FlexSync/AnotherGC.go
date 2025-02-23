@@ -25,7 +25,7 @@ import (
 // var anotherSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_anotherSorted.log"
 var logPathToCheck = "/home/DYC/Gitee/FlexSync/raft/valuelog"
 var dbPathToCheck = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile"
-var anotherNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/newRaftState.log"
+var anotherNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/newRaftState_1"
 var anotherNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/newKeyIndex_1"
 
 const sortedFileCacheNums = 4000
@@ -98,12 +98,13 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	}
 
 	// 创建新的RaftState日志文件=============
-	parts := strings.SplitN(anotherNewRaftStateLogPath, ".", 2)
-	if len(parts) == 2 {
-		anotherNewRaftStateLogPath = fmt.Sprintf("%s%d.%s", parts[0], kvs.numGC+1, parts[1])
+	lastUnderscoreIndex = strings.LastIndex(anotherNewRaftStateLogPath, "_")
+	if lastUnderscoreIndex == -1 {
+		// 如果没有下划线，直接追加 kvs.numGC
+		anotherNewRaftStateLogPath = fmt.Sprintf("%s_%d", anotherNewRaftStateLogPath, kvs.numGC+1)
 	} else {
-		// 如果没有扩展名
-		anotherNewRaftStateLogPath = fmt.Sprintf("%s%d", anotherNewRaftStateLogPath, kvs.numGC+1)
+		// 提取下划线之前的部分，并追加新的 kvs.numGC
+		anotherNewRaftStateLogPath = fmt.Sprintf("%s_%d", anotherNewRaftStateLogPath[:lastUnderscoreIndex], kvs.numGC+1)
 	}
 	// anotherNewRaftStateLogPath = fmt.Sprintf("%s_%d", anotherNewRaftStateLogPath, kvs.numGC)
 	if _, err := os.Stat(anotherNewRaftStateLogPath); err == nil {
@@ -127,12 +128,13 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	// Create a temporary file for the merged sorted entries  1
 	// mergedSortedFilePath := kvs.lastSortedFileIndex.FilePath + "_merged"
 	var mergedSortedFilePath string
-	parts2 := strings.SplitN(kvs.lastSortedFileIndex.FilePath, ".", 2)
-	if len(parts) == 2 {
-		mergedSortedFilePath = fmt.Sprintf("%s%d.%s", parts2[0], kvs.numGC, parts2[1])
+	lastUnderscoreIndex = strings.LastIndex(kvs.lastSortedFileIndex.FilePath, "_")
+	if lastUnderscoreIndex == -1 {
+		// 如果没有下划线，直接追加 kvs.numGC
+		mergedSortedFilePath = fmt.Sprintf("%s_%d", mergedSortedFilePath, kvs.numGC+1)
 	} else {
-		// 如果没有扩展名
-		mergedSortedFilePath = fmt.Sprintf("%s%d", anotherNewRaftStateLogPath, kvs.numGC)
+		// 提取下划线之前的部分，并追加新的 kvs.numGC
+		mergedSortedFilePath = fmt.Sprintf("%s_%d", mergedSortedFilePath[:lastUnderscoreIndex], kvs.numGC+1)
 	}
 	// mergedSortedFilePath := fmt.Sprintf("%s_merged_%d", kvs.lastSortedFileIndex.FilePath, kvs.numGC)
 	kvs.anotherSortedFilePath = mergedSortedFilePath

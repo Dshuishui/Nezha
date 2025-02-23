@@ -21,8 +21,8 @@ import (
 //		key string
 //		offset int64
 //	}
-var firstSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_sorted.log"
-var firstNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/newRaftState.log"
+var firstSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_sorted_1"
+var firstNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/newRaftState_1"
 var firstNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/newKeyIndex_1"
 
 func (kvs *KVServer) FirstGarbageCollection() error {
@@ -30,12 +30,13 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	startTime := time.Now()
 
 	// Create a new file for sorted entries
-	parts := strings.SplitN(firstSortedFilePath, ".", 2)
-	if len(parts) == 2 {
-		firstSortedFilePath = fmt.Sprintf("%s%d.%s", parts[0], kvs.numGC+1, parts[1])
+	lastUnderscoreIndex := strings.LastIndex(firstSortedFilePath, "_")
+	if lastUnderscoreIndex == -1 {
+		// 如果没有下划线，直接追加 kvs.numGC
+		firstSortedFilePath = fmt.Sprintf("%s_%d", firstSortedFilePath, kvs.numGC+1)
 	} else {
-		// 如果没有扩展名
-		firstSortedFilePath = fmt.Sprintf("%s%d", firstSortedFilePath, kvs.numGC)
+		// 提取下划线之前的部分，并追加新的 kvs.numGC
+		firstSortedFilePath = fmt.Sprintf("%s_%d", firstSortedFilePath[:lastUnderscoreIndex], kvs.numGC+1)
 	}
 	if _, err := os.Stat(firstSortedFilePath); err == nil {
 		fmt.Println("Sorted file already exists. Skipping garbage collection.")
@@ -69,12 +70,13 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	}
 
 	// 创建新的RaftState日志文件
-	parts = strings.SplitN(firstNewRaftStateLogPath, ".", 2)
-	if len(parts) == 2 {
-		firstNewRaftStateLogPath = fmt.Sprintf("%s%d.%s", parts[0], kvs.numGC+1, parts[1])
+	lastUnderscoreIndex = strings.LastIndex(firstNewRaftStateLogPath, "_")
+	if lastUnderscoreIndex == -1 {
+		// 如果没有下划线，直接追加 kvs.numGC
+		firstNewRaftStateLogPath = fmt.Sprintf("%s_%d", firstNewRaftStateLogPath, kvs.numGC+1)
 	} else {
-		// 如果没有扩展名
-		firstNewRaftStateLogPath = fmt.Sprintf("%s%d", firstNewRaftStateLogPath, kvs.numGC)
+		// 提取下划线之前的部分，并追加新的 kvs.numGC
+		firstNewRaftStateLogPath = fmt.Sprintf("%s_%d", firstNewRaftStateLogPath[:lastUnderscoreIndex], kvs.numGC+1)
 	}
 	if _, err := os.Stat(firstNewRaftStateLogPath); err == nil {
 		fmt.Println("New RaftState log file already exists. Skipping creation.")
