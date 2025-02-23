@@ -131,11 +131,11 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	lastUnderscoreIndex = strings.LastIndex(kvs.lastSortedFileIndex.FilePath, "_")
 	if lastUnderscoreIndex == -1 {
 		// 如果没有下划线，直接追加 kvs.numGC
-		mergedSortedFilePath = fmt.Sprintf("%s_%d", mergedSortedFilePath, kvs.numGC)
+		mergedSortedFilePath = fmt.Sprintf("%s_%d", kvs.lastSortedFileIndex.FilePath, kvs.numGC)
 	} else {
 		// 提取下划线之前的部分，并追加新的 kvs.numGC
-		mergedSortedFilePath = fmt.Sprintf("%s_%d", mergedSortedFilePath[:lastUnderscoreIndex], kvs.numGC)
-	}
+		mergedSortedFilePath = fmt.Sprintf("%s_%d", kvs.lastSortedFileIndex.FilePath[:lastUnderscoreIndex], kvs.numGC)
+	}	
 	// mergedSortedFilePath := fmt.Sprintf("%s_merged_%d", kvs.lastSortedFileIndex.FilePath, kvs.numGC)
 	kvs.anotherSortedFilePath = mergedSortedFilePath
 	if _, err := os.Stat(mergedSortedFilePath); err == nil {
