@@ -451,7 +451,7 @@ func (kvs *KVServer) firstGCScan(startKey, endKey string) (map[string]string, er
 		// 只查询旧文件
 		go func() {
 			defer wg.Done()
-			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.oldPersister, kvs.oldLog)
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister, kvs.currentLog)
 			sortedChan <- scanResult{data: result.KeyValuePairs, err: nil}
 		}()
 		wg.Done()
