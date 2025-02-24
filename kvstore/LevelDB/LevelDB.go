@@ -724,7 +724,7 @@ func main() {
 	wg.Add(1 + 1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
 	// 初始化存储value的文件
-	InitialRaftStateLog := "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState.log"
+	InitialRaftStateLog := "/home/DYC/Gitee/FlexSync/raft/RaftState.log"
 	kvs.raft.SetCurrentLog(InitialRaftStateLog)
 	kvs.raft.Gap = gap
 	kvs.raft.SyncTime = syncTime
