@@ -793,9 +793,9 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 		oldFileResult := make(chan searchResult, 1)
 		lastSortedFileResult := make(chan searchResult, 1)
 
-		// 并行搜索旧文件（上一轮的新文件）
+		// 并行搜索旧文件（上一轮的新文件），这时候还没开始第二轮GC，文件还没切换
 		go func() {
-			positionBytes, err := kvs.oldPersister.Get_opt(key)
+			positionBytes, err := kvs.persister.Get_opt(key)
 			if err != nil {
 				oldFileResult <- searchResult{false, "", err}
 				return
@@ -804,19 +804,19 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 				oldFileResult <- searchResult{false, "", nil}
 				return
 			}
-			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
+			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
 			if err != nil {
 				oldFileResult <- searchResult{false, "", err}
 				return
 			}
-			if read_key == kvs.oldPersister.PadKey(key) {
+			if read_key == kvs.persister.PadKey(key) {
 				oldFileResult <- searchResult{true, value, nil}
 			} else {
 				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
 			}
 		}()
 
-		// 并行搜索排序文件
+		// 并行搜索排序文件，这个排序文件在第一轮GC完就已经切换，所以下面的不用改
 		go func() {
 			value, err := kvs.getFromSortedFile(key, kvs.lastSortedFileIndex)
 			if err != nil {
@@ -1010,7 +1010,7 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	// for { // 证明了此服务器就是leader
 	// if kvs.raft.GetApplyIndex() >= commitindex {
 	key := args.GetKey()
-	if !kvs.anotherStartGC { // 未开始第二轮GC
+	if kvs.FirstGC { // 未开始第二轮GC
 		reply = kvs.firstGCGet(key, reply)
 		return reply
 	}
@@ -2090,7 +2090,7 @@ func main() {
 			}
 
 			fileSizeGB := float64(fileInfo.Size()) / (1024 * 1024 * 1024)
-			if fileSizeGB <= 4000 {
+			if fileSizeGB <= 4 {
 				// fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.currentLog, fileSizeGB)
 				continue
 			}
@@ -2140,6 +2140,7 @@ func main() {
 						fmt.Println("垃圾回收出现了错误: ", err)
 						panic(err)
 					}
+					kvs.anotherStartGC, kvs.anotherEndGC = false, false
 					kvs.lastGCFinish = true
 					kvs.lastSortedFileIndex = kvs.anothersortedFileIndex // 更新本轮的变量为上一次
 					// 删除 oldLog指向的文件
