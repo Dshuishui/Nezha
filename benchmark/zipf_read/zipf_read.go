@@ -46,7 +46,7 @@ type getResult struct {
 }
 
 const (
-	KEY_SPACE = 20000000 // 键空间大小
+	KEY_SPACE = 400000 // 键空间大小
 	ZIPF_S    = 1.01   // Zipf 分布的偏度参数
 	ZIPF_V    = 1      // 最小值
 )
@@ -159,7 +159,7 @@ func (kvc *KVClient) SendGetInRaft(targetId int, request *kvrpc.GetInRaftRequest
 	}
 	defer conn.Close()
 	client := kvrpc.NewKVClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
 	defer cancel()
 	reply, err := client.GetInRaft(ctx, request)
 	if err != nil {
