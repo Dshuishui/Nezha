@@ -192,7 +192,7 @@ func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeReq
 
 	// for {
 	// 	if kvs.raft.GetApplyIndex() >= commitIndex {
-	if !kvs.anotherStartGC {
+	if kvs.FirstGC {
 		result, err := kvs.firstGCScan(in.StartKey, in.EndKey)
 		if err != nil {
 			reply.Err = "error in scan"
@@ -259,7 +259,7 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{
 				StartKey: startKey,
 				EndKey:   endKey,
-			}, kvs.oldPersister, kvs.oldLog)
+			}, kvs.persister, kvs.currentLog)
 			oldChan <- scanResult{data: result.KeyValuePairs, err: nil}
 		}()
 
@@ -2090,7 +2090,7 @@ func main() {
 			}
 
 			fileSizeGB := float64(fileInfo.Size()) / (1024 * 1024 * 1024)
-			if fileSizeGB <= 4 {
+			if fileSizeGB <= 40 {
 				// fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.currentLog, fileSizeGB)
 				continue
 			}
