@@ -391,7 +391,7 @@ func (kvs *KVServer) AnotherCreateIndex(SortedFilePath string) error {
 		fmt.Printf("Failed to create file descriptor pool: %v\n", err)
 		panic("创建文件描述符池失败")
 	}
-	fmt.Println("创建文件描述符池成功")
+	fmt.Println("创建排序文件描述符池成功")
 	// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
 
 	return nil

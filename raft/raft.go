@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"gitee.com/dong-shuishui/FlexSync/pool"
-	// "gitee.com/dong-shuishui/FlexSync/raft"
+	// "gitee.com/dong-shuishui/FlexSync/kvstore/FlexSync"
 	// "gitee.com/dong-shuishui/FlexSync/raft"
 	"gitee.com/dong-shuishui/FlexSync/rpc/raftrpc"
 
@@ -118,6 +118,7 @@ type Raft struct {
 	nullLogEntry   *raftrpc.LogEntry // 用于替换已应用的日志
 	lastNulled     int
 	numGC          int
+	filePool       *FilePool // 文件描述符池
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -367,12 +368,13 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, string, error) {
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
-	// 打开文件
-	file, err := os.Open(filename)
-	if err != nil {
-		return "", "", err
-	}
-	defer file.Close()
+	// 从文件池获取文件描述符
+    file, err := rf.filePool.Get()
+    if err != nil {
+        return "", "", err
+    }
+    defer rf.filePool.Put(file) // 使用完毕后归还到池中
+
 
 	if offset == -1 {
 		return "NOKEY", "", nil
@@ -384,14 +386,6 @@ func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, string
 		fmt.Println("get时，seek文件的位置有问题")
 		return "", "", err
 	}
-
-	// 获取文件信息
-	// fileInfo, err := file.Stat()
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// fileSize := fileInfo.Size()
-	// fmt.Printf("当前的offset: %v===filesize: %v\n", offset, fileSize)
 
 	// 读取数据到buffer中，首先是固定长度的20字节
 	header := make([]byte, 20)
@@ -784,6 +778,10 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
+	 // 关闭文件池
+	 if rf.filePool != nil {
+        rf.filePool.Close()
+    }
 }
 
 func (rf *Raft) killed() bool {
@@ -1656,6 +1654,13 @@ func Make(peers []string, me int,
 	rf.lastActiveTime = time.Now()
 	rf.applyCh = applyCh
 	rf.Offsets = append(rf.Offsets, 0) // 初始化时添加一个0，使得后续对index的访问和raft的对其，从1开始
+
+	// 初始化文件池
+    filePool, err := NewFilePool(rf.currentLog, 20) // 设置适当的池大小
+    if err != nil {
+        log.Fatalf("Failed to create file pool: %v", err)
+    }
+    rf.filePool = filePool
 
 	// 这就是自己修改grpc线程池option参数的做法
 	DesignOptions := pool.Options{
