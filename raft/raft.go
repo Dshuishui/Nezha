@@ -106,19 +106,19 @@ type Raft struct {
 	pools   []pool.Pool   // 用于日志同步的连接池
 	// kvrpc.UnimplementedKVServer
 	raftrpc.UnimplementedRaftServer
-	LastAppendTime time.Time
-	Gap            int
-	Offsets        []int64
-	shotOffset     int
-	SyncTime       int
-	SyncChans      []chan string
-	batchLog       []*Entry
-	batchLogSize   int64
-	currentLog     string            // 存储value的磁盘文件的描述符
-	nullLogEntry   *raftrpc.LogEntry // 用于替换已应用的日志
-	lastNulled     int
-	numGC          int
-	filePool       *FilePool // 文件描述符池
+	LastAppendTime  time.Time
+	Gap             int
+	Offsets         []int64
+	shotOffset      int
+	SyncTime        int
+	SyncChans       []chan string
+	batchLog        []*Entry
+	batchLogSize    int64
+	currentLog      string            // 存储value的磁盘文件的描述符
+	nullLogEntry    *raftrpc.LogEntry // 用于替换已应用的日志
+	lastNulled      int
+	numGC           int
+	filePoolManager *FilePoolManager // 文件描述符池管理器
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -181,12 +181,16 @@ func (rf *Raft) SetNumGC(numGC int) {
 func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
-	// 打开文件，如果文件不存在则创建
-	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	// 从文件池管理器获取文件池
+	filePool := rf.filePoolManager.GetPool(filename)
+
+	// 从文件池获取文件描述符
+	file, err := filePool.Get()
 	if err != nil {
-		log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
+		util.EPrintf("写入文件时，获取文件描述符失败：%v", err)
+		return
 	}
-	defer file.Close()
+	defer filePool.Put(file)
 
 	// 包装文件对象以进行缓冲写入
 	writer := bufio.NewWriter(file)
@@ -368,13 +372,17 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, string, error) {
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
-	// 从文件池获取文件描述符
-    file, err := rf.filePool.Get()
-    if err != nil {
-        return "", "", err
-    }
-    defer rf.filePool.Put(file) // 使用完毕后归还到池中
+	// 从文件池管理器获取文件池
+	filePool := rf.filePoolManager.GetPool(filename)
+	defer rf.filePoolManager.ReleasePool(filename) // 使用完毕后释放引用
 
+	// 从文件池获取文件描述符
+	file, err := filePool.Get()
+	if err != nil {
+		util.EPrintf("读取文件时，获取文件描述符失败：%v", err)
+		return "", "", err
+	}
+	defer filePool.Put(file) // 使用完毕后归还到池中
 
 	if offset == -1 {
 		return "NOKEY", "", nil
@@ -778,10 +786,10 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
-	 // 关闭文件池
-	 if rf.filePool != nil {
-        rf.filePool.Close()
-    }
+	// 关闭文件池
+	if rf.filePoolManager != nil {
+		rf.filePoolManager.Close()
+	}
 }
 
 func (rf *Raft) killed() bool {
@@ -1655,12 +1663,7 @@ func Make(peers []string, me int,
 	rf.applyCh = applyCh
 	rf.Offsets = append(rf.Offsets, 0) // 初始化时添加一个0，使得后续对index的访问和raft的对其，从1开始
 
-	// 初始化文件池
-    filePool, err := NewFilePool(rf.currentLog, 20) // 设置适当的池大小
-    if err != nil {
-        log.Fatalf("Failed to create file pool: %v", err)
-    }
-    rf.filePool = filePool
+	rf.filePoolManager = NewFilePoolManager(20, 5*time.Minute)
 
 	// 这就是自己修改grpc线程池option参数的做法
 	DesignOptions := pool.Options{
