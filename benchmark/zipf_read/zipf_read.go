@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"math/big"
 	"math/rand"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,10 +23,11 @@ import (
 )
 
 var (
-	ser   = flag.String("servers", "", "the Server, Client Connects to")
-	cnums = flag.Int("cnums", 1, "Client Threads Number")
-	dnums = flag.Int("dnums", 1000000, "data num")
-	key   = flag.Int("key", 6, "target key")
+	ser          = flag.String("servers", "", "the Server, Client Connects to")
+	cnums        = flag.Int("cnums", 1, "Client Threads Number")
+	dnums        = flag.Int("dnums", 1000000, "data num")
+	key          = flag.Int("key", 6, "target key")
+	outputFile   = flag.String("output", "benchmark_results.txt", "输出结果文件名")
 )
 
 type KVClient struct {
@@ -45,8 +49,19 @@ type getResult struct {
 	duration      time.Duration
 }
 
+type TestResult struct {
+	testNumber     int
+	elapsedTime    time.Duration
+	throughput     float64
+	goodPut        int
+	valueSize      int
+	clientThreads  int
+	dataSizeMB     float64
+	averageLatency time.Duration
+}
+
 const (
-	KEY_SPACE = 100000 // 键空间大小
+	KEY_SPACE = 25000000 // 键空间大小
 	ZIPF_S    = 1.01   // Zipf 分布的偏度参数
 	ZIPF_V    = 1      // 最小值
 )
@@ -283,7 +298,77 @@ func nrand() int64 { //随机生成clientId
 	return x
 }
 
-func runTest() (float64, time.Duration) {
+// 保存测试结果到文件
+func saveResultToFile(result TestResult, filePath string, isFirstTest bool) error {
+	// 确保目录存在
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("创建目录失败: %v", err)
+	}
+
+	// 打开文件，如果是第一次测试则覆盖文件，否则追加
+	flag := os.O_WRONLY | os.O_CREATE
+	if isFirstTest {
+		flag |= os.O_TRUNC
+	} else {
+		flag |= os.O_APPEND
+	}
+
+	file, err := os.OpenFile(filePath, flag, 0644)
+	if err != nil {
+		return fmt.Errorf("打开文件失败: %v", err)
+	}
+	defer file.Close()
+
+	// 如果是第一次测试，写入标题行
+	if isFirstTest {
+		header := "测试编号,耗时(秒),吞吐量(MB/S),成功请求数,值大小(字节),客户端线程数,数据总量(MB),平均延迟(ms)\n"
+		if _, err := file.WriteString(header); err != nil {
+			return fmt.Errorf("写入标题失败: %v", err)
+		}
+	}
+
+	// 写入测试结果
+	resultLine := fmt.Sprintf("%d,%.2f,%.4f,%d,%d,%d,%.2f,%.2f\n",
+		result.testNumber,
+		result.elapsedTime.Seconds(),
+		result.throughput,
+		result.goodPut,
+		result.valueSize,
+		result.clientThreads,
+		result.dataSizeMB,
+		float64(result.averageLatency.Microseconds())/1000, // 转换为毫秒
+	)
+
+	if _, err := file.WriteString(resultLine); err != nil {
+		return fmt.Errorf("写入结果失败: %v", err)
+	}
+
+	return nil
+}
+
+// 保存总结果到文件
+func saveSummaryToFile(filePath string, numTests int, avgThroughput float64, avgLatency time.Duration) error {
+	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+	if err != nil {
+		return fmt.Errorf("打开文件失败: %v", err)
+	}
+	defer file.Close()
+
+	// 添加空行和汇总信息
+	summary := fmt.Sprintf("\n汇总信息\n")
+	summary += fmt.Sprintf("%d 次测试的平均吞吐量: %.4f MB/S\n", numTests, avgThroughput)
+	summary += fmt.Sprintf("%d 次测试的总平均延迟: %.2f ms\n", numTests, float64(avgLatency.Microseconds())/1000)
+	summary += fmt.Sprintf("测试完成时间: %s\n", time.Now().Format("2006-01-02 15:04:05"))
+
+	if _, err := file.WriteString(summary); err != nil {
+		return fmt.Errorf("写入汇总信息失败: %v", err)
+	}
+
+	return nil
+}
+
+func runTest(testNumber int, filePath string) (float64, time.Duration) {
 	flag.Parse()
 	servers := strings.Split(*ser, ",")
 	kvc := new(KVClient)
@@ -297,31 +382,76 @@ func runTest() (float64, time.Duration) {
 	elapsedTime := time.Since(startTime)
 	sum_Size_MB := float64(kvc.goodPut*kvc.valuesize) / 1000000
 
-	fmt.Printf("Elapse: %v, Throughput: %.4f MB/S, Total: %v, GoodPut: %v, Value: %v, Client: %v, Size: %.2f MB, Average Latency: %v\n",
-		elapsedTime, throughput, *dnums, kvc.goodPut, kvc.valuesize, *cnums, sum_Size_MB, averageLatency)
+	fmt.Printf("测试 %d - Elapse: %v, Throughput: %.4f MB/S, Total: %v, GoodPut: %v, Value: %v, Client: %v, Size: %.2f MB, Average Latency: %v\n",
+		testNumber, elapsedTime, throughput, *dnums, kvc.goodPut, kvc.valuesize, *cnums, sum_Size_MB, averageLatency)
+
+	// 保存单次测试结果到文件
+	result := TestResult{
+		testNumber:     testNumber,
+		elapsedTime:    elapsedTime,
+		throughput:     throughput,
+		goodPut:        kvc.goodPut,
+		valueSize:      kvc.valuesize,
+		clientThreads:  *cnums,
+		dataSizeMB:     sum_Size_MB,
+		averageLatency: averageLatency,
+	}
+
+	// 如果是第一次测试，则会创建新文件
+	isFirstTest := testNumber == 1
+	if err := saveResultToFile(result, filePath, isFirstTest); err != nil {
+		fmt.Printf("保存测试结果失败: %v\n", err)
+	} else {
+		fmt.Printf("测试 %d 的结果已保存到 %s\n", testNumber, filePath)
+	}
 
 	return throughput, averageLatency
 }
 
 func main() {
-	numTests := 10
-	var totalThroughput float64
-	var totalAverageLatency time.Duration
+    flag.Parse()
+    numTests := 10
+    var totalThroughput float64
+    var totalAverageLatency time.Duration
 
-	for i := 0; i < numTests; i++ {
-		fmt.Printf("\n运行测试 %d / %d\n", i+1, numTests)
-		throughput, averageLatency := runTest()
-		totalThroughput += throughput
-		totalAverageLatency += averageLatency
+    // 获取源代码文件所在的目录
+    _, filename, _, ok := runtime.Caller(0)
+    var sourceDir string
+    if ok {
+        sourceDir = filepath.Dir(filename)
+    } else {
+        sourceDir = "."
+        fmt.Println("警告：无法获取源文件目录，将使用当前目录")
+    }
+    
+    resultFilePath := filepath.Join(sourceDir, *outputFile)
+    
+    fmt.Printf("测试结果将保存到: %s\n", resultFilePath)
+    fmt.Printf("开始运行 %d 次测试...\n\n", numTests)
 
-		if i < numTests-1 {
-			fmt.Println("等待5秒后进行下一次测试...")
-			time.Sleep(5 * time.Second)
-		}
-	}
+    for i := 0; i < numTests; i++ {
+        fmt.Printf("\n运行测试 %d / %d\n", i+1, numTests)
+        throughput, averageLatency := runTest(i+1, resultFilePath)
+        totalThroughput += throughput
+        totalAverageLatency += averageLatency
+
+        if i < numTests-1 {
+            fmt.Println("等待5秒后进行下一次测试...")
+            time.Sleep(5 * time.Second)
+        }
+    }
 
 	averageThroughput := totalThroughput / float64(numTests)
 	overallAverageLatency := totalAverageLatency / time.Duration(numTests)
+	
+	// 打印汇总信息到控制台
 	fmt.Printf("\n%d 次测试的平均吞吐量: %.4f MB/S\n", numTests, averageThroughput)
 	fmt.Printf("%d 次测试的总平均延迟: %v\n", numTests, overallAverageLatency)
+	
+	// 保存汇总信息到文件
+	if err := saveSummaryToFile(resultFilePath, numTests, averageThroughput, overallAverageLatency); err != nil {
+		fmt.Printf("保存汇总信息失败: %v\n", err)
+	} else {
+		fmt.Printf("汇总信息已保存到 %s\n", resultFilePath)
+	}
 }

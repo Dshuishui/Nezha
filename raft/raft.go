@@ -749,7 +749,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 			Value:       command.(*raftrpc.DetailCod).Value,
 		}
 		arrEntry := []*Entry{&entry_global}
-		rf.WriteEntryToFile(arrEntry, rf.currentLog, 0)
+		rf.WriteEntryToFile(arrEntry, "/home/DYC/Gitee/FlexSync/raft/originalKvs", 0)
 	}
 	// rf.batchLog = append(rf.batchLog, &entry)
 	// if err := enc.Encode(entry); err != nil {
@@ -770,6 +770,68 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// }
 	rf.log = append(rf.log, &logEntry) // 确保日志落盘之后，再更新log
 	rf.mu.Unlock()
+	// fmt.Printf("22222offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
+	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// rf.Offsets = append(rf.Offsets, offsets...)
+	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+
+	// util.DPrintf("RaftNode[%d] Add Command, logIndex[%d] currentTerm[%d]", rf.me, index, term)
+	return int32(index), int32(term), isLeader
+}
+
+func (rf *Raft) originalKvs(command interface{}) (int32, int32, bool) {
+	index := -1
+	term := -1
+	isLeader := true
+	// var buffer bytes.Buffer
+	// enc := gob.NewEncoder(&buffer)
+	// var fileSizeLimit int64 = 10 * 1024 * 1024 // 6MB
+	
+	// logEntry := LogEntry{
+	// 	Command: command.(DetailCod),
+	// 	Term:    int32(rf.currentTerm),
+	// }
+	logEntry := raftrpc.LogEntry{
+		Command: command.(*raftrpc.DetailCod),
+		Term:    int32(rf.currentTerm),
+	}
+	// fmt.Println("到这了嘛4")
+	index = rf.lastIndex() + 1 // 加一是为了除去空指令
+	term = rf.currentTerm
+	// fmt.Printf("11111offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
+	if logEntry.Command.OpType != "TermLog" { // 除去上任leader后的空指令
+		entry_global = Entry{
+			Index:       uint32(index),
+			CurrentTerm: uint32(term),
+			VotedFor:    uint32(rf.leaderId),
+			Key:         command.(*raftrpc.DetailCod).Key,
+			Value:       command.(*raftrpc.DetailCod).Value,
+		}
+		arrEntry := []*Entry{&entry_global}
+		rf.WriteEntryToFile(arrEntry, rf.currentLog, 0)
+	}
+	// rf.batchLog = append(rf.batchLog, &entry)
+	// if err := enc.Encode(entry); err != nil {
+	// 	util.EPrintf("Encode error in Start()：%v", err)
+	// }
+	// rf.batchLogSize += int64(buffer.Len())
+	// // 如果总大小超过3MB，截取日志数组并退出循环
+	// if rf.batchLogSize >= fileSizeLimit {
+	// 	rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
+	// go func() {
+	// 	err := rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
+	// 	if err != nil {
+	// 		fmt.Println("Error in WriteEntryToFile:", err)
+	// 	}
+	// }()
+	// 	buffer.Reset()
+	// 	rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
+	// }
+	// rf.log = append(rf.log, &logEntry) // 确保日志落盘之后，再更新log
+
 	// fmt.Printf("22222offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
 	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// if err != nil {
@@ -1551,6 +1613,7 @@ func (rf *Raft) applyLogLoop() {
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
 				rf.Offsets = rf.Offsets[1:]
 				rf.shotOffset++
+				rf.originalKvs(rf.log[rf.lastIndex()]) // original-kvs
 				if rf.lastApplied%rf.Gap == 0 {
 					// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, len(rf.Offsets))

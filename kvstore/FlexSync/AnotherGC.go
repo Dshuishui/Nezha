@@ -28,7 +28,7 @@ var dbPathToCheck = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile"
 var anotherNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/newRaftState_1"
 var anotherNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/newKeyIndex_1"
 
-const sortedFileCacheNums = 4000
+const sortedFileCacheNums = 400000
 
 // ensurePathExists 检查路径是否存在，如果不存在则创建它
 func ensurePathExists(path string) error {

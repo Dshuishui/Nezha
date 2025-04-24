@@ -217,7 +217,7 @@ func (kvs *KVServer) CreateIndex(firstSortedFilePath string) error {
 
 	// 初始化LRU缓存，设置合适的缓存大小
 	// 这里假设缓存40000个key-value对
-	err = kvs.initSortedFileCache(4000)
+	err = kvs.initSortedFileCache(sortedFileCacheNums)
 	if err != nil {
 		fmt.Printf("Failed to initialize LRU cache: %v\n", err)
 		return err

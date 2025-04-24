@@ -11,7 +11,7 @@ import (
 
 	"github.com/tecbot/gorocksdb"
 
-	//  "sync"
+	"sync"
 	"strings"
 	// "strconv"
 )
@@ -19,14 +19,15 @@ import (
 const KeyLength = 10
 
 var ErrKeyNotFound = errors.New("key not found")
+// var ErrNoKey = "NOKEY"
 
 type Persister struct {
 	// db *leveldb.DB
 	db *gorocksdb.DB
-	// ro   *gorocksdb.ReadOptions
-	// wo   *gorocksdb.WriteOptions
-	// muRO sync.Mutex
-	// muWO sync.Mutex
+	ro   *gorocksdb.ReadOptions
+	wo   *gorocksdb.WriteOptions
+	muRO sync.Mutex
+	muWO sync.Mutex
 }
 
 // PadKey 函数用于将给定的键填充到指定长度
@@ -53,86 +54,94 @@ func (p *Persister) UnpadKey(paddedKey string) string {
 	return strings.TrimLeft(paddedKey, "0")
 }
 
-// Init 初始化 RocksDB 数据库，并根据 `disableCache` 参数设置缓存
 func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
-	var err error
-	bbto := gorocksdb.NewDefaultBlockBasedTableOptions()
-	if !disableCache {
-		bbto.SetBlockCache(gorocksdb.NewLRUCache(3 << 30)) // 开关缓存
-	}
-	opts := gorocksdb.NewDefaultOptions()
-	opts.SetBlockBasedTableFactory(bbto)
-	opts.SetCreateIfMissing(true)
-
-	// 禁用缓存
-	bbto.SetNoBlockCache(true)               // 禁用块缓存
-	bbto.SetCacheIndexAndFilterBlocks(false) // 禁用索引和过滤器块的缓存
-	opts.SetBlockBasedTableFactory(bbto)
-	// 5. 关闭预读
-	opts.SetAllowMmapReads(false)
-	// 6. 禁用 Bloom Filter
-	// bbto.SetFilterPolicy(nil)
-
-	p.db, err = gorocksdb.OpenDb(opts, path)
-	if err != nil {
-		return nil, fmt.Errorf("open db failed: %w", err)
-	}
-	// return &Persister{		// 复用读写实例
-	// db: db,
-	// p.wo = gorocksdb.NewDefaultWriteOptions()
-	// p.ro = gorocksdb.NewDefaultReadOptions()
-	// p.muRO = sync.Mutex{}
-	// p.muWO = sync.Mutex{}
-	// },nil
-	return p, nil
+    var err error
+    bbto := gorocksdb.NewDefaultBlockBasedTableOptions()
+    opts := gorocksdb.NewDefaultOptions()
+    
+    if disableCache {
+        // 完全禁用所有缓存
+        bbto.SetNoBlockCache(true)               // 禁用块缓存
+        bbto.SetCacheIndexAndFilterBlocks(false) // 禁用索引和过滤器块的缓存
+        // bbto.SetFilterPolicy(nil)                // 禁用 Bloom Filter
+        opts.SetAllowMmapReads(false)            // 关闭预读/内存映射读取
+    } else {
+        // 启用缓存
+        bbto.SetBlockCache(gorocksdb.NewLRUCache(3 << 30))
+        bbto.SetCacheIndexAndFilterBlocks(true)
+    }
+    
+    opts.SetBlockBasedTableFactory(bbto)
+    opts.SetCreateIfMissing(true)
+    
+    p.db, err = gorocksdb.OpenDb(opts, path)
+    if err != nil {
+        return nil, fmt.Errorf("open db failed: %w", err)
+    }
+    
+    p.wo = gorocksdb.NewDefaultWriteOptions()
+	// p.wo.DisableWAL(true)  // pasv 这里添加，关闭 WAL
+    p.ro = gorocksdb.NewDefaultReadOptions()
+    
+    if disableCache {
+        p.ro.SetFillCache(false)  // 防止读取操作填充缓存
+    }
+    
+    p.muRO = sync.Mutex{}
+    p.muWO = sync.Mutex{}
+    
+    return p, nil
 }
 
-// func (p *Persister) Close() {
-// 	p.muRO.Lock()
-// 	defer p.muRO.Unlock()
-// 	if p.ro != nil {
-// 		p.ro.Destroy()
-// 		p.ro = nil
-// 	}
-// 	p.muWO.Lock()
-// 	defer p.muWO.Unlock()
-// 	if p.wo != nil {
-// 		p.wo.Destroy()
-// 		p.wo = nil
-// 	}
-// 	if p.db != nil {
-// 		p.db.Close()
-// 		p.db = nil
-// 	}
-// }
+func (p *Persister) Close() {
+	p.muRO.Lock()
+	defer p.muRO.Unlock()
+	if p.ro != nil {
+		p.ro.Destroy()
+		p.ro = nil
+	}
+	p.muWO.Lock()
+	defer p.muWO.Unlock()
+	if p.wo != nil {
+		p.wo.Destroy()
+		p.wo = nil
+	}
+	if p.db != nil {
+		p.db.Close()
+		p.db = nil
+	}
+}
 
 func (p *Persister) Put_opt(key string, value int64) {
-	wo := gorocksdb.NewDefaultWriteOptions()
-	defer wo.Destroy()
-	valueBytes := make([]byte, 8)
-	// for i := uint(0); i < 8; i++ {
-	// 	valueBytes[i] = byte((value >> (i * 8)) & 0xff)		// 一个字节一个字节的转换
-	// }
-	binary.LittleEndian.PutUint64(valueBytes, uint64(value))
-	paddedKey := p.PadKey(key)
-	// p.muWO.Lock()
-	// defer p.muWO.Unlock()
-	err := p.db.Put(wo, []byte(paddedKey), valueBytes)
-	if err != nil {
-		util.EPrintf("Put key %v value ** failed, err: %v", key, err)
-	}
+    // 不要创建新的 wo，使用对象中已经配置好的
+    // wo := gorocksdb.NewDefaultWriteOptions()
+    // defer wo.Destroy()
+    
+    valueBytes := make([]byte, 8)
+    binary.LittleEndian.PutUint64(valueBytes, uint64(value))
+    paddedKey := p.PadKey(key)
+    
+    p.muWO.Lock()
+    defer p.muWO.Unlock()
+    err := p.db.Put(p.wo, []byte(paddedKey), valueBytes)
+    if err != nil {
+        util.EPrintf("Put key %v value ** failed, err: %v", key, err)
+    }
 }
 
 func (p *Persister) Put(key string, value string) {
-	wo := gorocksdb.NewDefaultWriteOptions()
-	defer wo.Destroy()
-	paddedKey := p.PadKey(key)
-	// p.muWO.Lock()
-	// defer p.muWO.Unlock()
-	err := p.db.Put(wo, []byte(paddedKey), []byte(value))
-	if err != nil {
-		util.EPrintf("Put key %v value ** failed, err: %v", key, err)
-	}
+    // 不要创建新的 wo，使用对象中已经配置好的
+    // wo := gorocksdb.NewDefaultWriteOptions()
+    // defer wo.Destroy()
+    
+    paddedKey := p.PadKey(key)
+    
+    p.muWO.Lock()
+    defer p.muWO.Unlock()
+    err := p.db.Put(p.wo, []byte(paddedKey), []byte(value))
+    if err != nil {
+        util.EPrintf("Put key %v value ** failed, err: %v", key, err)
+    }
 }
 
 func (p *Persister) Get_opt(key string) (int64, error) {
