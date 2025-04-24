@@ -886,7 +886,7 @@ func (rf *Raft) originalKvs(command interface{}) (int32, int32, bool) {
 			Value:       command.(*raftrpc.DetailCod).Value,
 		}
 		arrEntry := []*Entry{&entry_global}
-		rf.WriteEntryToFile(arrEntry, "/home/DYC/Gitee/FlexSync/raft/originalKvs.log", 0)
+		rf.WriteEntryToFile_originalKvs(arrEntry, "/home/DYC/Gitee/FlexSync/raft/originalKvs.log", 0)
 	}
 	// rf.batchLog = append(rf.batchLog, &entry)
 	// if err := enc.Encode(entry); err != nil {
