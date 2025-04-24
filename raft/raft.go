@@ -252,6 +252,81 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 	rf.Offsets = append(rf.Offsets, offsets...)
 }
 
+func (rf *Raft) WriteEntryToFile_originalKvs(e []*Entry, filename string, startPos int64) {
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
+	// 打开文件，如果文件不存在则创建
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
+	}
+	defer file.Close()
+
+	// 包装文件对象以进行缓冲写入
+	writer := bufio.NewWriter(file)
+
+	// 获取当前写入位置，即为返回的偏移量
+	var offset int64
+	var offsets []int64
+	// var err error
+
+	// 预分配足够大的偏移量切片，避免了在循环中动态扩容偏移量切片的操作
+	offsets = make([]int64, len(e))
+
+	if startPos == 0 { // 0是直接追加
+		offset, err = file.Seek(0, os.SEEK_END)
+		if err != nil {
+			log.Fatalf("定位存储Raft日志的磁盘文件失败：%v", err)
+		}
+	} else { // 同步日志时，需要已有的日志与leader的冲突，需要覆盖之前的错误的
+		offset, err = file.Seek(startPos, os.SEEK_SET)
+		if err != nil {
+			log.Fatalf("定位存储Raft日志的磁盘文件的起始位置失败：%v", err)
+		}
+	}
+
+	for i, entry := range e {
+
+		valueSize := uint32(len(entry.Value))
+
+		paddedKey := rf.persister.PadKey(entry.Key) // 存入valuelog里面也用
+		keySize := uint32(len(paddedKey))
+		data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value
+
+		// 将数据编码到byte slice中
+		binary.LittleEndian.PutUint32(data[0:4], entry.Index)
+		binary.LittleEndian.PutUint32(data[4:8], entry.CurrentTerm)
+		binary.LittleEndian.PutUint32(data[8:12], entry.VotedFor)
+		binary.LittleEndian.PutUint32(data[12:16], keySize)
+		binary.LittleEndian.PutUint32(data[16:20], valueSize)
+
+		copy(data[20:20+keySize], paddedKey)
+		copy(data[20+keySize:], entry.Value)
+
+		// 写入文件
+		u, err := writer.Write(data)
+		if err != nil || u < len(data) {
+			log.Fatalf("写入存储Raft日志的磁盘文件失败：%v", err)
+		}
+
+		// _, err = file.Write(data)
+		// if err != nil {
+		// 	fmt.Println("写入存储Raft日志的磁盘文件有问题")
+		// }
+		// 添加偏移量到数组中
+		// offsets = append(offsets, offset)
+		offsets[i] = offset
+		offset += int64(len(data))
+	}
+	// 刷新缓冲区以确保数据被写入文件
+	err = writer.Flush()
+	if err != nil {
+		log.Fatalf("刷新缓冲区失败：%v", err)
+	}
+
+	// rf.Offsets = append(rf.Offsets, offsets...)
+}
+
 // func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) (offsets []int64, err error) {
 // 	rf.mu.Lock()
 // 	defer rf.mu.Unlock()
