@@ -108,7 +108,7 @@ func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
 
 func (p *Persister) Put_opt(key string, value int64) {
 	wo := gorocksdb.NewDefaultWriteOptions()
-	wo.DisableWAL(true)  // 禁用 WAL
+	// wo.DisableWAL(true)  // 禁用 WAL
 	defer wo.Destroy()
 	valueBytes := make([]byte, 8)
 	// for i := uint(0); i < 8; i++ {
@@ -126,7 +126,7 @@ func (p *Persister) Put_opt(key string, value int64) {
 
 func (p *Persister) Put(key string, value string) {
 	wo := gorocksdb.NewDefaultWriteOptions()
-	wo.DisableWAL(true)  // 禁用 WAL
+	// wo.DisableWAL(true)  // 禁用 WAL
 	defer wo.Destroy()
 	paddedKey := p.PadKey(key)
 	// p.muWO.Lock()
