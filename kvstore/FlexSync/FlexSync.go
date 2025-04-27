@@ -1147,7 +1147,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 			}
 		}
 	}()
-	timer := time.NewTimer(2 * time.Second)
+	timer := time.NewTimer(60 * time.Second)
 	defer timer.Stop()
 	select {
 	// 通道关闭或者有数据传入都会执行以下的分支
@@ -2090,7 +2090,7 @@ func main() {
 			}
 
 			fileSizeGB := float64(fileInfo.Size()) / (1024 * 1024 * 1024)
-			if fileSizeGB <= 40 {
+			if fileSizeGB <= 4000 {
 				// fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.currentLog, fileSizeGB)
 				continue
 			}
