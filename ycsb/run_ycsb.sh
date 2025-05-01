@@ -8,12 +8,12 @@ log_file="results.txt"
 
 # 定义工作负载及其对应的命令
 workloads=(
-  "C go run ./ycsb/A/mixLoad.go -cnums 1 -dnums 100000 -vsize 4000 -wratio 0 -servers 192.168.1.240:3088,192.168.1.241:3088"
-  "B go run ./ycsb/A/mixLoad.go -cnums 1 -dnums 100000 -vsize 4000 -wratio 0.05 -servers 192.168.1.240:3088,192.168.1.241:3088"
-  "D go run ./ycsb/D/D.go -cnums 1 -dnums 100000 -vsize 4000 -wratio 0.05 -servers 192.168.1.240:3088,192.168.1.241:3088"
-  "E go run ./ycsb/E/mixLoad_scan.go -cnums 1 -dnums 100000 -scansize 100 -vsize 4000 -wratio 0.05 -servers 192.168.1.240:3088,192.168.1.241:3088"
-  "A go run ./ycsb/A/mixLoad.go -cnums 1 -dnums 100000 -vsize 4000 -wratio 0.5 -servers 192.168.1.240:3088,192.168.1.241:3088"
-  "F go run ./ycsb/F/RMW.go -cnums 1 -dnums 100000 -vsize 4000 -wratio 0.5 -servers 192.168.1.240:3088,192.168.1.241:3088"
+  "C go run ./A/mixLoad.go -cnums 1 -dnums 100000 -vsize 4000 -wratio 0 -servers 192.168.1.240:3088,192.168.1.241:3088"
+  "B go run ./A/mixLoad.go -cnums 1 -dnums 100000 -vsize 4000 -wratio 0.05 -servers 192.168.1.240:3088,192.168.1.241:3088"
+  "D go run ./D/D.go -cnums 1 -dnums 100000 -vsize 4000 -wratio 0.05 -servers 192.168.1.240:3088,192.168.1.241:3088"
+  "E go run ./E/mixLoad_scan.go -cnums 1 -dnums 100000 -scansize 100 -vsize 4000 -wratio 0.05 -servers 192.168.1.240:3088,192.168.1.241:3088"
+  "A go run ./A/mixLoad.go -cnums 1 -dnums 100000 -vsize 4000 -wratio 0.5 -servers 192.168.1.240:3088,192.168.1.241:3088"
+  "F go run ./F/RMW.go -cnums 1 -dnums 100000 -vsize 4000 -wratio 0.5 -servers 192.168.1.240:3088,192.168.1.241:3088"
 )
 
 # 遍历每个工作负载
