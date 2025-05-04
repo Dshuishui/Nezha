@@ -15,6 +15,7 @@ raft/RaftState.log
 raft/RaftState_sorted.log
 raft/originalKvs.log
 raft/valuelog
+ycsb/result
 raft/RaftState_new.log
 run_server.sh
 run_client.sh
