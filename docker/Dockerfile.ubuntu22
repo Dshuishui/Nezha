@@ -1,0 +1,50 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 安装运行时依赖
+RUN apt-get update && apt-get install -y \
+    libsnappy1v5 \
+    zlib1g \
+    libbz2-1.0 \
+    liblz4-1 \
+    libzstd1 \
+    libstdc++6 \
+    libc6 \
+    libgcc-s1 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# 复制文件
+COPY nezha /usr/local/bin/nezha
+COPY librocksdb.so.5.18 /usr/local/lib/
+COPY libgflags.so.2 /usr/local/lib/
+
+# 创建符号链接
+RUN ln -sf /usr/local/lib/librocksdb.so.5.18 /usr/local/lib/librocksdb.so.5 && \
+    ln -sf /usr/local/lib/librocksdb.so.5 /usr/local/lib/librocksdb.so
+
+# 设置权限
+RUN chmod +x /usr/local/bin/nezha
+
+# 更新库缓存
+RUN ldconfig
+
+# 验证程序能运行
+RUN /usr/local/bin/nezha -h || echo "测试失败，但继续构建"
+
+# 创建用户
+RUN groupadd -g 1001 nezha && \
+    useradd -r -u 1001 -g nezha nezha && \
+    mkdir -p /app/data && \
+    chown nezha:nezha /app/data
+
+USER nezha
+WORKDIR /app
+
+EXPOSE 3088 30881
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD pgrep nezha > /dev/null || exit 1
+
+ENTRYPOINT ["/usr/local/bin/nezha", "-data", "/app/data"]

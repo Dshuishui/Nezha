@@ -1,0 +1,76 @@
+cat > docker-compose.yml << 'EOF'
+version: '3.8'
+
+services:
+  nezha-multigc-node1:
+    image: nezha-multigc:latest
+    container_name: nezha-multigc-node1
+    network_mode: "host"  # 使用主机网络模式
+    command: [
+      "-address", "127.0.0.1:3088",
+      "-internalAddress", "127.0.0.1:30881", 
+      "-peers", "127.0.0.1:30881,127.0.0.1:30882,127.0.0.1:30883",
+      "-data", "/app/data"
+    ]
+    volumes:
+      - nezha-multigc-data1:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "nezha"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  nezha-multigc-node2:
+    image: nezha-multigc:latest
+    container_name: nezha-multigc-node2
+    network_mode: "host"  # 使用主机网络模式
+    command: [
+      "-address", "127.0.0.1:3089",
+      "-internalAddress", "127.0.0.1:30882",
+      "-peers", "127.0.0.1:30881,127.0.0.1:30882,127.0.0.1:30883",
+      "-data", "/app/data"
+    ]
+    volumes:
+      - nezha-multigc-data2:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "nezha"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - nezha-multigc-node1
+
+  nezha-multigc-node3:
+    image: nezha-multigc:latest
+    container_name: nezha-multigc-node3
+    network_mode: "host"  # 使用主机网络模式
+    command: [
+      "-address", "127.0.0.1:3090",
+      "-internalAddress", "127.0.0.1:30883",
+      "-peers", "127.0.0.1:30881,127.0.0.1:30882,127.0.0.1:30883",
+      "-data", "/app/data"
+    ]
+    volumes:
+      - nezha-multigc-data3:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pgrep", "nezha"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - nezha-multigc-node1
+
+volumes:
+  nezha-multigc-data1:
+    driver: local
+  nezha-multigc-data2:
+    driver: local
+  nezha-multigc-data3:
+    driver: local
+EOF
