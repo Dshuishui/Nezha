@@ -55,7 +55,7 @@ Quick deployment using pre-built binaries for production environments.
 
 ### 🐳 **Method 3: Docker Container Deployment**
 Containerized deployment with full orchestration support for modern cloud environments.  
-👉 **[View Docker Documentation](https://github.com/Dshuishui/Nezha/tree/main/docker)**
+👉 **[View Docker Documentation](https://github.com/Dshuishui/Nezha/tree/multiGC/docker)**
 
 ---
 
