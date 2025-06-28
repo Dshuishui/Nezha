@@ -42,7 +42,24 @@ Nezha adopts a three-layer architectural design with deep optimization of consen
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Deployment Methods
+
+Nezha provides three deployment options to accommodate different environments and requirements:
+
+### 🔧 **Method 1: Source Code Compilation (Recommended for Development)**
+Complete control with custom compilation for optimal performance and debugging capabilities.
+
+### 📦 **Method 2: Pre-compiled Binary Deployment**
+Quick deployment using pre-built binaries for production environments.  
+👉 **[Download from GitHub Release V1.0.0-multiGC](https://github.com/Dshuishui/Nezha/releases/tag/V1.0.0-multiGC)**
+
+### 🐳 **Method 3: Docker Container Deployment**
+Containerized deployment with full orchestration support for modern cloud environments.  
+👉 **[View Docker Documentation](https://github.com/Dshuishui/Nezha/tree/main/docker)**
+
+---
+
+## 🔧 Method 1: Source Code Compilation Deployment
 
 ### Prerequisites
 
@@ -156,17 +173,17 @@ go run . -address IP3:3088 -internalAddress IP3:30881 \
 # Node 1 (execute on first machine)
 go run . -address IP1:3088 -internalAddress IP1:30881 \
          -peers IP1:30881,IP2:30881,IP3:30881 \
-         -data "/var/lib/flexsync/node1"
+         -data "/var/lib/nezha/node1"
 
 # Node 2 (execute on second machine)
 go run . -address IP2:3088 -internalAddress IP2:30881 \
          -peers IP1:30881,IP2:30881,IP3:30881 \
-         -data "/var/lib/flexsync/node2"
+         -data "/var/lib/nezha/node2"
 
 # Node 3 (execute on third machine)
 go run . -address IP3:3088 -internalAddress IP3:30881 \
          -peers IP1:30881,IP2:30881,IP3:30881 \
-         -data "/var/lib/flexsync/node3"
+         -data "/var/lib/nezha/node3"
 ```
 
 **Development Environment Example**
@@ -183,11 +200,11 @@ go run . -address localhost:3088 -internalAddress localhost:30881 \
 | `address` | Client access address and port | `192.168.1.10:3088` | Yes |
 | `internalAddress` | Raft internal communication address and port | `192.168.1.10:30881` | Yes |
 | `peers` | Raft address list of all nodes in the cluster | `IP1:30881,IP2:30881,IP3:30881` | Yes |
-| `data` | Data storage directory path | `/var/lib/flexsync` or `./data` | No (default: `.`) |
+| `data` | Data storage directory path | `/var/lib/nezha` or `./data` | No (default: `.`) |
 
 **Data Directory Structure**
 
-When you specify a data directory, FlexSync will create the following structure:
+When you specify a data directory, Nezha will create the following structure:
 ```
 <data_directory>/
 └── data/
@@ -201,11 +218,91 @@ When you specify a data directory, FlexSync will create the following structure:
         ├── newRaftState_*      # GC temporary log files
         └── ...
 ```
+
 **Storage Considerations**
 - Ensure sufficient disk space (files can grow to 40GB+ before garbage collection)
 - Use fast storage (SSD recommended) for better performance
 - Consider backup strategies for the data directory
 - Each node should have its own separate data directory to avoid conflicts
+
+---
+
+## 📦 Method 2: Pre-compiled Binary Deployment
+
+For users who prefer quick deployment without compilation complexity:
+
+### Quick Start with Pre-built Binaries
+
+1. **Download Release Package**
+   ```bash
+   # Download the latest release
+   wget https://github.com/Dshuishui/Nezha/releases/download/V1.0.0-multiGC/nezha-multiGC-linux-x86_64.tar.gz
+   
+   # Extract files
+   tar -xzf nezha-multiGC-linux-x86_64.tar.gz
+   cd nezha-multiGC-linux-x86_64
+   ```
+
+2. **Deploy and Run**
+   ```bash
+   # Make binary executable
+   chmod +x nezha
+   
+   # Start cluster nodes (same commands as Method 1, but use ./nezha instead of go run .)
+   ./nezha -address IP1:3088 -internalAddress IP1:30881 \
+           -peers IP1:30881,IP2:30881,IP3:30881 \
+           -data "/var/lib/nezha/node1"
+   ```
+
+### Features
+- ✅ **No compilation required** - Ready to run out of the box
+- ✅ **All dependencies included** - RocksDB and gflags libraries bundled
+- ✅ **Production optimized** - Built with performance optimizations
+- ✅ **Cross-platform support** - Available for multiple architectures
+
+👉 **[View complete pre-compiled deployment guide and download latest release](https://github.com/Dshuishui/Nezha/releases/tag/V1.0.0-multiGC)**
+
+---
+
+## 🐳 Method 3: Docker Container Deployment
+
+For modern containerized environments and cloud-native deployments:
+
+### Quick Start with Docker
+
+1. **Single Command Cluster Setup**
+   ```bash
+   # Clone repository for Docker files
+   git clone https://github.com/Dshuishui/Nezha.git
+   cd Nezha/docker
+   
+   # One-command cluster deployment
+   ./manage.sh start
+   ```
+
+2. **Access Your Cluster**
+   ```bash
+   # Check cluster status
+   ./manage.sh status
+   
+   # View logs
+   ./manage.sh logs
+   ```
+
+### Features
+- ✅ **One-click deployment** - Full cluster setup with single command
+- ✅ **Docker Compose support** - Multi-node orchestration included
+- ✅ **Development friendly** - Perfect for local testing and development
+- ✅ **Production ready** - Configurable for production environments
+- ✅ **Resource management** - Built-in resource limits and monitoring
+
+### Container Architecture
+- **Three-node cluster simulation** on single host
+- **Automated networking** with Docker Compose
+- **Persistent volumes** for data storage
+- **Health checks** and monitoring included
+
+👉 **[View complete Docker deployment guide and configuration options](https://github.com/Dshuishui/Nezha/tree/multiGC/docker)**
 
 ---
 
@@ -254,11 +351,18 @@ go run ./benchmark/scan_pro/scan_pro.go \
 ## 📁 Project Structure
 
 ```
-FlexSync/
+Nezha/
 ├── main.go                     # Main program entry
 ├── go.mod & go.sum            # Go module dependency management
 ├── client.txt                 # Client test command examples
 ├── setup-go.sh               # Go environment setup script
+│
+├── docker/                    # 🐳 Docker deployment files
+│   ├── README.md              # Docker deployment guide
+│   ├── Dockerfile.ubuntu24    # Container image definition
+│   ├── docker-compose.yml     # Multi-node orchestration
+│   ├── manage.sh              # Cluster management script
+│   └── build.sh               # Image build script
 │
 ├── kvstore/                   # Core storage service layer
 │   ├── FlexSync/              # KVS-Raft core implementation
@@ -346,7 +450,6 @@ netstat -tulpn | grep :30881
 # Check firewall settings
 sudo ufw status
 ```
-
 
 **4. RocksDB Compilation Error with Missing cstdint Headers**
 
