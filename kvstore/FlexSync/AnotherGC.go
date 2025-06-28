@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"io"
@@ -23,12 +24,20 @@ import (
 //	}
 //
 // var anotherSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_anotherSorted.log"
-var logPathToCheck = "/home/DYC/Gitee/FlexSync/raft/valuelog"
-var dbPathToCheck = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile"
-var anotherNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/newRaftState_1"
-var anotherNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/newKeyIndex_1"
+
+// 修改这些全局变量的路径，需要在运行时根据用户指定的data目录动态设置
+var (
+	anotherNewRaftStateLogPath string
+	anotherNewPersisterPath    string
+)
 
 const sortedFileCacheNums = 400000
+
+// 在main函数中或者适当的地方初始化这些路径（添加到之前的InitGCPaths函数中）
+func InitAnotherGCPaths(dataDir string) {
+	anotherNewRaftStateLogPath = filepath.Join(dataDir, "data", "valuelog", "newRaftState_1")
+	anotherNewPersisterPath = filepath.Join(dataDir, "data", "dbfile", "newKeyIndex_1")
+}
 
 // ensurePathExists 检查路径是否存在，如果不存在则创建它
 func ensurePathExists(path string) error {

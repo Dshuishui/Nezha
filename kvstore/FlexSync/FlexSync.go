@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 
 	// "sort"
 
@@ -63,6 +64,7 @@ var (
 	peers_arg           = flag.String("peers", "", "Input Your Peers")
 	gap_arg             = flag.String("gap", "", "Input Your gap")
 	syncTime_arg        = flag.String("syncTime", "", "Input Your syncTime")
+	data_arg            = flag.String("data", ".", "Input Your data storage directory") // 新增data参数，默认为当前目录
 )
 
 const (
@@ -2008,6 +2010,11 @@ func (kvs *KVServer) applyLoop() {
 	}
 }
 
+var (
+	logPathToCheck string
+	dbPathToCheck  string
+)
+
 func main() {
 	// peers inputed by command line
 	flag.Parse()
@@ -2016,6 +2023,22 @@ func main() {
 	internalAddress := *internalAddress_arg // 取出指针所指向的值，存入internalAddress变量
 	address := *address_arg
 	peers := strings.Split(*peers_arg, ",") // 将逗号作为分隔符传递给strings.Split函数，以便将peers_arg字符串分割成多个子字符串，并存储在peers的切片中
+	dataDir := *data_arg                    // 获取用户指定的数据目录
+	
+	// 如果dataDir是相对路径"."，转换为绝对路径
+	if dataDir == "." {
+		var err error
+		dataDir, err = os.Getwd()
+		if err != nil {
+			log.Fatalf("Failed to get current directory: %v", err)
+		}
+	}
+	
+	// 确保数据目录存在
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		log.Fatalf("Failed to create data directory %s: %v", dataDir, err)
+	}
+	
 	kvs := MakeKVServer(address, internalAddress, peers)
 
 	// Raft层
@@ -2025,6 +2048,10 @@ func main() {
 	kvs.reqMap = make(map[int]*OpContext)
 	kvs.seqMap = make(map[int64]int64)
 	kvs.lastAppliedIndex = 0
+
+	// 使用用户指定的数据目录构建路径
+	logPathToCheck = filepath.Join(dataDir, "data", "valuelog")
+	dbPathToCheck = filepath.Join(dataDir, "data", "dbfile")
 
 	// 检查并创建 logPathToCheck
 	if err := ensurePathExists(logPathToCheck); err != nil {
@@ -2038,7 +2065,8 @@ func main() {
 		return
 	}
 
-	InitialPersister := "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/keyIndex"
+	// 使用用户指定的数据目录构建完整路径
+	InitialPersister := filepath.Join(dataDir, "data", "dbfile", "keyIndex")
 	_, err := kvs.persister.Init(InitialPersister, true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
@@ -2050,22 +2078,12 @@ func main() {
 	kvs.anotherEndGC = false
 	kvs.FirstGC = true
 
-	// 初始化存储value的文件
-	kvs.InitialRaftStateLog = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState.log"
+	// 初始化存储value的文件，使用用户指定的数据目录
+	kvs.InitialRaftStateLog = filepath.Join(dataDir, "data", "valuelog", "RaftState.log")
 	kvs.currentLog = kvs.InitialRaftStateLog
-	// InitialRaftStateLog, err := os.Create(currentLog)
-	// if err != nil {
-	// 	log.Fatalf("Failed to create new RaftState log: %v", err)
-	// }
-	// defer newRaftStateLog.Close()
 
-	// kvs.oldLog = "/home/DYC/Gitee/FlexSync/raft/RaftState_sorted.log"
-	// kvs.currentLog = kvs.oldLog
-	// _, err := kvs.oldPersister.Init(InitialPersister, true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
-	// if err != nil {
-	// 	log.Fatalf("Failed to initialize database: %v", err)
-	// }
-	// defer persister.Close()
+	InitGCPaths(dataDir)
+	InitAnotherGCPaths(dataDir)
 
 	go kvs.applyLoop()
 	// ctx, cancel := context.WithCancel(context.Background())	// 用于控制goroutine的生命周期

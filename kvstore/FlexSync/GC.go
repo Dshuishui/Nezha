@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 
 	// "io"
@@ -17,14 +18,19 @@ import (
 	"github.com/tecbot/gorocksdb"
 )
 
-//	type keyOffset struct{
-//		key string
-//		offset int64
-//	}
-var firstSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_sorted_1"
-var firstNewRaftStateLogPath = "/home/DYC/Gitee/FlexSync/raft/valuelog/newRaftState_1"
-var firstNewPersisterPath = "/home/DYC/Gitee/FlexSync/kvstore/FlexSync/dbfile/newKeyIndex_1"
+// 修改这三个全局变量的路径，需要在运行时根据用户指定的data目录动态设置
+var (
+	firstSortedFilePath       string
+	firstNewRaftStateLogPath  string
+	firstNewPersisterPath     string
+)
 
+// 在main函数中或者适当的地方初始化这些路径
+func InitGCPaths(dataDir string) {
+	firstSortedFilePath = filepath.Join(dataDir, "data", "valuelog", "RaftState_sorted_1")
+	firstNewRaftStateLogPath = filepath.Join(dataDir, "data", "valuelog", "newRaftState_1")
+	firstNewPersisterPath = filepath.Join(dataDir, "data", "dbfile", "newKeyIndex_1")
+}
 func (kvs *KVServer) FirstGarbageCollection() error {
 	fmt.Println("Starting garbage collection...")
 	startTime := time.Now()
