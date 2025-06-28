@@ -20,7 +20,7 @@ docker/
 └── libgflags.so.2           # gflags library file *
 ```
 
-**Note:** Files marked with `*` are large library files (approximately 135MB total) and are not included directly in the Git repository. These files can be obtained from the `nezha-multiGC-linux-x86_64.tar.gz` archive in [GitHub Release V1.0.0-multiGC](https://github.com/your-username/nezha/releases/tag/V1.0.0-multiGC).
+**Note:** Files marked with `*` are large library files (approximately 135MB total) and are not included directly in the Git repository. These files can be obtained from the `nezha-multiGC-linux-x86_64.tar.gz` archive in [GitHub Release V1.0.0-multiGC](https://github.com/Dshuishui/Nezha/releases/tag/V1.0.0-multiGC).
 
 ## 🚀 Quick Start
 
