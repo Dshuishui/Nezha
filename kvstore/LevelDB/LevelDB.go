@@ -264,11 +264,15 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 
 func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) (*kvrpc.PutInRaftResponse, error) {
 	// fmt.Println("走到了server端的put函数")
+	startTime := time.Now() // 总开始时间
 	reply := kvs.StartPut(in)
+	endTime := time.Now() // 总结束时间
+	fmt.Printf("执行总时间：%v", endTime.Sub(startTime))
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
 	}
 	return reply, nil
+
 
 	// 创建一个用于接收处理结果的通道
 	// resultCh := make(chan *kvrpc.PutInRaftResponse)
