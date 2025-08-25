@@ -301,7 +301,12 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 
 	// 写入raft层
 	var isLeader bool
+	// T1开始 - Raft日志持久化阶段
+	t1Start := time.Now()
 	op.Index, op.Term, isLeader = kvs.raft.Start(&op)
+	t1End := time.Now()
+	t1Duration := t1End.Sub(t1Start)
+	fmt.Printf("T1 (Raft日志持久化) duration: %v\n", t1Duration)
 	if !isLeader {
 		// fmt.Println("不是leader，返回")
 		reply.Err = raft.ErrWrongLeader
@@ -535,6 +540,8 @@ func (kvs *KVServer) applyLoop() {
 		case msg := <-kvs.applyCh:
 			// 如果是安装快照
 			if msg.CommandValid {
+				// T4开始 - 实际存储操作开始
+				t4Start := time.Now()
 				cmd := msg.Command
 				index := msg.CommandIndex
 				cmdTerm := msg.CommandTerm
@@ -592,6 +599,9 @@ func (kvs *KVServer) applyLoop() {
 						// } else if existOp { // 虽然该请求的处理还未超时，但是已经处理过了。
 						// opCtx.ignored = true
 						// }
+						t4End := time.Now()
+						t4Duration := t4End.Sub(t4Start)
+						fmt.Println("T4 (存储操作) 持续时间:", t4Duration)
 					} else { // OP_TYPE_GET
 						if existOp { // 如果是GET请求，只要没超时，都可以进行幂等处理
 							// opCtx.value, opCtx.keyExist = kvs.kvStore[op.Key]	// --------------------------------------------
@@ -724,7 +734,7 @@ func main() {
 	wg.Add(1 + 1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
 	// 初始化存储value的文件
-	InitialRaftStateLog := "/home/DYC/Gitee/FlexSync/raft/RaftState.log"
+	InitialRaftStateLog := "./raft/RaftState.log"
 	kvs.raft.SetCurrentLog(InitialRaftStateLog)
 	kvs.raft.Gap = gap
 	kvs.raft.SyncTime = syncTime

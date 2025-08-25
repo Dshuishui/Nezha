@@ -1071,8 +1071,11 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 }
 
 func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) (*kvrpc.PutInRaftResponse, error) {
-	// fmt.Println("走到了server端的put函数")
+	// fmt.Println("走到了server端的put函数"
+	startTime := time.Now() // 总开始时间
 	reply := kvs.StartPut(in)
+	endTime := time.Now() // 总结束时间
+	fmt.Printf("执行总时间：%v", endTime.Sub(startTime))
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
 	}
@@ -1113,7 +1116,12 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 
 	// 写入raft层
 	var isLeader bool
+	// T1开始 - Raft日志持久化阶段
+	t1Start := time.Now()
 	op.Index, op.Term, isLeader = kvs.raft.Start(&op)
+	t1End := time.Now()
+	t1Duration := t1End.Sub(t1Start)
+	fmt.Printf("T1 (Raft日志持久化) duration: %v\n", t1Duration)
 	if !isLeader {
 		// fmt.Println("不是leader，返回")
 		reply.Err = raft.ErrWrongLeader
@@ -1901,7 +1909,8 @@ func (kvs *KVServer) applyLoop() {
 			// fmt.Printf("asdasd\n")
 			// 如果是安装快照
 			if msg.CommandValid {
-				// fmt.Printf("aasd")
+				// T4开始 - 实际存储操作开始
+				t4Start := time.Now()
 				cmd := msg.Command
 				index := msg.CommandIndex
 				cmdTerm := msg.CommandTerm
@@ -1965,7 +1974,10 @@ func (kvs *KVServer) applyLoop() {
 							kvs.oldPersister.Put_opt(op.Key, offset) //  Nezha
 							// kvs.oldPersister.Put(op.Key, op.Value)		//  original
 						}
-
+						// T4结束 - 存储操作完成
+						t4End := time.Now()
+						t4Duration := t4End.Sub(t4Start)
+						fmt.Println("T4 (存储操作) 持续时间:", t4Duration)
 						// kvs.persister.Put(op.Key, []byte(op.Value))
 						// fmt.Println("length:",len(positionBytes))
 						// fmt.Println("length:",len([]byte(op.Value)))
@@ -2024,7 +2036,7 @@ func main() {
 	address := *address_arg
 	peers := strings.Split(*peers_arg, ",") // 将逗号作为分隔符传递给strings.Split函数，以便将peers_arg字符串分割成多个子字符串，并存储在peers的切片中
 	dataDir := *data_arg                    // 获取用户指定的数据目录
-	
+
 	// 如果dataDir是相对路径"."，转换为绝对路径
 	if dataDir == "." {
 		var err error
@@ -2033,12 +2045,12 @@ func main() {
 			log.Fatalf("Failed to get current directory: %v", err)
 		}
 	}
-	
+
 	// 确保数据目录存在
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		log.Fatalf("Failed to create data directory %s: %v", dataDir, err)
 	}
-	
+
 	kvs := MakeKVServer(address, internalAddress, peers)
 
 	// Raft层
