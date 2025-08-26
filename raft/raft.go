@@ -1506,7 +1506,7 @@ func (rf *Raft) appendEntriesLoop() {
 					if peerId == rf.me {
 						continue
 					}
-					rf.doHeartBeat(peerId)
+					// rf.doHeartBeat(peerId)
 				}
 				rf.LastAppendTime = time.Now()
 			}
