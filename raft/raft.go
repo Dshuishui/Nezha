@@ -1263,7 +1263,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				t2End := time.Now()
 				t2Duration := t2End.Sub(t2Start)
 				fmt.Println("T2(Distribution) duration:", t2Duration)
-				fmt.Println("此次分发的日志条数：", len(args.Entries), "分发的日志内容：", args.Entries)
+				fmt.Println("此次分发的日志条数：\n", len(args.Entries))
 			}
 
 			rf.mu.Lock()
