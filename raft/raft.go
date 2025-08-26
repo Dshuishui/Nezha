@@ -1221,7 +1221,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// 设置日志同步的阈值
 	// fmt.Println("The length of appendlog:",len(rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]))
 	// T2开始 - 分发日志阶段
-	t2Start := time.Now()
+	// t2Start := time.Now()
 	for i := rf.index2LogPos(int(args.PrevLogIndex) + 1); i < len(rf.log); i++ {
 		if rf.log[i] == nil {
 			fmt.Printf("rf.log的第%v个为nil\n", i)
@@ -1258,8 +1258,8 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	go func(peerId int) {
 		// util.DPrintf("RaftNode[%d] appendEntries starts, myTerm[%d] peerId[%d]", rf.me, args.Term, args.LeaderId)
 		if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
-			t2End := time.Now()
-			t2Duration := t2End.Sub(t2Start)
+			// t2End := time.Now()
+			// t2Duration := t2End.Sub(t2Start)
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
 			// defer func() {
@@ -1286,8 +1286,8 @@ func (rf *Raft) doAppendEntries(peerId int) {
 			// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
 			// 因此这里得根据发出RPC请求时的状态做更新，而不要直接对nextIndex和matchIndex做相对加减
 			if reply.Success { // 同步日志成功
-				fmt.Printf("T2(Distribution):%v T3(Consensus):%v\n",
-					t2Duration, time.Since(t2Start))
+				// fmt.Printf("T2(Distribution):%v T3(Consensus):%v\n",
+					// t2Duration, time.Since(t2Start))
 				rf.nextIndex[peerId] = int(args.PrevLogIndex) + len(appendLog) + 1
 				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // 记录已经复制到其他server的日志的最后index的情况
 				rf.updateCommitIndex()                           // 更新commitIndex

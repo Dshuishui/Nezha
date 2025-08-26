@@ -273,7 +273,6 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 	}
 	return reply, nil
 
-
 	// 创建一个用于接收处理结果的通道
 	// resultCh := make(chan *kvrpc.PutInRaftResponse)
 	// // 在 goroutine 中处理请求
@@ -325,7 +324,8 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 		// 保存RPC上下文，等待提交回调，可能会因为Leader变更覆盖同样Index，不过前一个RPC会超时退出并令客户端重试
 		kvs.reqMap[int(op.Index)] = opCtx
 	}()
-
+	// T2+T3开始 - 从Raft Start完成到等待apply完成（包含分发和共识）
+	t2t3Start := time.Now()
 	// 超时后，结束apply请求的RPC，清理该请求index的上下文
 	defer func() {
 		kvs.mu.Lock()
@@ -342,6 +342,9 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 	select {
 	// 通道关闭或者有数据传入都会执行以下的分支
 	case <-opCtx.committed: // ApplyLoop函数执行完后，会关闭committed通道，再根据相关的值设置请求reply的结果
+		t2t3End := time.Now()
+		t2t3Duration := t2t3End.Sub(t2t3Start)
+		fmt.Println("T2+T3 (等待apply完成) 持续时间:", t2t3Duration)
 		if opCtx.wrongLeader { // 同样index位置的term不一样了, 说明leader变了，需要client向新leader重新写入
 			reply.Err = raft.ErrWrongLeader
 			// fmt.Println("走了哪个操作1")
