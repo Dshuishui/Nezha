@@ -1259,7 +1259,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 		// T2开始 - 分发日志阶段
 		t2Start := time.Now()
 		if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
-			if args.Entries != nil {
+			if len(args.Entries) != 0 {
 				t2End := time.Now()
 				t2Duration := t2End.Sub(t2Start)
 				fmt.Println("T2(Distribution) duration:", t2Duration)
