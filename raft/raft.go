@@ -1263,6 +1263,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				t2End := time.Now()
 				t2Duration := t2End.Sub(t2Start)
 				fmt.Println("T2(Distribution) duration:", t2Duration)
+				fmt.Println("此次分发的日志条数：", len(args.Entries), "分发的日志内容：", args.Entries)
 			}
 
 			rf.mu.Lock()
@@ -1500,16 +1501,16 @@ func (rf *Raft) appendEntriesLoop() {
 				}
 				First = false
 			}
-			now := time.Now() // 心跳
-			if now.Sub(rf.LastAppendTime) > 1000*time.Millisecond {
-				for peerId := 0; peerId < len(rf.peers); peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
-					if peerId == rf.me {
-						continue
-					}
-					// rf.doHeartBeat(peerId)
-				}
-				rf.LastAppendTime = time.Now()
-			}
+			// now := time.Now() // 心跳
+			// if now.Sub(rf.LastAppendTime) > 1000*time.Millisecond {
+			// 	for peerId := 0; peerId < len(rf.peers); peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
+			// 		if peerId == rf.me {
+			// 			continue
+			// 		}
+			// 		// rf.doHeartBeat(peerId)
+			// 	}
+			// 	rf.LastAppendTime = time.Now()
+			// }
 
 			select {
 			case value1 := <-rf.SyncChans[0]:
