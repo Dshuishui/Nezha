@@ -54,6 +54,8 @@ type ComparisonResult struct {
 	MemoryPeak    uint64
 	MemoryAfter   uint64
 	DataIntegrity bool
+	WALSizeAtWrite int64        // 写入完成时的WAL大小
+    WALSizeAtRecovery int64     // 恢复时的WAL大小（用于调试）
 }
 
 func NewWALComparisonTest(testType TestType, recordCount int, valueSize int) *WALComparisonTest {
@@ -262,7 +264,7 @@ func (wct *WALComparisonTest) getWALSize() (int64, error) {
 }
 
 // 写入测试数据
-func (wct *WALComparisonTest) writeTestData() error {
+func (wct *WALComparisonTest) writeTestData() (int64, error) {
 	wo := gorocksdb.NewDefaultWriteOptions()
 	defer wo.Destroy()
 	
@@ -305,7 +307,7 @@ func (wct *WALComparisonTest) writeTestData() error {
 		err := wct.DB.Write(wo, batch)
 		batch.Destroy()
 		if err != nil {
-			return fmt.Errorf("批量写入失败: %v", err)
+			return -1,fmt.Errorf("批量写入失败: %v", err)
 		}
 		
 		// 显示进度
@@ -335,7 +337,7 @@ func (wct *WALComparisonTest) writeTestData() error {
 		err := wct.DB.Write(wo, batch)
 		batch.Destroy()
 		if err != nil {
-			return fmt.Errorf("写入剩余记录失败: %v", err)
+			return -1,fmt.Errorf("写入剩余记录失败: %v", err)
 		}
 	}
 	
@@ -343,7 +345,7 @@ func (wct *WALComparisonTest) writeTestData() error {
 	fmt.Printf(" 完成! (WAL大小: %.2f MB)\n", float64(finalWALSize)/(1024*1024))
 	wct.logfToFile("数据写入完成，WAL大小: %.2f MB\n", float64(finalWALSize)/(1024*1024))
 	
-	return nil
+	return finalWALSize, nil
 }
 
 // 模拟异常中断
@@ -400,7 +402,7 @@ func (wct *WALComparisonTest) measureRecovery() (ComparisonResult, error) {
 	result.MemoryAfter = getMemoryUsage()
 	
 	// 获取WAL大小
-	result.WALSize, _ = wct.getWALSize()
+	// result.WALSize, _ = wct.getWALSize()
 	
 	fmt.Printf("完成 (耗时: %v, 内存峰值: %.2f MB)\n", 
 		recoveryTime, float64(result.MemoryPeak)/(1024*1024))
@@ -500,12 +502,12 @@ func runComparisonTest(testType TestType, recordCount int, valueSize int, logFil
 	}
 	
 	// 3. 写入测试数据
-	err = test.writeTestData()
+	walSize, err := test.writeTestData()
 	if err != nil {
 		log.Printf("写入数据失败: %v", err)
 		return ComparisonResult{}
 	}
-	
+
 	// 4. 模拟异常中断
 	test.simulateCrash()
 	time.Sleep(500 * time.Millisecond)
@@ -518,7 +520,9 @@ func runComparisonTest(testType TestType, recordCount int, valueSize int, logFil
 	}
 	
 	// 6. 验证数据完整性
+	result.WALSizeAtWrite = walSize  // 保存写入时的WAL大小
 	result.DataIntegrity = test.verifyDataIntegrity()
+	result.WALSize = result.WALSizeAtWrite  // 使用写入时记录的大小
 	
 	return result
 }
