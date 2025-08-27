@@ -139,21 +139,80 @@ func (wct *WALComparisonTest) monitorCPUPeak(done chan bool) <-chan float64 {
 }
 
 // 配置RocksDB选项
+// func (wct *WALComparisonTest) setupDBOptions() {
+// 	wct.Options = gorocksdb.NewDefaultOptions()
+// 	wct.Options.SetCreateIfMissing(true)
+	
+// 	// 设置较大的写入缓冲区确保数据在WAL中
+// 	wct.Options.SetWriteBufferSize(10 * 1024 * 1024 * 1024) // 10GB
+// 	wct.Options.SetMaxWriteBufferNumber(3)
+// 	wct.Options.SetMinWriteBufferNumberToMerge(1)
+	
+// 	// 禁用自动压缩
+// 	wct.Options.SetDisableAutoCompactions(true)
+// 	wct.Options.SetLevel0FileNumCompactionTrigger(1000)
+	
+// 	wct.logfToFile("配置数据库选项 - 测试类型: %s, 记录数: %d, 值大小: %d bytes\n", 
+// 		wct.TestType.String(), wct.RecordCount, wct.ValueSize)
+// }
+
 func (wct *WALComparisonTest) setupDBOptions() {
 	wct.Options = gorocksdb.NewDefaultOptions()
 	wct.Options.SetCreateIfMissing(true)
 	
-	// 设置较大的写入缓冲区确保数据在WAL中
-	wct.Options.SetWriteBufferSize(512 * 1024 * 1024) // 512MB
-	wct.Options.SetMaxWriteBufferNumber(3)
-	wct.Options.SetMinWriteBufferNumberToMerge(1)
+	// === 生产环境内存配置 ===
+	// Write Buffer配置 (假设16GB内存系统)
+	wct.Options.SetWriteBufferSize(256 * 1024 * 1024)  // 256MB write buffer
+	wct.Options.SetMaxWriteBufferNumber(6)              // 6个write buffer
+	wct.Options.SetMinWriteBufferNumberToMerge(2)       // 2个buffer合并
 	
-	// 禁用自动压缩
-	wct.Options.SetDisableAutoCompactions(true)
-	wct.Options.SetLevel0FileNumCompactionTrigger(1000)
+	// Block Cache配置 (2GB缓存)
+	blockCache := gorocksdb.NewLRUCache(2 * 1024 * 1024 * 1024)
+	blockOpts := gorocksdb.NewDefaultBlockBasedTableOptions()
+	blockOpts.SetBlockCache(blockCache)
+	blockOpts.SetBlockSize(16 * 1024) // 16KB block size
+	blockOpts.SetCacheIndexAndFilterBlocks(true) // 缓存索引和过滤器
+	wct.Options.SetBlockBasedTableFactory(blockOpts)
 	
-	wct.logfToFile("配置数据库选项 - 测试类型: %s, 记录数: %d, 值大小: %d bytes\n", 
+	// === 压缩配置 ===
+	// wct.Options.SetCompression(gorocksdb.LZ4Compression)
+	
+	// === Level配置 ===
+	wct.Options.SetNumLevels(7)
+	wct.Options.SetMaxBytesForLevelBase(512 * 1024 * 1024) // L1: 512MB
+	wct.Options.SetMaxBytesForLevelMultiplier(8)            // 每层8倍增长
+	
+	// === Compaction配置 ===
+	wct.Options.SetLevel0FileNumCompactionTrigger(4)       // 4个文件触发compaction
+	wct.Options.SetLevel0SlowdownWritesTrigger(20)         // 20个文件减缓写入
+	wct.Options.SetLevel0StopWritesTrigger(36)             // 36个文件停止写入
+	
+	// 后台线程配置
+	// wct.Options.SetMaxBackgroundJobs(8)                    // 8个后台线程
+	// wct.Options.SetMaxSubcompactions(4)                    // 4个子compaction
+	
+	// 文件大小配置
+	wct.Options.SetTargetFileSizeBase(128 * 1024 * 1024)   // L1文件128MB
+	wct.Options.SetTargetFileSizeMultiplier(2)             // 每层文件大小2倍增长
+	
+	// === WAL配置 ===
+	wct.Options.SetMaxTotalWalSize(2 * 1024 * 1024 * 1024) // 总WAL限制2GB
+	
+	// === 其他性能配置 ===
+	// wct.Options.SetAllowConcurrentMemtableWrite(true)      // 允许并发写入memtable
+	// wct.Options.SetEnableWriteThreadAdaptiveYield(true)    // 启用写线程自适应yield
+	
+	wct.logfToFile("=== 生产环境配置 ===\n")
+	wct.logfToFile("测试类型: %s, 记录数: %d, 值大小: %d bytes\n", 
 		wct.TestType.String(), wct.RecordCount, wct.ValueSize)
+	wct.logfToFile("WriteBufferSize: 256MB\n")
+	wct.logfToFile("MaxWriteBufferNumber: 6\n")
+	wct.logfToFile("BlockCache: 2GB\n")
+	wct.logfToFile("BlockSize: 16KB\n")
+	wct.logfToFile("Compression: LZ4\n")
+	wct.logfToFile("Level0FileNumCompactionTrigger: 4\n")
+	// wct.logfToFile("MaxBackgroundJobs: 8\n")
+	wct.logfToFile("MaxTotalWalSize: 2GB\n")
 }
 
 // 打开数据库
