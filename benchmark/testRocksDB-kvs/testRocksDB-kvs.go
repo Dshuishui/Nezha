@@ -1,4 +1,4 @@
-package testrocksdbkvs
+package main
 
 import (
 	"fmt"
