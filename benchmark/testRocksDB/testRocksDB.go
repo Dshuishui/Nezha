@@ -5,7 +5,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	// "path/filepath"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -90,13 +90,18 @@ func (wt *WALTest) getWALSize() (int64, error) {
 		return 0, err
 	}
 	
+	fmt.Printf("检查目录 %s 中的文件:\n", walDir)
 	for _, file := range files {
-		// RocksDB的WAL文件通常以.log结尾
-		if strings.HasSuffix(file.Name(), ".log") {
+		fmt.Printf("  %s (大小: %d bytes)\n", file.Name(), file.Size())
+		// RocksDB的WAL文件通常以.log结尾，或者是CURRENT、MANIFEST等文件
+		if strings.HasSuffix(file.Name(), ".log") || 
+		   strings.Contains(file.Name(), "CURRENT") ||
+		   strings.Contains(file.Name(), "MANIFEST") {
 			totalSize += file.Size()
 		}
 	}
 	
+	fmt.Printf("总WAL相关文件大小: %.2f MB\n", float64(totalSize)/(1024*1024))
 	return totalSize, nil
 }
 
@@ -171,14 +176,13 @@ func (wt *WALTest) writeDataUntilTarget() (int, error) {
 func (wt *WALTest) simulateCrash() error {
 	fmt.Println("模拟异常中断...")
 	
-	// 不调用正常的Close()，直接强制关闭
+	// 强制关闭数据库但不进行正常的cleanup，模拟异常退出
 	if wt.DB != nil {
-		// 这里我们不调用Close()来模拟异常退出
+		wt.DB.Close() // 需要关闭以释放锁，但不做其他cleanup
 		wt.DB = nil
 	}
 	
-	// 在实际测试中，你可能需要在这里用另一个进程来kill当前进程
-	// 这里我们简单地表示异常退出的状态
+	fmt.Println("数据库异常关闭完成")
 	return nil
 }
 
@@ -251,6 +255,17 @@ func getMemoryUsage() uint64 {
 // 清理测试环境
 func (wt *WALTest) cleanup() error {
 	wt.closeDB()
+	
+	// 添加延迟确保文件系统完成操作
+	time.Sleep(100 * time.Millisecond)
+	
+	// 尝试删除锁文件
+	lockFile := filepath.Join(wt.DBPath, "LOCK")
+	if _, err := os.Stat(lockFile); err == nil {
+		fmt.Printf("删除锁文件: %s\n", lockFile)
+		os.Remove(lockFile)
+	}
+	
 	return os.RemoveAll(wt.DBPath)
 }
 
@@ -263,6 +278,7 @@ func runWALSizeTest(targetSize uint64) RecoveryResult {
 	
 	// 清理之前的测试数据
 	os.RemoveAll(dbPath)
+	time.Sleep(100 * time.Millisecond) // 等待文件系统操作完成
 	
 	defer walTest.cleanup()
 	
@@ -290,6 +306,9 @@ func runWALSizeTest(targetSize uint64) RecoveryResult {
 	
 	// 5. 模拟异常中断
 	walTest.simulateCrash()
+	
+	// 等待一段时间确保锁释放
+	time.Sleep(500 * time.Millisecond)
 	
 	// 6. 测量恢复性能
 	memBefore := getMemoryUsage()
