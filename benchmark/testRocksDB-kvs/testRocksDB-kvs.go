@@ -551,7 +551,7 @@ func main() {
 	// 测试1: 传统方式 - 1KB完整值
 	fmt.Println("=== 测试 1/2: 传统方式 (1KB完整值) ===")
 	logFile.WriteString("=== 测试 1: 传统方式 (1KB完整值) ===\n")
-	result1 := runComparisonTest(FullValue, 1000000, 1024, logFile)
+	result1 := runComparisonTest(FullValue, 2340000, 16384, logFile)
 	results = append(results, result1)
 	fmt.Printf("测试完成!\n\n")
 	
@@ -561,7 +561,7 @@ func main() {
 	// 测试2: 键值分离方式 - 10B偏移量
 	fmt.Println("=== 测试 2/2: 键值分离方式 (10B偏移量) ===")
 	logFile.WriteString("=== 测试 2: 键值分离方式 (10B偏移量) ===\n")
-	result2 := runComparisonTest(OffsetOnly, 1000000, 10, logFile)
+	result2 := runComparisonTest(OffsetOnly, 2340000, 10, logFile)
 	results = append(results, result2)
 	fmt.Printf("测试完成!\n\n")
 	
