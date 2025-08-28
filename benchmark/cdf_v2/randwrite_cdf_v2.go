@@ -118,7 +118,7 @@ func (kvc *KVClient) batchRawPut(value string) {
     valueSize := int64(len(value))
     
     // 生成随机键
-    allKeys := generateUniqueRandomInts(0, 6250000)
+    allKeys := generateUniqueRandomInts(0, 7500000)
 
     // 启动定时统计
     kvc.startPeriodicStats()
