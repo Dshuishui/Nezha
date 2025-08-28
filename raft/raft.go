@@ -1257,13 +1257,13 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	go func(peerId int) {
 		// util.DPrintf("RaftNode[%d] appendEntries starts, myTerm[%d] peerId[%d]", rf.me, args.Term, args.LeaderId)
 		// T2开始 - 分发日志阶段
-		t2Start := time.Now()
+		// t2Start := time.Now()
 		if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
 			if len(args.Entries) != 0 {
-				t2End := time.Now()
-				t2Duration := t2End.Sub(t2Start)
-				fmt.Println("T2(Distribution) duration:", t2Duration)
-				fmt.Println("此次分发的日志条数：\n", len(args.Entries))
+				// t2End := time.Now()
+				// t2Duration := t2End.Sub(t2Start)
+				// fmt.Println("T2(Distribution) duration:", t2Duration)
+				// fmt.Println("此次分发的日志条数：\n", len(args.Entries))
 			}
 
 			rf.mu.Lock()
