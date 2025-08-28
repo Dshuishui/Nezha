@@ -1700,7 +1700,7 @@ func (rf *Raft) applyLogLoop() {
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
 				rf.Offsets = rf.Offsets[1:]
 				rf.shotOffset++
-				// rf.originalKvs(rf.log[rf.lastIndex()-1].Command) // original-kvs
+				// rf.originalKvs(rf.log[rf.lastIndex()-1].Command) // original-kvs - dwisckey
 				if rf.lastApplied%rf.Gap == 0 {
 					// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, len(rf.Offsets))
