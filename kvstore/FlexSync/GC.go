@@ -214,16 +214,19 @@ func (kvs *KVServer) CreateIndex(firstSortedFilePath string) error {
 	kvs.firstSortedFilePath = firstSortedFilePath
 
 	// 创建索引，假设每1个条目记录一次索引，稀疏索引，间隔一部分创建一个索引，找到第一个合适的，再进行线性查询
-	index, err := kvs.CreateSortedFileIndex(firstSortedFilePath)
-	if err != nil {
-		// 处理错误
-		return err
-	}
+	// index, err := kvs.CreateSortedFileIndex(firstSortedFilePath)
+	// if err != nil {
+	// 	// 处理错误
+	// 	return err
+	// }
+
+	index:=&SortedFileIndex{Entries: nil, FilePath: firstSortedFilePath}		//	测试
+
 	kvs.firstSortedFileIndex = index
 
 	// 初始化LRU缓存，设置合适的缓存大小
 	// 这里假设缓存40000个key-value对
-	err = kvs.initSortedFileCache(sortedFileCacheNums)
+	err := kvs.initSortedFileCache(sortedFileCacheNums)						    // 测试，err 不要 :=
 	if err != nil {
 		fmt.Printf("Failed to initialize LRU cache: %v\n", err)
 		return err
