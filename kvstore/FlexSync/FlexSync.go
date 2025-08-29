@@ -2103,7 +2103,7 @@ func main() {
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
 		// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
-		timeout := 7 * time.Second
+		timeout := 5 * time.Second
 		// time1 := 500000 * time.Second
 		for {
 			time.Sleep(timeout)
@@ -2120,8 +2120,12 @@ func main() {
 			}
 
 			fileSizeGB := float64(fileInfo.Size()) / (1024 * 1024 * 1024)
-			if fileSizeGB <= 40 {
+			if fileSizeGB <= 30 {
 				// fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.currentLog, fileSizeGB)
+				continue
+			}
+			if kvs.numGC >= 2 {
+				fmt.Printf("已经进行了 %d 轮垃圾回收，停止进一步的垃圾回收\n", kvs.numGC)
 				continue
 			}
 			// 第一轮GC
