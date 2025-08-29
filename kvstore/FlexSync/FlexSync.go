@@ -2157,9 +2157,9 @@ func main() {
 				kvs.lastSortedFileIndex = kvs.firstSortedFileIndex // 更新本轮的变量为上一次
 				// Clean up old files
 
-				if err := os.Remove(kvs.oldLog); err != nil {
-					fmt.Println("第 1 轮删除旧文件出现了错误: ", err)
-				}
+				// if err := os.Remove(kvs.oldLog); err != nil {
+				// 	fmt.Println("第 1 轮删除旧文件出现了错误: ", err)
+				// }
 
 				fmt.Println("第 1 轮垃圾回收完成，等待下 1 轮垃圾回收，且已删除 oldLog 指向的文件")
 			} else {
@@ -2178,10 +2178,10 @@ func main() {
 					kvs.lastSortedFileIndex = kvs.anothersortedFileIndex // 更新本轮的变量为上一次
 					// 删除 oldLog指向的文件
 
-					err = os.Remove(kvs.oldLog)
-					if err != nil {
-						fmt.Printf("第 %v 轮垃圾回收删除旧文件出现了错误: %v\n", kvs.numGC, err)
-					}
+					// err = os.Remove(kvs.oldLog)
+					// if err != nil {
+					// 	fmt.Printf("第 %v 轮垃圾回收删除旧文件出现了错误: %v\n", kvs.numGC, err)
+					// }
 
 					fmt.Printf("第 %v 轮垃圾回收完成，等待下一轮垃圾回收，且已删除 oldLog 指向的文件\n", kvs.numGC)
 				}
