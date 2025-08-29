@@ -2125,7 +2125,7 @@ func main() {
 				continue
 			}
 			if kvs.numGC >= 2 {
-				fmt.Printf("已经进行了 %d 轮垃圾回收，停止进一步的垃圾回收\n", kvs.numGC)
+				// fmt.Printf("已经进行了 %d 轮垃圾回收，停止进一步的垃圾回收\n", kvs.numGC)
 				continue
 			}
 			// 第一轮GC
