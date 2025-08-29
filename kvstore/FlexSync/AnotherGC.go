@@ -86,7 +86,7 @@ func (kvs *KVServer) AnotherSwitchToNewFiles(newLog string, newPersister *raft.P
 }
 
 func (kvs *KVServer) MergedGarbageCollection() error {
-	fmt.Printf("Starting garbage collection... -- another %v\n", kvs.numGC)
+	fmt.Printf("Starting garbage collection... -- another %v\n", kvs.numGC+1)
 	startTime := time.Now()
 
 	// 创建新的RocksDB实例===========
