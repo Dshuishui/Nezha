@@ -148,10 +148,10 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	}
 
 	// Update KVServer to use the new sorted file
-	err = kvs.CreateIndex(firstSortedFilePath)
-	if err != nil {
-		fmt.Println("创建索引有问题：", err)
-	}
+	// err = kvs.CreateIndex(firstSortedFilePath)
+	// if err != nil {
+	// 	fmt.Println("创建索引有问题：", err)
+	// }
 
 	// 添加验证步骤
 	// err = VerifySortedFile(firstSortedFilePath)
