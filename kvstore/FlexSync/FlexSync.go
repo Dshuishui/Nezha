@@ -2120,7 +2120,7 @@ func main() {
 			}
 
 			fileSizeGB := float64(fileInfo.Size()) / (1024 * 1024 * 1024)
-			if fileSizeGB <= 4000 {
+			if fileSizeGB <= 40 {
 				// fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.currentLog, fileSizeGB)
 				continue
 			}
@@ -2199,6 +2199,11 @@ func main() {
 
 		}
 	}()
+
+	monitor, _ := NewPerformanceMonitor("performance_metrics.csv", 100)
+	monitor.Start()
+	defer monitor.Stop()
+
 	wg.Add(1 + 1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
 	kvs.raft.SetCurrentLog(kvs.InitialRaftStateLog)
