@@ -39,7 +39,7 @@ import (
 	"gitee.com/dong-shuishui/FlexSync/rpc/kvrpc"
 	"gitee.com/dong-shuishui/FlexSync/rpc/raftrpc"
 
-	// "gitee.com/dong-shuishui/FlexSync/gc4"
+	"gitee.com/dong-shuishui/FlexSync/kvstore/PerformanceMonitor"
 
 	// "gitee.com/dong-shuishui/FlexSync/rpc/raftrpc"
 	"gitee.com/dong-shuishui/FlexSync/util"
@@ -2200,7 +2200,7 @@ func main() {
 		}
 	}()
 
-	monitor, _ := NewPerformanceMonitor("performance_metrics.csv", 100)
+	monitor, _ := performancemonitor.NewPerformanceMonitor("performance_metrics.csv", 100)
 	monitor.Start()
 	defer monitor.Stop()
 
