@@ -1700,7 +1700,7 @@ func (rf *Raft) applyLogLoop() {
 				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
 				rf.Offsets = rf.Offsets[1:]
 				rf.shotOffset++
-				// rf.originalKvs(rf.log[rf.lastIndex()-1].Command) // original-kvs - dwisckey
+				rf.originalKvs(rf.log[rf.lastIndex()-1].Command) // original-kvs - dwisckey
 				if rf.lastApplied%rf.Gap == 0 {
 					// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, len(rf.Offsets))
@@ -1840,7 +1840,7 @@ func Make(peers []string, me int,
 	// 检查有没有收到日志同步的消息，若没有则连接有问题
 	go rf.AppendMonitor()
 
-	go rf.memoryControlLoop()
+	// go rf.memoryControlLoop()
 
 	// 设置一个定时器，每十秒检查一次条件
 	ticker := time.NewTicker(5 * time.Second)
