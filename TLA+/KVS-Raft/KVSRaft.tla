@@ -1,4 +1,11 @@
 ----
+\* 状态约束
+StateConstraint ==
+    /\ \A i \in Server : Len(log[i]) <= 4
+    /\ \A i \in Server : Len(valueLog[i]) <= 4
+    /\ \A i \in Server : currentTerm[i] <= 4
+    /\ Cardinality(DOMAIN messages) <= 10
+
 \* 对称性定义
 ServerSymmetry == Permutations(Server)
 
