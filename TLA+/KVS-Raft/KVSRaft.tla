@@ -135,14 +135,14 @@ Init == /\ currentTerm = [i \in Server |-> 1]
         /\ commitIndex = [i \in Server |-> 0]
         \* KVS-Raft特有的初始化
         /\ valueLog    = [i \in Server |-> << >>]
-        /\ offsetMap   = [i \in Server |-> [k \in {} |-> 0]]
+        /\ offsetMap   = [i \in Server |-> << >>]
         \* 其他变量初始化
-        /\ messages = [m \in {} |-> 0]
+        /\ messages = << >>
         /\ elections = {}
         /\ allLogs = {}
         /\ votesResponded = [i \in Server |-> {}]
         /\ votesGranted   = [i \in Server |-> {}]
-        /\ voterLog       = [i \in Server |-> [j \in {} |-> <<>>]]
+        /\ voterLog       = [i \in Server |-> << >>]
         /\ nextIndex      = [i \in Server |-> [j \in Server |-> 1]]
         /\ matchIndex     = [i \in Server |-> [j \in Server |-> 0]]
 
@@ -155,9 +155,8 @@ Restart(i) ==
     /\ votedFor' = [votedFor EXCEPT ![i] = Nil]
     /\ votesResponded' = [votesResponded EXCEPT ![i] = {}]
     /\ votesGranted' = [votesGranted EXCEPT ![i] = {}]
-    /\ voterLog' = [voterLog EXCEPT ![i] = [j \in {} |-> <<>>]]
     /\ UNCHANGED <<messages, currentTerm, log, commitIndex, valueLog, offsetMap, 
-                  nextIndex, matchIndex, elections, allLogs>>
+                  nextIndex, matchIndex, elections, voterLog>>
 
 \* 选举超时，节点变为候选者
 Timeout(i) == 
@@ -167,8 +166,7 @@ Timeout(i) ==
     /\ votedFor' = [votedFor EXCEPT ![i] = Nil]
     /\ votesResponded' = [votesResponded EXCEPT ![i] = {}]
     /\ votesGranted' = [votesGranted EXCEPT ![i] = {}]
-    /\ voterLog' = [voterLog EXCEPT ![i] = [j \in {} |-> <<>>]]
-    /\ UNCHANGED <<messages, leaderVars, logVars, kvsVars, allLogs>>
+    /\ UNCHANGED <<messages, leaderVars, logVars, kvsVars, voterLog, elections>>
 
 \* 候选者请求投票
 RequestVote(i, j) ==
@@ -229,12 +227,7 @@ BecomeLeader(i) ==
                          [j \in Server |-> Len(log[i]) + 1]]
     /\ matchIndex' = [matchIndex EXCEPT ![i] =
                          [j \in Server |-> 0]]
-    /\ elections'  = elections \cup
-                         {[eterm     |-> currentTerm[i],
-                           eleader   |-> i,
-                           elog      |-> log[i],
-                           evotes    |-> votesGranted[i],
-                           evoterLog |-> voterLog[i]]}
+    /\ elections'  = elections \cup {i}
     /\ UNCHANGED <<messages, serverVars, candidateVars, logVars, kvsVars, allLogs>>
 
 \* 更新任期（收到更大任期时）
@@ -272,12 +265,10 @@ HandleRequestVoteResponse(i, j, m) ==
     /\ \/ /\ m.mvoteGranted
           /\ votesGranted' = [votesGranted EXCEPT ![i] =
                                   votesGranted[i] \cup {j}]
-          /\ voterLog' = [voterLog EXCEPT ![i] =
-                              voterLog[i] @@ (j :> log[j])]
        \/ /\ ~m.mvoteGranted
-          /\ UNCHANGED <<votesGranted, voterLog>>
+          /\ UNCHANGED votesGranted
     /\ Discard(m)
-    /\ UNCHANGED <<serverVars, leaderVars, logVars, kvsVars, elections, allLogs>>
+    /\ UNCHANGED <<serverVars, leaderVars, logVars, kvsVars, elections, allLogs, voterLog>>
 
 \* 处理AppendEntries请求
 HandleAppendEntriesRequest(i, j, m) ==
@@ -329,8 +320,8 @@ ApplyToStateMachine(i) ==
        IN /\ commitIndex' = [commitIndex EXCEPT ![i] = index]
           \* 更新状态机：存储key到offset的映射而不是key到value的映射
           /\ offsetMap' = [offsetMap EXCEPT ![i] = 
-                              offsetMap[i] @@ (entry.key :> offset)]
-          /\ UNCHANGED <<messages, serverVars, candidateVars, leaderVars, log, valueLog, elections, allLogs>>
+                              Append(offsetMap[i], [key |-> entry.key, offset |-> offset])]
+          /\ UNCHANGED <<messages, serverVars, candidateVars, leaderVars, log, valueLog, elections>>
 
 \* 处理AppendEntries响应
 HandleAppendEntriesResponse(i, j, m) ==
@@ -392,7 +383,7 @@ Next == /\ \/ \E i \in Server : Restart(i)
         /\ allLogs' = allLogs \cup {log[i] : i \in Server}
 
 \* 系统规范
-Spec == Init /\ [][Next]_vars
+Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
 ----
 \* 不变式
@@ -412,9 +403,10 @@ LogMatching ==
 
 \* KVS-Raft特有不变式：Offset正确性
 OffsetCorrectness ==
-    \A i \in Server : \A k \in DOMAIN offsetMap[i] :
-        /\ offsetMap[i][k] > 0
-        /\ offsetMap[i][k] <= Len(valueLog[i])
+    \A i \in Server : 
+        \A j \in 1..Len(offsetMap[i]) :
+            /\ offsetMap[i][j].offset > 0
+            /\ offsetMap[i][j].offset <= Len(valueLog[i])
 
 \* KVS-Raft特有不变式：值一致性
 \* 通过commitIndex确保的一致性：已提交的条目在所有节点上一致
