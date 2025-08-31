@@ -25,3 +25,4 @@ result/causal_put-latency.csv
 test
 result
 charts
+TLA+/KVS-Raft/states
