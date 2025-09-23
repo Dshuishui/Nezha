@@ -15,7 +15,7 @@ import (
 
 	"gitee.com/dong-shuishui/FlexSync/raft"
 	lru "github.com/hashicorp/golang-lru"
-	"github.com/tecbot/gorocksdb"
+	"github.com/linxGnu/grocksdb"
 )
 
 // 修改这三个全局变量的路径，需要在运行时根据用户指定的data目录动态设置
@@ -110,7 +110,7 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	defer writer.Flush()
 
 	// Read entries from RocksDB and write them in sorted order to the new file
-	it := kvs.oldPersister.GetDb().NewIterator(gorocksdb.NewDefaultReadOptions())
+	it := kvs.oldPersister.GetDb().NewIterator(grocksdb.NewDefaultReadOptions())
 	defer it.Close()
 
 	writeNum := 0
@@ -450,7 +450,7 @@ func (kvs *KVServer) CheckDatabaseContent() error {
 		return fmt.Errorf("database is not initialized")
 	}
 
-	ro := gorocksdb.NewDefaultReadOptions()
+	ro := grocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
 	iter := kvs.oldPersister.GetDb().NewIterator(ro)
@@ -509,7 +509,7 @@ func (kvs *KVServer) checkLogDBConsistency() error {
 	}
 	defer logFile.Close()
 
-	ro := gorocksdb.NewDefaultReadOptions()
+	ro := grocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
 	iter := kvs.persister.GetDb().NewIterator(ro)

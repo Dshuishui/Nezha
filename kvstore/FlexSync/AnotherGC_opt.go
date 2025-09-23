@@ -15,7 +15,7 @@ import (
 
 	// lru "github.com/hashicorp/golang-lru"
 	"gitee.com/dong-shuishui/FlexSync/raft"
-	"github.com/tecbot/gorocksdb"
+	"github.com/linxGnu/grocksdb"
 )
 
 //	type keyOffset struct{
@@ -162,7 +162,7 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	// Start goroutine to read from old database
 	go func() {
 		defer close(oldEntryChan)
-		it := kvs.oldPersister.GetDb().NewIterator(gorocksdb.NewDefaultReadOptions())
+		it := kvs.oldPersister.GetDb().NewIterator(grocksdb.NewDefaultReadOptions())
 		defer it.Close()
 
 		for it.SeekToFirst(); it.Valid(); it.Next() {
@@ -309,7 +309,7 @@ func (kvs *KVServer) verifyOldDatabaseOrder(file *os.File) error {
 	var prevKey string
 	count := 0
 
-	it := kvs.oldPersister.GetDb().NewIterator(gorocksdb.NewDefaultReadOptions())
+	it := kvs.oldPersister.GetDb().NewIterator(grocksdb.NewDefaultReadOptions())
 	defer it.Close()
 
 	for it.SeekToFirst(); it.Valid(); it.Next() {
@@ -492,7 +492,7 @@ func (kvs *KVServer) AnotherCreateIndex(SortedFilePath string) error {
 
 // 	// 1. 首先从旧的 RocksDB 中读取所有 entries 并排序
 //     var oldEntries []*raft.Entry
-//     it := kvs.oldPersister.GetDb().NewIterator(gorocksdb.NewDefaultReadOptions())
+//     it := kvs.oldPersister.GetDb().NewIterator(grocksdb.NewDefaultReadOptions())
 //     defer it.Close()
 
 //     // 读取所有旧数据
