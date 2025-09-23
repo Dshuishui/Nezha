@@ -106,19 +106,27 @@ type Raft struct {
 	pools   []pool.Pool   // 用于日志同步的连接池
 	// kvrpc.UnimplementedKVServer
 	raftrpc.UnimplementedRaftServer
-	LastAppendTime time.Time
-	Gap            int
-	Offsets        []int64
-	shotOffset     int
-	SyncTime       int
-	SyncChans      []chan string
-	batchLog       []*Entry
-	batchLogSize   int64
-	currentLog     string            // 存储value的磁盘文件的描述符
-	nullLogEntry   *raftrpc.LogEntry // 用于替换已应用的日志
-	lastNulled     int
-	numGC          int
+	LastAppendTime   time.Time
+	Gap              int
+	Offsets          []int64
+	shotOffset       int
+	SyncTime         int
+	SyncChans        []chan string
+	batchLog         []*Entry
+	batchLogSize     int64
+	currentLog       string            // 存储value的磁盘文件的描述符
+	nullLogEntry     *raftrpc.LogEntry // 用于替换已应用的日志
+	lastNulled       int
+	numGC            int
+	lastTruncateTime time.Time // 上次截断时间
+	truncating       bool      // 是否正在截断
 }
+
+const (
+	LOG_MEMORY_THRESHOLD_MB = 500   // 内存阈值 500MB
+	MIN_LOG_RETAIN          = 10000 // 最少保留的日志数
+	TRUNCATE_CHECK_INTERVAL = 6     // 检查间隔(秒)
+)
 
 func (rf *Raft) GetOffsets() []int64 {
 	return rf.Offsets
@@ -1081,9 +1089,35 @@ func (rf *Raft) electionLoop() {
 
 				rf.mu.Unlock() // 对raft的修改操作已经暂时结束，可以解锁
 
+				// 单节点情况直接成为 leader
+				if len(rf.peers) == 1 {
+					rf.mu.Lock()
+					rf.role = ROLE_LEADER
+					util.DPrintf("RaftNode[%d] Candidate -> Leader (single node)", rf.me)
+					rf.leaderId = rf.me
+					rf.nextIndex = make([]int, len(rf.peers))
+					for i := 0; i < len(rf.peers); i++ {
+						rf.nextIndex[i] = rf.lastIndex() + 1
+					}
+					rf.matchIndex = make([]int, len(rf.peers))
+					for i := 0; i < len(rf.peers); i++ {
+						rf.matchIndex[i] = 0
+					}
+
+					op := raftrpc.DetailCod{
+						OpType: "TermLog",
+					}
+					rf.mu.Unlock()
+					op.Index, op.Term, _ = rf.Start(&op)
+					rf.mu.Lock()
+					util.DPrintf("成为leader后发送第一个空指令给Raft层")
+					return
+				}
+
 				// util.DPrintf("RaftNode[%d] RequestVote starts, Term[%d] LastLogIndex[%d] LastLogTerm[%d]", rf.me, args.Term,
 				// args.LastLogIndex, args.LastLogTerm)
 				// 并发RPC请求vote
+				// 多节点情况的原有逻辑
 				type VoteResult struct {
 					peerId int
 					resp   *raftrpc.RequestVoteResponse
@@ -1721,52 +1755,147 @@ func (rf *Raft) applyLogLoop() {
 	}
 }
 
-func (rf *Raft) memoryControlLoop() {
-	const (
-		checkInterval = 60 * time.Second // 检查间隔
-		logThreshold  = 200000           // 内存中保留的日志数量阈值
-		batchSize     = 100000           // 每次清理的日志数量
-	)
+func (rf *Raft) logTruncateLoop() {
+    ticker := time.NewTicker(TRUNCATE_CHECK_INTERVAL * time.Second)
+    defer ticker.Stop()
+    
+    for !rf.killed() {
+        <-ticker.C
+        
+        rf.mu.Lock()
+        if rf.truncating {
+            rf.mu.Unlock()
+            continue
+        }
+        
+        // 计算日志内存占用
+        logMemoryMB := rf.estimateLogMemory()
+        
+        if logMemoryMB > LOG_MEMORY_THRESHOLD_MB {
+            rf.truncating = true
+            rf.mu.Unlock()
+            
+            // 异步执行截断,避免阻塞
+            go rf.doTruncateByRole()
+        } else {
+            rf.mu.Unlock()
+        }
+    }
+}
 
-	// 初始化空日志条目
-	// rf.nullLogEntry = &raftrpc.LogEntry{
-	//     Command: &raftrpc.DetailCod{
-	//         OpType: "NULL",  // 标记为空日志
-	//     },
-	//     Term: 0,
-	// }
+// 根据角色选择截断策略
+func (rf *Raft) doTruncateByRole() {
+    defer func() {
+        rf.mu.Lock()
+        rf.truncating = false
+        rf.lastTruncateTime = time.Now()
+        rf.mu.Unlock()
+    }()
+    
+    rf.mu.Lock()
+    role := rf.role
+    rf.mu.Unlock()
+    
+    if role == ROLE_LEADER {
+        rf.truncateAsLeader()
+    } else {
+        rf.truncateAsFollower()
+    }
+}
 
-	for !rf.killed() {
-		time.Sleep(checkInterval)
+// Leader 截断逻辑
+func (rf *Raft) truncateAsLeader() {
+    rf.mu.Lock()
+    defer rf.mu.Unlock()
+    
+    // 找到所有节点都已复制的最小索引
+    minMatchIndex := rf.matchIndex[rf.me]
+    for peer := range rf.peers {
+        if peer != rf.me && rf.matchIndex[peer] < minMatchIndex {
+            minMatchIndex = rf.matchIndex[peer]
+        }
+    }
+    
+    // 确保保留足够的日志
+    if rf.lastIndex() - minMatchIndex < MIN_LOG_RETAIN {
+        util.DPrintf("RaftNode[%d] Leader skip truncate: not enough logs to retain", rf.me)
+        return
+    }
+    
+    util.DPrintf("RaftNode[%d] Leader truncate to index %d", rf.me, minMatchIndex)
+    rf.doTruncate(minMatchIndex)
+}
 
-		rf.mu.Lock()
+// Follower 截断逻辑
+func (rf *Raft) truncateAsFollower() {
+    rf.mu.Lock()
+    defer rf.mu.Unlock()
+    
+    safeIndex := rf.lastApplied
+    
+    if rf.lastIndex() - safeIndex < MIN_LOG_RETAIN {
+        util.DPrintf("RaftNode[%d] Follower skip truncate: not enough logs to retain", rf.me)
+        return
+    }
+    
+    util.DPrintf("RaftNode[%d] Follower truncate to index %d", rf.me, safeIndex)
+    rf.doTruncate(safeIndex)
+}
 
-		// 检查日志数量是否超过阈值
-		if len(rf.log) > logThreshold {
-			startIndex := rf.lastNulled
-			// 只处理已经应用到状态机的日志
-			endIndex := rf.lastApplied
-			if endIndex > startIndex {
-				if endIndex-startIndex > batchSize {
-					endIndex = startIndex + batchSize
-				}
-				for i := startIndex; i < endIndex; i++ {
-					rf.log[i].Command.Value = "NULL"
-				}
-				rf.lastNulled = endIndex
-			}
+// 实际执行截断 (正确的内存释放方式)
+func (rf *Raft) doTruncate(truncateIndex int) {
+    logPos := rf.index2LogPos(truncateIndex)
+    
+    // 记录截断前信息
+    beforeLen := len(rf.log)
+    beforeCap := cap(rf.log)
+    
+    // ✅ 正确方式: 创建新 slice 释放内存
+    newLog := make([]*raftrpc.LogEntry, len(rf.log)-logPos)
+    copy(newLog, rf.log[logPos:])
+    rf.log = newLog
+    
+    // 同步截断 Offsets 数组
+    offsetPos := truncateIndex - rf.shotOffset - 1
+    if offsetPos >= 0 && offsetPos < len(rf.Offsets) {
+        newOffsets := make([]int64, len(rf.Offsets)-offsetPos)
+        copy(newOffsets, rf.Offsets[offsetPos:])
+        rf.Offsets = newOffsets
+    }
+    
+    // 更新 shotOffset
+    rf.shotOffset = truncateIndex
+    
+    util.DPrintf("RaftNode[%d] truncated: from [len:%d,cap:%d] to [len:%d,cap:%d], shotOffset=%d",
+        rf.me, beforeLen, beforeCap, len(rf.log), cap(rf.log), rf.shotOffset)
+}
 
-			// 将已应用的日志替换为空日志
-			// for i := 0; i < endIndex; i++ {
-			//     rf.log[i].Command.Value = "NULL"
-			// }
-
-			util.DPrintf("RaftNode[%d] replaced %d logs with null entries, total logs: %d",
-				rf.me, endIndex, len(rf.log))
-		}
-
-		rf.mu.Unlock()
-	}
+// 估算日志内存占用
+func (rf *Raft) estimateLogMemory() int64 {
+    if len(rf.log) == 0 {
+        return 0
+    }
+    
+    // 估算每条日志的平均大小
+    // LogEntry 结构体本身 + Command 结构体 + Key/Value 字符串
+    avgEntrySize := int64(0)
+    sampleSize := 100
+    if len(rf.log) < sampleSize {
+        sampleSize = len(rf.log)
+    }
+    
+    for i := 0; i < sampleSize; i++ {
+        if rf.log[i] != nil && rf.log[i].Command != nil {
+            entrySize := int64(100) // 结构体基础大小
+            entrySize += int64(len(rf.log[i].Command.Key))
+            entrySize += int64(len(rf.log[i].Command.Value))
+            avgEntrySize += entrySize
+        }
+    }
+    avgEntrySize = avgEntrySize / int64(sampleSize)
+    
+    totalMemoryBytes := avgEntrySize * int64(len(rf.log))
+    return totalMemoryBytes / (1024 * 1024) // 转换为 MB
 }
 
 // 最后的index
@@ -1840,7 +1969,7 @@ func Make(peers []string, me int,
 	// 检查有没有收到日志同步的消息，若没有则连接有问题
 	go rf.AppendMonitor()
 
-	// go rf.memoryControlLoop()
+	go rf.logTruncateLoop()
 
 	// 设置一个定时器，每十秒检查一次条件
 	ticker := time.NewTicker(5 * time.Second)
