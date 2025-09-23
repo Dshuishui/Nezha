@@ -50,7 +50,7 @@ import (
 	// "gitee.com/dong-shuishui/FlexSync/kvstore/GC4"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/syndtr/goleveldb/leveldb"
-	"github.com/tecbot/gorocksdb"
+	"github.com/linxGnu/grocksdb"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
 
@@ -522,7 +522,7 @@ func (kvs *KVServer) StartScan_opt(args *kvrpc.ScanRangeRequest, persister *raft
 func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persister, logLocation string) (map[string]string, error) {
 	kvs.mu.Lock()
 	defer kvs.mu.Unlock()
-	ro := gorocksdb.NewDefaultReadOptions()
+	ro := grocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
 	result := make(map[string]string)
