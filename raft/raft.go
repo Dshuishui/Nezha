@@ -1756,146 +1756,164 @@ func (rf *Raft) applyLogLoop() {
 }
 
 func (rf *Raft) logTruncateLoop() {
-    ticker := time.NewTicker(TRUNCATE_CHECK_INTERVAL * time.Second)
-    defer ticker.Stop()
-    
-    for !rf.killed() {
-        <-ticker.C
-        
-        rf.mu.Lock()
-        if rf.truncating {
-            rf.mu.Unlock()
-            continue
-        }
-        
-        // 计算日志内存占用
-        logMemoryMB := rf.estimateLogMemory()
-        
-        if logMemoryMB > LOG_MEMORY_THRESHOLD_MB {
-            rf.truncating = true
-            rf.mu.Unlock()
-            
-            // 异步执行截断,避免阻塞
-            go rf.doTruncateByRole()
-        } else {
-            rf.mu.Unlock()
-        }
-    }
+	ticker := time.NewTicker(TRUNCATE_CHECK_INTERVAL * time.Second)
+	defer ticker.Stop()
+
+	for !rf.killed() {
+		<-ticker.C
+
+		rf.mu.Lock()
+		if rf.truncating {
+			rf.mu.Unlock()
+			continue
+		}
+
+		// 计算日志内存占用
+		logMemoryMB := rf.estimateLogMemory()
+
+		if logMemoryMB > LOG_MEMORY_THRESHOLD_MB {
+			rf.truncating = true
+			rf.mu.Unlock()
+
+			// 异步执行截断,避免阻塞
+			go rf.doTruncateByRole()
+		} else {
+			rf.mu.Unlock()
+		}
+	}
 }
 
 // 根据角色选择截断策略
 func (rf *Raft) doTruncateByRole() {
-    defer func() {
-        rf.mu.Lock()
-        rf.truncating = false
-        rf.lastTruncateTime = time.Now()
-        rf.mu.Unlock()
-    }()
-    
-    rf.mu.Lock()
-    role := rf.role
-    rf.mu.Unlock()
-    
-    if role == ROLE_LEADER {
-        rf.truncateAsLeader()
-    } else {
-        rf.truncateAsFollower()
-    }
+	defer func() {
+		rf.mu.Lock()
+		rf.truncating = false
+		rf.lastTruncateTime = time.Now()
+		rf.mu.Unlock()
+	}()
+
+	rf.mu.Lock()
+	role := rf.role
+	rf.mu.Unlock()
+
+	if role == ROLE_LEADER {
+		rf.truncateAsLeader()
+	} else {
+		rf.truncateAsFollower()
+	}
 }
 
 // Leader 截断逻辑
 func (rf *Raft) truncateAsLeader() {
-    rf.mu.Lock()
-    defer rf.mu.Unlock()
-    
-    // 找到所有节点都已复制的最小索引
-    minMatchIndex := rf.matchIndex[rf.me]
-    for peer := range rf.peers {
-        if peer != rf.me && rf.matchIndex[peer] < minMatchIndex {
-            minMatchIndex = rf.matchIndex[peer]
-        }
-    }
-    
-    // 确保保留足够的日志
-    if rf.lastIndex() - minMatchIndex < MIN_LOG_RETAIN {
-        util.DPrintf("RaftNode[%d] Leader skip truncate: not enough logs to retain", rf.me)
-        return
-    }
-    
-    util.DPrintf("RaftNode[%d] Leader truncate to index %d", rf.me, minMatchIndex)
-    rf.doTruncate(minMatchIndex)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if len(rf.peers) == 1 {
+		// 单节点直接用 lastApplied 作为截断点
+		safeIndex := rf.lastApplied
+
+		if safeIndex <= rf.shotOffset {
+			util.DPrintf("RaftNode[%d] Single-node skip: lastApplied(%d) <= shotOffset(%d)",
+				rf.me, safeIndex, rf.shotOffset)
+			return
+		}
+
+		if rf.lastIndex()-safeIndex < MIN_LOG_RETAIN {
+			util.DPrintf("RaftNode[%d] Single-node skip: insufficient retention", rf.me)
+			return
+		}
+
+		util.DPrintf("RaftNode[%d] Single-node truncate to index %d", rf.me, safeIndex)
+		rf.doTruncate(safeIndex)
+		return
+	}
+
+	// 找到所有节点都已复制的最小索引
+	minMatchIndex := rf.matchIndex[rf.me]
+	for peer := range rf.peers {
+		if peer != rf.me && rf.matchIndex[peer] < minMatchIndex {
+			minMatchIndex = rf.matchIndex[peer]
+		}
+	}
+
+	// 确保保留足够的日志
+	if rf.lastIndex()-minMatchIndex < MIN_LOG_RETAIN {
+		util.DPrintf("RaftNode[%d] Leader skip truncate: not enough logs to retain", rf.me)
+		return
+	}
+
+	util.DPrintf("RaftNode[%d] Leader truncate to index %d", rf.me, minMatchIndex)
+	rf.doTruncate(minMatchIndex)
 }
 
 // Follower 截断逻辑
 func (rf *Raft) truncateAsFollower() {
-    rf.mu.Lock()
-    defer rf.mu.Unlock()
-    
-    safeIndex := rf.lastApplied
-    
-    if rf.lastIndex() - safeIndex < MIN_LOG_RETAIN {
-        util.DPrintf("RaftNode[%d] Follower skip truncate: not enough logs to retain", rf.me)
-        return
-    }
-    
-    util.DPrintf("RaftNode[%d] Follower truncate to index %d", rf.me, safeIndex)
-    rf.doTruncate(safeIndex)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	safeIndex := rf.lastApplied
+
+	if rf.lastIndex()-safeIndex < MIN_LOG_RETAIN {
+		util.DPrintf("RaftNode[%d] Follower skip truncate: not enough logs to retain", rf.me)
+		return
+	}
+
+	util.DPrintf("RaftNode[%d] Follower truncate to index %d", rf.me, safeIndex)
+	rf.doTruncate(safeIndex)
 }
 
 // 实际执行截断 (正确的内存释放方式)
 func (rf *Raft) doTruncate(truncateIndex int) {
-    logPos := rf.index2LogPos(truncateIndex)
-    
-    // 记录截断前信息
-    beforeLen := len(rf.log)
-    beforeCap := cap(rf.log)
-    
-    // ✅ 正确方式: 创建新 slice 释放内存
-    newLog := make([]*raftrpc.LogEntry, len(rf.log)-logPos)
-    copy(newLog, rf.log[logPos:])
-    rf.log = newLog
-    
-    // 同步截断 Offsets 数组
-    offsetPos := truncateIndex - rf.shotOffset - 1
-    if offsetPos >= 0 && offsetPos < len(rf.Offsets) {
-        newOffsets := make([]int64, len(rf.Offsets)-offsetPos)
-        copy(newOffsets, rf.Offsets[offsetPos:])
-        rf.Offsets = newOffsets
-    }
-    
-    // 更新 shotOffset
-    rf.shotOffset = truncateIndex
-    
-    util.DPrintf("RaftNode[%d] truncated: from [len:%d,cap:%d] to [len:%d,cap:%d], shotOffset=%d",
-        rf.me, beforeLen, beforeCap, len(rf.log), cap(rf.log), rf.shotOffset)
+	logPos := rf.index2LogPos(truncateIndex)
+
+	// 记录截断前信息
+	beforeLen := len(rf.log)
+	beforeCap := cap(rf.log)
+
+	newLog := make([]*raftrpc.LogEntry, len(rf.log)-logPos)
+	copy(newLog, rf.log[logPos:])
+	rf.log = newLog
+
+	// 同步截断 Offsets 数组
+	offsetPos := truncateIndex - rf.shotOffset - 1
+	if offsetPos >= 0 && offsetPos < len(rf.Offsets) {
+		newOffsets := make([]int64, len(rf.Offsets)-offsetPos)
+		copy(newOffsets, rf.Offsets[offsetPos:])
+		rf.Offsets = newOffsets
+	}
+
+	// 更新 shotOffset
+	rf.shotOffset = truncateIndex
+
+	util.DPrintf("RaftNode[%d] truncated: from [len:%d,cap:%d] to [len:%d,cap:%d], shotOffset=%d",
+		rf.me, beforeLen, beforeCap, len(rf.log), cap(rf.log), rf.shotOffset)
 }
 
 // 估算日志内存占用
 func (rf *Raft) estimateLogMemory() int64 {
-    if len(rf.log) == 0 {
-        return 0
-    }
-    
-    // 估算每条日志的平均大小
-    // LogEntry 结构体本身 + Command 结构体 + Key/Value 字符串
-    avgEntrySize := int64(0)
-    sampleSize := 100
-    if len(rf.log) < sampleSize {
-        sampleSize = len(rf.log)
-    }
-    
-    for i := 0; i < sampleSize; i++ {
-        if rf.log[i] != nil && rf.log[i].Command != nil {
-            entrySize := int64(100) // 结构体基础大小
-            entrySize += int64(len(rf.log[i].Command.Key))
-            entrySize += int64(len(rf.log[i].Command.Value))
-            avgEntrySize += entrySize
-        }
-    }
-    avgEntrySize = avgEntrySize / int64(sampleSize)
-    
-    totalMemoryBytes := avgEntrySize * int64(len(rf.log))
-    return totalMemoryBytes / (1024 * 1024) // 转换为 MB
+	if len(rf.log) == 0 {
+		return 0
+	}
+
+	// 估算每条日志的平均大小
+	// LogEntry 结构体本身 + Command 结构体 + Key/Value 字符串
+	avgEntrySize := int64(0)
+	sampleSize := 100
+	if len(rf.log) < sampleSize {
+		sampleSize = len(rf.log)
+	}
+
+	for i := 0; i < sampleSize; i++ {
+		if rf.log[i] != nil && rf.log[i].Command != nil {
+			entrySize := int64(100) // 结构体基础大小
+			entrySize += int64(len(rf.log[i].Command.Key))
+			entrySize += int64(len(rf.log[i].Command.Value))
+			avgEntrySize += entrySize
+		}
+	}
+	avgEntrySize = avgEntrySize / int64(sampleSize)
+
+	totalMemoryBytes := avgEntrySize * int64(len(rf.log))
+	return totalMemoryBytes / (1024 * 1024) // 转换为 MB
 }
 
 // 最后的index
