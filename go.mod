@@ -4,13 +4,17 @@ go 1.18
 
 require (
 	github.com/edsrzf/mmap-go v1.2.0
-	github.com/linxGnu/grocksdb v1.10.2
+	github.com/linxGnu/grocksdb v1.7.7
 	github.com/syndtr/goleveldb v1.0.0
 )
 
 require (
+	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/stretchr/testify v1.8.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240513163218-0867130af1f8 // indirect
 	gopkg.in/yaml.v2 v2.2.2 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 require (
