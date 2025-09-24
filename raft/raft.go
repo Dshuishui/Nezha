@@ -852,6 +852,10 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// 	rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
 	// }
 	rf.log = append(rf.log, &logEntry) // 确保日志落盘之后，再更新log
+	    // ✅ 单节点直接提交
+    if len(rf.peers) == 1 {
+        rf.commitIndex = rf.lastIndex()  // 直接提交
+    }
 	rf.mu.Unlock()
 	// fmt.Printf("22222offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
 	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
