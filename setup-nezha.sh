@@ -4,7 +4,7 @@
 # Nezha 项目自动化部署脚本
 # 适用于全新的 Ubuntu 20.04/22.04 云服务器
 # RocksDB: 8.11.3
-# grocksdb: v1.6.22
+# grocksdb: v1.9.3
 #######################################################
 
 set -e  # 遇到错误立即退出
@@ -16,7 +16,7 @@ echo "======================================================"
 # 配置变量
 GO_VERSION="1.21.6"
 ROCKSDB_VERSION="8.11.3"
-GROCKSDB_VERSION="v1.6.22"
+GROCKSDB_VERSION="v1.9.3"
 PROJECT_REPO="https://github.com/Dshuishui/Nezha.git"
 PROJECT_DIR="$HOME/Nezha"
 
@@ -100,37 +100,69 @@ go version
 echo ""
 echo "步骤 4/7: 安装 RocksDB ${ROCKSDB_VERSION}..."
 
-# 检查是否已安装
-if [ -f "/usr/local/lib/librocksdb.so" ]; then
-    echo "检测到已安装 RocksDB，先卸载..."
-    sudo rm -rf /usr/local/include/rocksdb
-    sudo rm -f /usr/local/lib/librocksdb*
-    sudo rm -f /usr/local/lib/pkgconfig/rocksdb.pc
-    sudo ldconfig
-fi
+# 卸载旧版本
+sudo rm -rf /usr/local/include/rocksdb /usr/local/lib/librocksdb*
+sudo rm -rf /usr/include/rocksdb /usr/lib/x86_64-linux-gnu/librocksdb*
+sudo ldconfig
 
+# 清理可能存在的临时文件
+rm -rf /tmp/rocksdb-${ROCKSDB_VERSION}* /tmp/v${ROCKSDB_VERSION}.tar.gz*
+
+# 安装 RocksDB 8.11.3
 cd /tmp
-wget https://github.com/facebook/rocksdb/archive/v${ROCKSDB_VERSION}.tar.gz
-tar -xzf v${ROCKSDB_VERSION}.tar.gz
+echo "下载 RocksDB ${ROCKSDB_VERSION}..."
+wget -O rocksdb-${ROCKSDB_VERSION}.tar.gz https://github.com/facebook/rocksdb/archive/v${ROCKSDB_VERSION}.tar.gz
+tar -xzf rocksdb-${ROCKSDB_VERSION}.tar.gz
+
+echo "编译 RocksDB ${ROCKSDB_VERSION}..."
 cd rocksdb-${ROCKSDB_VERSION}
 
-# 使用 CMake 编译
-mkdir -p build && cd build
+# 清理可能存在的 build 目录
+rm -rf build
+mkdir build
+cd build
+
+echo "当前目录: $(pwd)"
+echo "运行 CMake 配置..."
+
 cmake -DCMAKE_BUILD_TYPE=Release \
       -DPORTABLE=ON \
       -DWITH_SNAPPY=ON \
       -DWITH_LZ4=ON \
       -DWITH_ZLIB=ON \
       -DWITH_ZSTD=ON \
+      -DWITH_GFLAGS=OFF \
+      -DWITH_BENCHMARK_TOOLS=OFF \
+      -DWITH_CORE_TOOLS=OFF \
+      -DWITH_TOOLS=OFF \
+      -DFAIL_ON_WARNINGS=OFF \
       ..
 
+echo "开始编译..."
 make -j$(nproc)
+
+echo "安装 RocksDB..."
 sudo make install
 sudo ldconfig
 
-# 验证安装
+# 修正：检查实际的安装位置
+ROCKSDB_INSTALLED=false
 if [ -f "/usr/local/lib/librocksdb.so" ]; then
+    ROCKSDB_LIB_DIR="/usr/local/lib"
+    ROCKSDB_INCLUDE_DIR="/usr/local/include"
+    ROCKSDB_INSTALLED=true
+elif [ -f "/usr/lib/x86_64-linux-gnu/librocksdb.so" ]; then
+    ROCKSDB_LIB_DIR="/usr/lib/x86_64-linux-gnu"
+    ROCKSDB_INCLUDE_DIR="/usr/include"
+    ROCKSDB_INSTALLED=true
+fi
+
+if [ "$ROCKSDB_INSTALLED" = true ]; then
     log_success "RocksDB ${ROCKSDB_VERSION} 安装完成"
+    echo "库目录: ${ROCKSDB_LIB_DIR}"
+    echo "头文件目录: ${ROCKSDB_INCLUDE_DIR}"
+    echo "安装的库文件:"
+    ls -la ${ROCKSDB_LIB_DIR}/librocksdb*
 else
     log_error "RocksDB 安装失败"
     exit 1
@@ -138,31 +170,37 @@ fi
 
 # 清理临时文件
 cd /tmp
-rm -rf rocksdb-${ROCKSDB_VERSION} v${ROCKSDB_VERSION}.tar.gz
+rm -rf rocksdb-${ROCKSDB_VERSION}* v${ROCKSDB_VERSION}.tar.gz*
 
 # ========== 步骤 5: 设置环境变量 ==========
 echo ""
 echo "步骤 5/7: 配置环境变量..."
 
-if ! grep -q "RocksDB 环境变量" ~/.bashrc; then
-    cat >> ~/.bashrc << 'EOF'
+# 移除旧的环境变量
+sed -i '/# RocksDB 环境变量/,+4d' ~/.bashrc 2>/dev/null || true
+
+# 添加新的环境变量（使用实际的安装路径）
+cat >> ~/.bashrc << EOF
 
 # RocksDB 环境变量
-export CGO_CFLAGS="-I/usr/local/include"
-export CGO_LDFLAGS="-L/usr/local/lib -lrocksdb"
-export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+export CGO_CFLAGS="-I${ROCKSDB_INCLUDE_DIR}"
+export CGO_LDFLAGS="-L${ROCKSDB_LIB_DIR} -lrocksdb"
+export LD_LIBRARY_PATH=${ROCKSDB_LIB_DIR}:\$LD_LIBRARY_PATH
 export CGO_ENABLED=1
 EOF
-    log_success "环境变量已添加到 ~/.bashrc"
-else
-    log_success "环境变量已存在"
-fi
+
+log_success "环境变量已更新到 ~/.bashrc"
 
 # 立即应用环境变量
-export CGO_CFLAGS="-I/usr/local/include"
-export CGO_LDFLAGS="-L/usr/local/lib -lrocksdb"
-export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+export CGO_CFLAGS="-I${ROCKSDB_INCLUDE_DIR}"
+export CGO_LDFLAGS="-L${ROCKSDB_LIB_DIR} -lrocksdb"
+export LD_LIBRARY_PATH=${ROCKSDB_LIB_DIR}:$LD_LIBRARY_PATH
 export CGO_ENABLED=1
+
+echo "当前环境变量:"
+echo "  CGO_CFLAGS: $CGO_CFLAGS"
+echo "  CGO_LDFLAGS: $CGO_LDFLAGS"
+echo "  LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
 
 # ========== 步骤 6: 克隆项目 ==========
 echo ""
@@ -183,21 +221,22 @@ log_success "项目代码已就绪"
 echo ""
 echo "步骤 7/7: 安装 Go 依赖并编译项目..."
 
-# 设置 grocksdb 版本
+# 更新项目依赖
+cd "$PROJECT_DIR/kvstore/FlexSync"
 go get github.com/linxGnu/grocksdb@${GROCKSDB_VERSION}
 go mod tidy
+go clean -cache
 
-# 清理缓存
-go clean -cache -modcache
-
-# 编译项目
-cd kvstore/FlexSync
+echo "开始编译项目..."
 go build -o nezha .
 
 if [ -f "./nezha" ]; then
     log_success "项目编译成功！可执行文件: $(pwd)/nezha"
 else
     log_error "项目编译失败"
+    # 显示详细错误信息
+    echo "尝试显示编译错误..."
+    go build -v -o nezha . || true
     exit 1
 fi
 
@@ -210,6 +249,8 @@ echo ""
 echo "环境信息："
 echo "  - Go 版本: $(go version | awk '{print $3}')"
 echo "  - RocksDB 版本: ${ROCKSDB_VERSION}"
+echo "  - RocksDB 库目录: ${ROCKSDB_LIB_DIR}"
+echo "  - RocksDB 头文件目录: ${ROCKSDB_INCLUDE_DIR}"
 echo "  - grocksdb 版本: ${GROCKSDB_VERSION}"
 echo "  - 项目目录: ${PROJECT_DIR}"
 echo "  - 可执行文件: ${PROJECT_DIR}/kvstore/FlexSync/nezha"
