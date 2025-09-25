@@ -35,7 +35,7 @@ func NewMemoryOptimizer(raft *Raft) *MemoryOptimizer {
 	return &MemoryOptimizer{
 		raft:              raft,
 		memoryThresholdMB: 500,                    // 默认500MB
-		minLogRetain:      10000,                  // 默认保留1万条日志
+		minLogRetain:      1,                  // 默认保留1万条日志
 		checkInterval:     6 * time.Second,       // 默认6秒检查一次
 		lastOptimizeTime:  time.Now(),
 	}
