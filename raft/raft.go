@@ -106,20 +106,19 @@ type Raft struct {
 	pools   []pool.Pool   // 用于日志同步的连接池
 	// kvrpc.UnimplementedKVServer
 	raftrpc.UnimplementedRaftServer
-	LastAppendTime   time.Time
-	Gap              int
-	Offsets          []int64
-	shotOffset       int
-	SyncTime         int
-	SyncChans        []chan string
-	batchLog         []*Entry
-	batchLogSize     int64
-	currentLog       string            // 存储value的磁盘文件的描述符
-	nullLogEntry     *raftrpc.LogEntry // 用于替换已应用的日志
-	lastNulled       int
-	numGC            int
-	lastTruncateTime time.Time // 上次截断时间
-	truncating       bool      // 是否正在截断
+	LastAppendTime  time.Time
+	Gap             int
+	Offsets         []int64
+	shotOffset      int
+	SyncTime        int
+	SyncChans       []chan string
+	batchLog        []*Entry
+	batchLogSize    int64
+	currentLog      string            // 存储value的磁盘文件的描述符
+	nullLogEntry    *raftrpc.LogEntry // 用于替换已应用的日志
+	lastNulled      int
+	numGC           int
+	memoryOptimizer *MemoryOptimizer // 内存优化器
 }
 
 const (
@@ -852,10 +851,10 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// 	rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
 	// }
 	rf.log = append(rf.log, &logEntry) // 确保日志落盘之后，再更新log
-	    // ✅ 单节点直接提交
-    if len(rf.peers) == 1 {
-        rf.commitIndex = rf.lastIndex()  // 直接提交
-    }
+	// ✅ 单节点直接提交
+	if len(rf.peers) == 1 {
+		rf.commitIndex = rf.lastIndex() // 直接提交
+	}
 	rf.mu.Unlock()
 	// fmt.Printf("22222offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
 	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
@@ -1187,12 +1186,15 @@ func (rf *Raft) electionLoop() {
 
 					rf.leaderId = rf.me
 					rf.nextIndex = make([]int, len(rf.peers))
-					for i := 0; i < len(rf.peers); i++ {
-						rf.nextIndex[i] = rf.lastIndex() + 1
-					}
 					rf.matchIndex = make([]int, len(rf.peers))
+
 					for i := 0; i < len(rf.peers); i++ {
-						rf.matchIndex[i] = 0
+						rf.nextIndex[i] = rf.lastIndex() + rf.shotOffset + 1 
+						if i == rf.me {
+							rf.matchIndex[i] = rf.lastIndex() + rf.shotOffset
+						} else {
+							rf.matchIndex[i] = 0
+						}
 					}
 
 					op := raftrpc.DetailCod{
@@ -1212,8 +1214,8 @@ func (rf *Raft) electionLoop() {
 
 func (rf *Raft) updateCommitIndex() {
 	sortedMatchIndex := make([]int, 0)
-	rf.matchIndex[rf.me] = rf.lastIndex()
-	sortedMatchIndex = append(sortedMatchIndex, rf.lastIndex()) // 补充自己位置的index
+	rf.matchIndex[rf.me] = rf.lastIndex() + rf.shotOffset
+	sortedMatchIndex = append(sortedMatchIndex, rf.matchIndex[rf.me])
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -1581,128 +1583,9 @@ func (rf *Raft) appendEntriesLoop() {
 			default:
 			}
 
-			// select { //   日志同步由对方服务器发来的反馈触发，避免过于重复的日志同步
-			// // case value := <-rf.SyncChan:
-			// // fmt.Println("value",value)
-			// // switch value {
-			// case value1 := <-rf.SyncChans[0]:
-			// 	if value1 == "NotLeader" {
-			// 		fmt.Println("被告知不是NotLeader，退出")
-			// 		return
-			// 	}
-			// 	rf.doAppendEntries(0)
-			// case value2 := <-rf.SyncChans[1]:
-			// 	if value2 == "NotLeader" {
-			// 		fmt.Println("被告知不是NotLeader，退出")
-			// 		return
-			// 	}
-			// 	rf.doAppendEntries(1)
-			// case value3 := <-rf.SyncChans[2]:
-			// 	if value3 == "NotLeader" {
-			// 		fmt.Println("被告知不是NotLeader，退出")
-			// 		return
-			// 	}
-			// 	rf.doAppendEntries(2)
-			// default: // 如果不是leader了就退出，后续设置一下
-			// 	fmt.Println("被告知不是NotLeader，退出")
-			// 	return
-			// }
-			// }
 		}()
 	}
 }
-
-// func (rf *Raft) appendEntriesLoop() {
-// 	for !rf.killed() {
-// 		time.Sleep(10 * time.Millisecond)       // 间隔10ms
-// 		for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
-// 			if peerId == rf.me {
-// 				continue
-// 			}
-// 			go func(peerId int) {
-// 				rf.mu.Lock()
-// 				// 只有leader才向外广播心跳
-// 				if rf.role != ROLE_LEADER {
-// 					rf.mu.Unlock()
-// 					return
-// 				}
-// 				if rf.lastIndex() == 0 {
-// 					rf.mu.Unlock()
-// 					return
-// 				}
-// 				args := raftrpc.AppendEntriesInRaftRequest{}
-// 				args.Term = int32(rf.currentTerm)
-// 				args.LeaderId = int32(rf.me)
-// 				args.LeaderCommit = int32(rf.commitIndex)
-// 				args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)
-// 				if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
-// 					args.PrevLogTerm = 0
-// 				} else {
-// 					args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
-// 				}
-// 				appendLog := rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
-// 				// fmt.Printf("此时下标会不会有问题，log长度：%v，下标：%v", len(rf.log), args.PrevLogIndex+1)
-// 				data, _ := json.Marshal(appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
-// 				args.Entries = data
-// 				rf.mu.Unlock()
-// 				if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
-// 					rf.mu.Lock()
-// 					// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
-// 					if rf.currentTerm != int(args.Term) {
-// 						rf.mu.Unlock()
-// 						return
-// 					}
-// 					if reply.Term > int32(rf.currentTerm) { // 变成follower
-// 						rf.role = ROLE_FOLLOWER
-// 						rf.leaderId = 0
-// 						rf.currentTerm = int(reply.Term)
-// 						rf.votedFor = -1
-// 						// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-// 						rf.mu.Unlock()
-// 						return
-// 					}
-// 					// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
-// 					// 因此这里得根据发出RPC请求时的状态做更新，而不要直接对nextIndex和matchIndex做相对加减
-// 					if reply.Success { // 同步日志成功
-// 						rf.nextIndex[peerId] = int(args.PrevLogIndex) + len(appendLog) + 1
-// 						rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // 记录已经复制到其他server的日志的最后index的情况
-// 						rf.updateCommitIndex()  			// 更新commitIndex
-// 					} else {
-// 						// 回退优化，参考：https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations
-// 						// nextIndexBefore := rf.nextIndex[peerId] // 仅为打印log
-
-// 						if reply.ConflictTerm != -1 { // follower的prevLogIndex位置term冲突了
-// 							// 我们找leader log中conflictTerm最后出现位置，如果找到了就用它作为nextIndex，否则用follower的conflictIndex
-// 							conflictTermIndex := -1
-// 							for index := args.PrevLogIndex; index > 0; index-- {
-// 								// if rf.log[rf.index2LogPos(int(index))].Term == reply.ConflictTerm {
-// 								// 	conflictTermIndex = int(index)
-// 								// 	break
-// 								// }
-// 								// 我认为下方这个效果更好，这样PrevLogIndex的值就为 index
-// 								if rf.log[rf.index2LogPos(int(index))].Term != reply.ConflictTerm {
-// 									conflictTermIndex = int(index + 1)
-// 									break
-// 								}
-// 							}
-// 							if conflictTermIndex != -1 { // leader log出现了这个term，那么从这里prevLogIndex之前的最晚出现位置尝试同步
-// 								rf.nextIndex[peerId] = conflictTermIndex
-// 							} else {
-// 								rf.nextIndex[peerId] = int(reply.ConflictIndex) // 用follower首次出现term的index作为同步开始
-// 							}
-// 						} else {
-// 							// follower没有发现prevLogIndex term冲突, 可能是被snapshot了或者日志长度不够
-// 							// 这时候我们将返回的conflictIndex设置为nextIndex即可
-// 							rf.nextIndex[peerId] = int(reply.ConflictIndex)
-// 						}
-// 						// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
-// 					}
-// 					rf.mu.Unlock()
-// 				}
-// 			}(peerId)
-// 		}
-// 	}
-// }
 
 func (rf *Raft) applyLogLoop() {
 	noMore := false
@@ -1760,170 +1643,9 @@ func (rf *Raft) applyLogLoop() {
 	}
 }
 
-func (rf *Raft) logTruncateLoop() {
-	ticker := time.NewTicker(TRUNCATE_CHECK_INTERVAL * time.Second)
-	defer ticker.Stop()
-
-	for !rf.killed() {
-		<-ticker.C
-
-		rf.mu.Lock()
-		if rf.truncating {
-			rf.mu.Unlock()
-			continue
-		}
-
-		// 计算日志内存占用
-		logMemoryMB := rf.estimateLogMemory()
-
-		if logMemoryMB > LOG_MEMORY_THRESHOLD_MB {
-			rf.truncating = true
-			rf.mu.Unlock()
-
-			// 异步执行截断,避免阻塞
-			go rf.doTruncateByRole()
-		} else {
-			rf.mu.Unlock()
-		}
-	}
-}
-
-// 根据角色选择截断策略
-func (rf *Raft) doTruncateByRole() {
-	defer func() {
-		rf.mu.Lock()
-		rf.truncating = false
-		rf.lastTruncateTime = time.Now()
-		rf.mu.Unlock()
-	}()
-
-	rf.mu.Lock()
-	role := rf.role
-	rf.mu.Unlock()
-
-	if role == ROLE_LEADER {
-		rf.truncateAsLeader()
-	} else {
-		rf.truncateAsFollower()
-	}
-}
-
-// Leader 截断逻辑
-func (rf *Raft) truncateAsLeader() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	if len(rf.peers) == 1 {
-		// 单节点直接用 lastApplied 作为截断点
-		safeIndex := rf.lastApplied
-
-		if safeIndex <= rf.shotOffset {
-			util.DPrintf("RaftNode[%d] Single-node skip: lastApplied(%d) <= shotOffset(%d)",
-				rf.me, safeIndex, rf.shotOffset)
-			return
-		}
-
-		if rf.lastIndex()-safeIndex < MIN_LOG_RETAIN {
-			util.DPrintf("RaftNode[%d] Single-node skip: insufficient retention", rf.me)
-			return
-		}
-
-		util.DPrintf("RaftNode[%d] Single-node truncate to index %d", rf.me, safeIndex)
-		rf.doTruncate(safeIndex)
-		return
-	}
-
-	// 找到所有节点都已复制的最小索引
-	minMatchIndex := rf.matchIndex[rf.me]
-	for peer := range rf.peers {
-		if peer != rf.me && rf.matchIndex[peer] < minMatchIndex {
-			minMatchIndex = rf.matchIndex[peer]
-		}
-	}
-
-	// 确保保留足够的日志
-	if rf.lastIndex()-minMatchIndex < MIN_LOG_RETAIN {
-		util.DPrintf("RaftNode[%d] Leader skip truncate: not enough logs to retain", rf.me)
-		return
-	}
-
-	util.DPrintf("RaftNode[%d] Leader truncate to index %d", rf.me, minMatchIndex)
-	rf.doTruncate(minMatchIndex)
-}
-
-// Follower 截断逻辑
-func (rf *Raft) truncateAsFollower() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	safeIndex := rf.lastApplied
-
-	if rf.lastIndex()-safeIndex < MIN_LOG_RETAIN {
-		util.DPrintf("RaftNode[%d] Follower skip truncate: not enough logs to retain", rf.me)
-		return
-	}
-
-	util.DPrintf("RaftNode[%d] Follower truncate to index %d", rf.me, safeIndex)
-	rf.doTruncate(safeIndex)
-}
-
-// 实际执行截断 (正确的内存释放方式)
-func (rf *Raft) doTruncate(truncateIndex int) {
-	logPos := rf.index2LogPos(truncateIndex)
-
-	// 记录截断前信息
-	beforeLen := len(rf.log)
-	beforeCap := cap(rf.log)
-
-	newLog := make([]*raftrpc.LogEntry, len(rf.log)-logPos)
-	copy(newLog, rf.log[logPos:])
-	rf.log = newLog
-
-	// 同步截断 Offsets 数组
-	offsetPos := truncateIndex - rf.shotOffset - 1
-	if offsetPos >= 0 && offsetPos < len(rf.Offsets) {
-		newOffsets := make([]int64, len(rf.Offsets)-offsetPos)
-		copy(newOffsets, rf.Offsets[offsetPos:])
-		rf.Offsets = newOffsets
-	}
-
-	// 更新 shotOffset
-	rf.shotOffset = truncateIndex
-
-	util.DPrintf("RaftNode[%d] truncated: from [len:%d,cap:%d] to [len:%d,cap:%d], shotOffset=%d",
-		rf.me, beforeLen, beforeCap, len(rf.log), cap(rf.log), rf.shotOffset)
-}
-
-// 估算日志内存占用
-func (rf *Raft) estimateLogMemory() int64 {
-	if len(rf.log) == 0 {
-		return 0
-	}
-
-	// 估算每条日志的平均大小
-	// LogEntry 结构体本身 + Command 结构体 + Key/Value 字符串
-	avgEntrySize := int64(0)
-	sampleSize := 100
-	if len(rf.log) < sampleSize {
-		sampleSize = len(rf.log)
-	}
-
-	for i := 0; i < sampleSize; i++ {
-		if rf.log[i] != nil && rf.log[i].Command != nil {
-			entrySize := int64(100) // 结构体基础大小
-			entrySize += int64(len(rf.log[i].Command.Key))
-			entrySize += int64(len(rf.log[i].Command.Value))
-			avgEntrySize += entrySize
-		}
-	}
-	avgEntrySize = avgEntrySize / int64(sampleSize)
-
-	totalMemoryBytes := avgEntrySize * int64(len(rf.log))
-	return totalMemoryBytes / (1024 * 1024) // 转换为 MB
-}
-
 // 最后的index
 func (rf *Raft) lastIndex() int {
-	return len(rf.log)
+	return rf.shotOffset + len(rf.log)
 }
 
 // 最后的term
@@ -1938,7 +1660,7 @@ func (rf *Raft) lastTerm() (lastLogTerm int) {
 
 // 日志index转化成log数组下标
 func (rf *Raft) index2LogPos(index int) (pos int) {
-	return index - 1
+	return index - rf.shotOffset - 1
 }
 
 // 服务器地址数组；当前方法对应的服务器地址数组中的下标；持久化存储了当前服务器状态的结构体；传递消息的通道结构体
@@ -1992,7 +1714,11 @@ func Make(peers []string, me int,
 	// 检查有没有收到日志同步的消息，若没有则连接有问题
 	go rf.AppendMonitor()
 
-	go rf.logTruncateLoop()
+	// 初始化内存优化器
+	rf.memoryOptimizer = NewMemoryOptimizer(rf)
+
+	// 启动内存优化器
+	go rf.memoryOptimizer.Start()
 
 	// 设置一个定时器，每十秒检查一次条件
 	ticker := time.NewTicker(5 * time.Second)
