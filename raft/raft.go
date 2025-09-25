@@ -1660,9 +1660,14 @@ func (rf *Raft) lastTerm() (lastLogTerm int) {
 
 // 日志index转化成log数组下标
 func (rf *Raft) index2LogPos(index int) (pos int) {
-	return index - rf.shotOffset - 1
+    if rf.shotOffset == 0 {
+        // 还没有执行过截断，使用原始计算方式
+        return index - 1
+    } else {
+        // 已经执行过截断，需要考虑shotOffset
+        return index - rf.shotOffset - 1
+    }
 }
-
 // 服务器地址数组；当前方法对应的服务器地址数组中的下标；持久化存储了当前服务器状态的结构体；传递消息的通道结构体
 func Make(peers []string, me int,
 	persister *Persister, applyCh chan ApplyMsg, ctx context.Context) *Raft {
