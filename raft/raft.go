@@ -1212,6 +1212,7 @@ func (rf *Raft) electionLoop() {
 
 func (rf *Raft) updateCommitIndex() {
 	sortedMatchIndex := make([]int, 0)
+	rf.matchIndex[rf.me] = rf.lastIndex()
 	sortedMatchIndex = append(sortedMatchIndex, rf.lastIndex()) // 补充自己位置的index
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
