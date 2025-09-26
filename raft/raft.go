@@ -694,7 +694,21 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
 			// follower在处理日志的时候更新numGC,leader则是在startput的时候
 			logEntry.Command.FileVersion = int64(rf.numGC)
-			rf.log = append(rf.log, logEntry)
+			// rf.log = append(rf.log, logEntry)
+			memoryLogEntry := &raftrpc.LogEntry{
+				Command: &raftrpc.DetailCod{
+					OpType:      logEntry.Command.OpType,
+					Key:         logEntry.Command.Key,
+					Value:       "x", // 直接用1字节的字符串
+					ClientId:    logEntry.Command.ClientId,
+					SeqId:       logEntry.Command.SeqId,
+					Index:       logEntry.Command.Index,
+					Term:        logEntry.Command.Term,
+					FileVersion: logEntry.Command.FileVersion,
+				},
+				Term: logEntry.Term,
+			}
+			rf.log = append(rf.log, memoryLogEntry) // 内存中存储假数据版本
 			if logEntry.Command.OpType != "TermLog" {
 				rf.batchLog = append(rf.batchLog, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
 			}
@@ -724,7 +738,21 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				rf.log = rf.log[:logPos] // 删除当前以及后续所有log
 				// follower在处理日志的时候更新numGC,leader则是在startput的时候
 				logEntry.Command.FileVersion = int64(rf.numGC)
-				rf.log = append(rf.log, logEntry) // 把新log加入进来
+				// rf.log = append(rf.log, logEntry) // 把新log加入进来
+				memoryLogEntry := &raftrpc.LogEntry{
+					Command: &raftrpc.DetailCod{
+						OpType:      logEntry.Command.OpType,
+						Key:         logEntry.Command.Key,
+						Value:       "x", // 直接用1字节的字符串
+						ClientId:    logEntry.Command.ClientId,
+						SeqId:       logEntry.Command.SeqId,
+						Index:       logEntry.Command.Index,
+						Term:        logEntry.Command.Term,
+						FileVersion: logEntry.Command.FileVersion,
+					},
+					Term: logEntry.Term,
+				}
+				rf.log = append(rf.log, memoryLogEntry) // 内存中存储假数据版本
 
 				// offset := rf.Offsets[index]      // 截取后面错误的offset
 				offset := rf.Offsets[index-rf.shotOffset-1] // 这个要减一
@@ -834,38 +862,31 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		arrEntry := []*Entry{&entry_global}
 		rf.WriteEntryToFile(arrEntry, rf.currentLog, 0)
 	}
-	// rf.batchLog = append(rf.batchLog, &entry)
-	// if err := enc.Encode(entry); err != nil {
-	// 	util.EPrintf("Encode error in Start()：%v", err)
-	// }
-	// rf.batchLogSize += int64(buffer.Len())
-	// // 如果总大小超过3MB，截取日志数组并退出循环
-	// if rf.batchLogSize >= fileSizeLimit {
-	// 	rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
-	// go func() {
-	// 	err := rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
-	// 	if err != nil {
-	// 		fmt.Println("Error in WriteEntryToFile:", err)
-	// 	}
-	// }()
-	// 	buffer.Reset()
-	// 	rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
-	// }
-	rf.log = append(rf.log, &logEntry) // 确保日志落盘之后，再更新log
-	    // ✅ 单节点直接提交
-    if len(rf.peers) == 1 {
-        rf.commitIndex = rf.lastIndex()  // 直接提交
-    }
-	rf.mu.Unlock()
-	// fmt.Printf("22222offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
-	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// rf.Offsets = append(rf.Offsets, offsets...)
-	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
-	// util.DPrintf("RaftNode[%d] Add Command, logIndex[%d] currentTerm[%d]", rf.me, index, term)
+	// rf.log = append(rf.log, &logEntry) // 确保日志落盘之后，再更新log
+
+	// 创建一个内存版本的logEntry，value使用1字节假数据
+	memoryLogEntry := raftrpc.LogEntry{
+		Command: &raftrpc.DetailCod{
+			OpType:      logEntry.Command.OpType,
+			Key:         logEntry.Command.Key,
+			Value:       "x", // 直接用1字节的字符串
+			ClientId:    logEntry.Command.ClientId,
+			SeqId:       logEntry.Command.SeqId,
+			Index:       logEntry.Command.Index,
+			Term:        logEntry.Command.Term,
+			FileVersion: logEntry.Command.FileVersion,
+		},
+		Term: logEntry.Term,
+	}
+	rf.log = append(rf.log, &memoryLogEntry) // 内存中存储假数据版本
+
+	// ✅ 单节点直接提交
+	if len(rf.peers) == 1 {
+		rf.commitIndex = rf.lastIndex() // 直接提交
+	}
+	rf.mu.Unlock()
+
 	return int32(index), int32(term), isLeader
 }
 
