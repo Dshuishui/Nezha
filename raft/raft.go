@@ -122,6 +122,8 @@ type Raft struct {
 	truncating       bool      // 是否正在截断
 }
 
+var realValueGlobal []byte // 存储真实的value数据
+
 const (
 	LOG_MEMORY_THRESHOLD_MB = 500   // 内存阈值 500MB
 	MIN_LOG_RETAIN          = 10000 // 最少保留的日志数
@@ -689,7 +691,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			CurrentTerm: uint32(logEntry.GetCommand().Term),
 			VotedFor:    uint32(rf.leaderId),
 			Key:         logEntry.GetCommand().Key,
-			Value:       logEntry.GetCommand().Value,
+			Value:       string(realValueGlobal),
 		}
 		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
 			// follower在处理日志的时候更新numGC,leader则是在startput的时候
@@ -1747,9 +1749,19 @@ func (rf *Raft) applyLogLoop() {
 				// util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets%d", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
 				appliedIndex := rf.index2LogPos(rf.lastApplied)
 				realIndex := rf.lastApplied - rf.shotOffset // 截断前1个数据,后续可以优化，考虑批量删除
+				realCommand := &raftrpc.DetailCod{
+					OpType:      rf.log[appliedIndex].Command.OpType,
+					Key:         rf.log[appliedIndex].Command.Key,
+					Value:       string(realValueGlobal), // 使用全局真实数据
+					ClientId:    rf.log[appliedIndex].Command.ClientId,
+					SeqId:       rf.log[appliedIndex].Command.SeqId,
+					Index:       rf.log[appliedIndex].Command.Index,
+					Term:        rf.log[appliedIndex].Command.Term,
+					FileVersion: rf.log[appliedIndex].Command.FileVersion,
+				}
 				appliedMsg := ApplyMsg{
 					CommandValid: true,
-					Command:      rf.log[appliedIndex].Command,
+					Command:      realCommand,
 					CommandIndex: rf.lastApplied,
 					CommandTerm:  int(rf.log[appliedIndex].Term),
 					Offset:       rf.Offsets[realIndex-1], // 将偏移量传进通道
@@ -1827,7 +1839,14 @@ func (rf *Raft) doTruncateByRole() {
 		rf.truncateAsFollower()
 	}
 }
-
+// 生成1KB大小的string并赋值给realValueGlobal
+func setRealValueGlobal() {
+	// 生成1KB(1024字节)大小的字符串，用'a'填充
+	realValueGlobal = make([]byte, 1024)
+	for i := 0; i < 1024; i++ {
+		realValueGlobal[i] = 'a'
+	}
+}
 // Leader 截断逻辑
 func (rf *Raft) truncateAsLeader() {
 	rf.mu.Lock()
@@ -2012,6 +2031,7 @@ func Make(peers []string, me int,
 	// 检查有没有收到日志同步的消息，若没有则连接有问题
 	go rf.AppendMonitor()
 
+	setRealValueGlobal()
 	// go rf.logTruncateLoop()
 
 	// 设置一个定时器，每十秒检查一次条件
