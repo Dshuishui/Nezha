@@ -2012,7 +2012,7 @@ func Make(peers []string, me int,
 	// 检查有没有收到日志同步的消息，若没有则连接有问题
 	go rf.AppendMonitor()
 
-	go rf.logTruncateLoop()
+	// go rf.logTruncateLoop()
 
 	// 设置一个定时器，每十秒检查一次条件
 	ticker := time.NewTicker(5 * time.Second)
