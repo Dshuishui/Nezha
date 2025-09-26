@@ -127,7 +127,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 			start := threadID * opsPerThread
 			end := (threadID + 1) * opsPerThread
 			if threadID == *cnums-1 {
-				end = *dnums
+				end = *dnums - 1
 			}
 
 			// 取余，保证索引下表在范围内
