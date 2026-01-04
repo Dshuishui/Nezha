@@ -39,7 +39,7 @@ import (
 	"gitee.com/dong-shuishui/FlexSync/rpc/kvrpc"
 	"gitee.com/dong-shuishui/FlexSync/rpc/raftrpc"
 
-	"gitee.com/dong-shuishui/FlexSync/kvstore/PerformanceMonitor"
+	// "gitee.com/dong-shuishui/FlexSync/kvstore/PerformanceMonitor"
 
 	// "gitee.com/dong-shuishui/FlexSync/rpc/raftrpc"
 	"gitee.com/dong-shuishui/FlexSync/util"
@@ -2200,9 +2200,9 @@ func main() {
 		}
 	}()
 
-	monitor, _ := performancemonitor.NewPerformanceMonitor("performance_metrics.csv", 100)
-	monitor.Start()
-	defer monitor.Stop()
+	// monitor, _ := performancemonitor.NewPerformanceMonitor("performance_metrics.csv", 100)
+	// monitor.Start()
+	// defer monitor.Stop()
 
 	wg.Add(1 + 1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
