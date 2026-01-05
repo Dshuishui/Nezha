@@ -21,7 +21,7 @@ import (
 
 	// "gitee.com/dong-shuishui/FlexSync/config"
 	"gitee.com/dong-shuishui/FlexSync/raft"
-	"gitee.com/dong-shuishui/FlexSync/kvstore/PerformanceMonitor"
+	// "gitee.com/dong-shuishui/FlexSync/kvstore/PerformanceMonitor"
 	"gitee.com/dong-shuishui/FlexSync/rpc/kvrpc"
 	"gitee.com/dong-shuishui/FlexSync/rpc/raftrpc"
 
@@ -732,9 +732,9 @@ func main() {
 			}
 		}
 	}()
-	monitor, _ := performancemonitor.NewPerformanceMonitor("Nezha-NoGC_performance_metrics.csv", 100)
-	monitor.Start()
-	defer monitor.Stop()
+	// monitor, _ := performancemonitor.NewPerformanceMonitor("Nezha-NoGC_performance_metrics.csv", 100)
+	// monitor.Start()
+	// defer monitor.Stop()
 	wg.Add(1 + 1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
 	// 初始化存储value的文件
