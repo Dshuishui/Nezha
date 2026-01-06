@@ -46,11 +46,11 @@ const (
 
 	// MaxSendMsgSize set max gRPC request message size sent to server.
 	// If any request message size is larger than current value, an error will be reported from gRPC.
-	MaxSendMsgSize = 4 << 30
+	MaxSendMsgSize = 20 << 30
 
 	// MaxRecvMsgSize set max gRPC receive message size received from server.
 	// If any message size is larger than current value, an error will be reported from gRPC.
-	MaxRecvMsgSize = 4 << 30
+	MaxRecvMsgSize = 20 << 30
 )
 
 // Options are params for creating grpc connect pool.

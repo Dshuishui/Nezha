@@ -30,3 +30,4 @@ TLA+/miniKVSRaft/states
 benchmark/testRocksDB-kvs
 kvstore/FlexSync/data
 kvstore/FlexSync/other
+benchmark/scan_pro/results
