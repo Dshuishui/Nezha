@@ -57,16 +57,16 @@ type scanResult struct {
 
 // 定义测试结果结构体
 type TestResult struct {
-	testNumber     int
-	elapsedTime    time.Duration
-	throughput     float64
-	avgLatency     time.Duration
-	totalRequests  int
-	goodPut        int
-	clientThreads  int
-	valueSize      int
-	dataSizeMB     float64
-	scanCount      int
+	testNumber    int
+	elapsedTime   time.Duration
+	throughput    float64
+	avgLatency    time.Duration
+	totalRequests int
+	goodPut       int
+	clientThreads int
+	valueSize     int
+	dataSizeMB    float64
+	scanCount     int
 }
 
 func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
@@ -89,7 +89,7 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 			// var totalActualLatency time.Duration
 
 			for j := 0; j < base; j++ {
-				k1 := rand.Intn(25000000)
+				k1 := rand.Intn(370000) // 略小于目标范围
 				// k1 := (i*base + j) * gapkey
 				k2 := k1 + gapkey - 1
 				startKey := strconv.Itoa(k1)
@@ -332,11 +332,13 @@ func saveSummaryToFile(filePath string, numTests int, avgThroughput float64, avg
 
 func main() {
 	flag.Parse()
-	gapkey := 100
+	gapkey := 4000000
 	servers := strings.Split(*ser, ",")
 	kvc := new(KVClient)
 	kvc.Kvservers = servers
 	kvc.clientId = nrand()
+	fmt.Printf("Client MaxSendMsgSize: %d bytes (%d GB)\n", pool.MaxSendMsgSize, pool.MaxSendMsgSize>>30)
+	fmt.Printf("Client MaxRecvMsgSize: %d bytes (%d GB)\n", pool.MaxRecvMsgSize, pool.MaxRecvMsgSize>>30)
 
 	kvc.InitPool()
 
@@ -349,15 +351,15 @@ func main() {
 		sourceDir = "."
 		fmt.Println("警告：无法获取源文件目录，将使用当前目录")
 	}
-	
+
 	resultFilePath := filepath.Join(sourceDir, *outputFile)
-	
+
 	fmt.Printf("测试结果将保存到: %s\n", resultFilePath)
 	fmt.Printf("开始运行测试，范围大小: %d...\n\n", gapkey)
 
 	var totalThroughput float64
 	var totalAvgLatency time.Duration
-	numTests := 10
+	numTests := 100
 
 	for i := 0; i < numTests; i++ {
 		startTime := time.Now()
@@ -370,16 +372,16 @@ func main() {
 
 		// 保存单次测试结果到文件
 		result := TestResult{
-			testNumber:     i + 1,
-			elapsedTime:    elapsedTime,
-			throughput:     throughput,
-			avgLatency:     avgLatency,
-			totalRequests:  *dnums,
-			goodPut:        kvc.goodPut,
-			clientThreads:  *cnums,
-			valueSize:      kvc.valuesize,
-			dataSizeMB:     sum_Size_MB,
-			scanCount:      kvc.goodscan,
+			testNumber:    i + 1,
+			elapsedTime:   elapsedTime,
+			throughput:    throughput,
+			avgLatency:    avgLatency,
+			totalRequests: *dnums,
+			goodPut:       kvc.goodPut,
+			clientThreads: *cnums,
+			valueSize:     kvc.valuesize,
+			dataSizeMB:    sum_Size_MB,
+			scanCount:     kvc.goodscan,
 		}
 
 		// 如果是第一次测试，则会创建新文件
@@ -400,11 +402,11 @@ func main() {
 
 	avgThroughput := totalThroughput / float64(numTests)
 	avgLatency := totalAvgLatency / time.Duration(numTests)
-	
+
 	// 打印汇总信息到控制台
 	fmt.Printf("\nAverage throughput over %d tests: %.4fMB/S\n", numTests, avgThroughput)
 	fmt.Printf("Average latency over %d tests: %v\n", numTests, avgLatency)
-	
+
 	// 保存汇总信息到文件
 	if err := saveSummaryToFile(resultFilePath, numTests, avgThroughput, avgLatency, gapkey); err != nil {
 		fmt.Printf("保存汇总信息失败: %v\n", err)

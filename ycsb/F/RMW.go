@@ -108,7 +108,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 	wg := sync.WaitGroup{}
 	opsPerThread := *dnums / *cnums
 	wg.Add(*cnums)
-	var baga = 25000000
+	var baga = 6250000
 
 	// 预生成唯一的key集合
 	allKeys := generateUniqueRandomInts(0, baga) // 针对1KB value，KV分离后

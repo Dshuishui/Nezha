@@ -1241,10 +1241,10 @@ func GetOffset(key string, sfi *SortedFileIndex) (int64, bool) {
 // getFromSortedFile 增加直接缓存value的LRU缓存功能
 func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (string, error) {
 	// 先检查LRU缓存
-	if value, ok := kvs.sortedFileCache.Get(key); ok {
-		// 缓存命中，直接返回缓存的value
-		return value.(string), nil
-	}
+	// if value, ok := kvs.sortedFileCache.Get(key); ok {
+	// 	// 缓存命中，直接返回缓存的value
+	// 	return value.(string), nil
+	// }
 	// 增加参数检查
 	if index == nil {
 		return "", errors.New("invalid index: index is nil")
@@ -1275,8 +1275,8 @@ func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (stri
 		return "", err
 	}
 
-	// 将查询到的value添加到缓存中
-	kvs.sortedFileCache.Add(key, entry.Value)
+	// // 将查询到的value添加到缓存中
+	// kvs.sortedFileCache.Add(key, entry.Value)
 
 	return entry.Value, nil
 }
@@ -2199,6 +2199,9 @@ func main() {
 
 		}
 	}()
+	// 在服务器代码中临时添加
+	fmt.Printf("MaxSendMsgSize: %d bytes (%d GB)\n", pool.MaxSendMsgSize, pool.MaxSendMsgSize>>30)
+	fmt.Printf("MaxRecvMsgSize: %d bytes (%d GB)\n", pool.MaxRecvMsgSize, pool.MaxRecvMsgSize>>30)
 
 	// monitor, _ := performancemonitor.NewPerformanceMonitor("performance_metrics.csv", 100)
 	// monitor.Start()

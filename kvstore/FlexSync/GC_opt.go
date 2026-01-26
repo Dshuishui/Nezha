@@ -174,14 +174,14 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	kvs.mu.Unlock()
 
 	// 初始化LRU缓存，设置合适的缓存大小
-	err = kvs.initSortedFileCache(sortedFileCacheNums)
-	if err != nil {
-		fmt.Printf("Failed to initialize LRU cache: %v\n", err)
-		return err
-	}
+	// err = kvs.initSortedFileCache(sortedFileCacheNums)
+	// if err != nil {
+	// 	fmt.Printf("Failed to initialize LRU cache: %v\n", err)
+	// 	return err
+	// }
 
 	// 预热缓存
-	kvs.warmupCache(firstSortedFilePath)
+	// kvs.warmupCache(firstSortedFilePath)
 
 	fmt.Println("建立了索引，得到了针对已排序文件的完整索引")
 	kvs.filePool, err = NewFileDescriptorPool(firstSortedFilePath, 50)
@@ -256,14 +256,14 @@ func (kvs *KVServer) CreateIndex(firstSortedFilePath string) error {
 
 	// 初始化LRU缓存，设置合适的缓存大小
 	// 这里假设缓存40000个key-value对
-	err = kvs.initSortedFileCache(sortedFileCacheNums)						    // 测试，err 不要 :=
-	if err != nil {
-		fmt.Printf("Failed to initialize LRU cache: %v\n", err)
-		return err
-	}
+	// err = kvs.initSortedFileCache(sortedFileCacheNums)						    // 测试，err 不要 :=
+	// if err != nil {
+	// 	fmt.Printf("Failed to initialize LRU cache: %v\n", err)
+	// 	return err
+	// }
 
-	// 预热缓存
-	kvs.warmupCache(firstSortedFilePath)
+	// // 预热缓存
+	// kvs.warmupCache(firstSortedFilePath)
 
 	fmt.Println("建立了索引，得到了针对已排序文件的稀疏索引")
 	kvs.filePool, err = NewFileDescriptorPool(firstSortedFilePath, 50)

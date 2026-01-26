@@ -23,11 +23,11 @@ import (
 )
 
 var (
-	ser          = flag.String("servers", "", "the Server, Client Connects to")
-	cnums        = flag.Int("cnums", 1, "Client Threads Number")
-	dnums        = flag.Int("dnums", 1000000, "data num")
-	key          = flag.Int("key", 6, "target key")
-	outputFile   = flag.String("output", "benchmark_results.txt", "输出结果文件名")
+	ser        = flag.String("servers", "", "the Server, Client Connects to")
+	cnums      = flag.Int("cnums", 1, "Client Threads Number")
+	dnums      = flag.Int("dnums", 1000000, "data num")
+	key        = flag.Int("key", 6, "target key")
+	outputFile = flag.String("output", "benchmark_results.txt", "输出结果文件名")
 )
 
 type KVClient struct {
@@ -61,7 +61,7 @@ type TestResult struct {
 }
 
 const (
-	KEY_SPACE = 25000000 // 键空间大小
+	KEY_SPACE = 100000000 // 键空间大小
 	ZIPF_S    = 1.01   // Zipf 分布的偏度参数
 	ZIPF_V    = 1      // 最小值
 )
@@ -94,7 +94,7 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 			startTime := time.Now()
 			for j := 0; j < base; j++ {
 				// 使用 Zipf 分布生成键
-				keyNum := zipf.Uint64() % uint64(KEY_SPACE)+1 // 确保键在有效范围内
+				keyNum := zipf.Uint64()%uint64(KEY_SPACE) + 1 // 确保键在有效范围内
 				targetKey := strconv.FormatUint(keyNum, 10)
 
 				value, keyExist, err := kvc.Get(targetKey)
@@ -105,7 +105,7 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 					continue
 				}
 				if err != nil {
-					fmt.Printf("读取key时有错误:%v\n",err)
+					fmt.Printf("读取key时有错误:%v\n", err)
 				}
 				// if !keyExist {
 				// 	fmt.Printf("key:%v 不存在\n",targetKey)
@@ -409,45 +409,45 @@ func runTest(testNumber int, filePath string) (float64, time.Duration) {
 }
 
 func main() {
-    flag.Parse()
-    numTests := 10
-    var totalThroughput float64
-    var totalAverageLatency time.Duration
+	flag.Parse()
+	numTests := 100
+	var totalThroughput float64
+	var totalAverageLatency time.Duration
 
-    // 获取源代码文件所在的目录
-    _, filename, _, ok := runtime.Caller(0)
-    var sourceDir string
-    if ok {
-        sourceDir = filepath.Dir(filename)
-    } else {
-        sourceDir = "."
-        fmt.Println("警告：无法获取源文件目录，将使用当前目录")
-    }
-    
-    resultFilePath := filepath.Join(sourceDir, *outputFile)
-    
-    fmt.Printf("测试结果将保存到: %s\n", resultFilePath)
-    fmt.Printf("开始运行 %d 次测试...\n\n", numTests)
+	// 获取源代码文件所在的目录
+	_, filename, _, ok := runtime.Caller(0)
+	var sourceDir string
+	if ok {
+		sourceDir = filepath.Dir(filename)
+	} else {
+		sourceDir = "."
+		fmt.Println("警告：无法获取源文件目录，将使用当前目录")
+	}
 
-    for i := 0; i < numTests; i++ {
-        fmt.Printf("\n运行测试 %d / %d\n", i+1, numTests)
-        throughput, averageLatency := runTest(i+1, resultFilePath)
-        totalThroughput += throughput
-        totalAverageLatency += averageLatency
+	resultFilePath := filepath.Join(sourceDir, *outputFile)
 
-        if i < numTests-1 {
-            fmt.Println("等待5秒后进行下一次测试...")
-            time.Sleep(5 * time.Second)
-        }
-    }
+	fmt.Printf("测试结果将保存到: %s\n", resultFilePath)
+	fmt.Printf("开始运行 %d 次测试...\n\n", numTests)
+
+	for i := 0; i < numTests; i++ {
+		fmt.Printf("\n运行测试 %d / %d\n", i+1, numTests)
+		throughput, averageLatency := runTest(i+1, resultFilePath)
+		totalThroughput += throughput
+		totalAverageLatency += averageLatency
+
+		if i < numTests-1 {
+			fmt.Println("等待5秒后进行下一次测试...")
+			time.Sleep(5 * time.Second)
+		}
+	}
 
 	averageThroughput := totalThroughput / float64(numTests)
 	overallAverageLatency := totalAverageLatency / time.Duration(numTests)
-	
+
 	// 打印汇总信息到控制台
 	fmt.Printf("\n%d 次测试的平均吞吐量: %.4f MB/S\n", numTests, averageThroughput)
 	fmt.Printf("%d 次测试的总平均延迟: %v\n", numTests, overallAverageLatency)
-	
+
 	// 保存汇总信息到文件
 	if err := saveSummaryToFile(resultFilePath, numTests, averageThroughput, overallAverageLatency); err != nil {
 		fmt.Printf("保存汇总信息失败: %v\n", err)

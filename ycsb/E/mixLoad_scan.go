@@ -114,7 +114,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 	wg.Add(*cnums)
 
 	// 预生成唯一的key集合
-	maxKey := 25000000
+	maxKey := 6250000
 	allKeys := generateUniqueRandomInts(0, maxKey)
 
 	results := make(chan mixedWorkloadResult, *cnums)

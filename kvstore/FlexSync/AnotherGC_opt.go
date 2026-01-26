@@ -31,7 +31,7 @@ var (
 	anotherNewPersisterPath    string
 )
 
-const sortedFileCacheNums = 4
+const sortedFileCacheNums = 1000
 
 // 在main函数中或者适当的地方初始化这些路径（添加到之前的InitGCPaths函数中）
 func InitAnotherGCPaths(dataDir string) {
@@ -279,14 +279,14 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	kvs.mu.Unlock()
 
 	// 初始化LRU缓存，设置合适的缓存大小
-	err = kvs.initSortedFileCache(sortedFileCacheNums)
-	if err != nil {
-		fmt.Printf("Failed to initialize LRU cache: %v\n", err)
-		return err
-	}
+	// err = kvs.initSortedFileCache(sortedFileCacheNums)
+	// if err != nil {
+	// 	fmt.Printf("Failed to initialize LRU cache: %v\n", err)
+	// 	return err
+	// }
 
 	// 预热缓存
-	kvs.warmupCache(mergedSortedFilePath)
+	// kvs.warmupCache(mergedSortedFilePath)
 
 	fmt.Println("建立了索引，得到了针对已排序文件的完整索引")
 	kvs.filePool, err = NewFileDescriptorPool(mergedSortedFilePath, 50)
@@ -393,14 +393,14 @@ func (kvs *KVServer) AnotherCreateIndex(SortedFilePath string) error {
 	kvs.anothersortedFileIndex = index
 
 	// 初始化LRU缓存，设置合适的缓存大小
-	err = kvs.initSortedFileCache(sortedFileCacheNums)					// 测试，err 不要 :=
-	if err != nil {
-		fmt.Printf("Failed to initialize LRU cache: %v\n", err)
-		return err
-	}
+	// err = kvs.initSortedFileCache(sortedFileCacheNums)					// 测试，err 不要 :=
+	// if err != nil {
+	// 	fmt.Printf("Failed to initialize LRU cache: %v\n", err)
+	// 	return err
+	// }
 
-	// 预热缓存
-	kvs.warmupCache(SortedFilePath)
+	// // 预热缓存
+	// kvs.warmupCache(SortedFilePath)
 
 	fmt.Println("建立了索引，得到了针对已排序文件的稀疏索引")
 	kvs.filePool, err = NewFileDescriptorPool(SortedFilePath, 50)

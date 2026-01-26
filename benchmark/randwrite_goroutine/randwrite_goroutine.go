@@ -105,7 +105,7 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 	wg.Add(*cnums)
 	kvc.goodPut = 0
 
-	allKeys := generateUniqueRandomInts(0, 7500000)
+	allKeys := generateUniqueRandomInts(0, *dnums-1)
 	results := make(chan putResult, *cnums)
 
 	for i := 0; i < *cnums; i++ {
@@ -221,7 +221,7 @@ func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftRespon
 			// util.EPrintf("seqid：%v, err in PutInRaft-调用了服务器的put方法: %v",request.SeqId, err)
 			// 这里防止服务器是宕机了，所以要change leader
 			return nil, err
-		} 
+		}
 		if reply.Err == raft.OK {
 			// fmt.Printf("找到了leader %v\n",kvc.leaderId)
 			return reply, nil
