@@ -7,6 +7,8 @@ import (
 	"encoding/binary"
 	"encoding/gob"
 	"log"
+	"path/filepath"
+	"runtime"
 	"strconv"
 
 	// "encoding/gob"
@@ -115,6 +117,7 @@ type Raft struct {
 	batchLog       []*Entry
 	batchLogSize   int64
 	currentLog     string            // 存储value的磁盘文件的描述符
+	originalLog    string            // dwisckey
 	nullLogEntry   *raftrpc.LogEntry // 用于替换已应用的日志
 	lastNulled     int
 	numGC          int
@@ -665,7 +668,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	// fmt.Printf("此时同步的日志为%v\n",len(logEntrys))
 	// 找到了第一个不同的index，开始同步日志
 	// var tempLogs []*Entry // 自动会在写入磁盘文件后进行清零的操作
-	var entry Entry
+	// var entry Entry
 	var index int
 	var logPos int
 	for i, logEntry := range logEntrys {
@@ -676,7 +679,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 
 		index = int(args.PrevLogIndex) + 1 + i
 		logPos = rf.index2LogPos(index)
-		entry = Entry{
+		entry := Entry{
 			Index:       uint32(logEntry.GetCommand().Index),
 			CurrentTerm: uint32(logEntry.GetCommand().Term),
 			VotedFor:    uint32(rf.leaderId),
@@ -886,7 +889,7 @@ func (rf *Raft) originalKvs(command interface{}) (int32, int32, bool) {
 			Value:       command.(*raftrpc.DetailCod).Value,
 		}
 		arrEntry := []*Entry{&entry_global}
-		rf.WriteEntryToFile_originalKvs(arrEntry, "/home/DYC/Gitee/FlexSync/raft/originalKvs.log", 0)
+		rf.WriteEntryToFile_originalKvs(arrEntry, rf.originalLog, 0)
 	}
 	// rf.batchLog = append(rf.batchLog, &entry)
 	// if err := enc.Encode(entry); err != nil {
@@ -1183,6 +1186,7 @@ func (rf *Raft) updateCommitIndex() {
 	}
 	sort.Ints(sortedMatchIndex)
 	newCommitIndex := sortedMatchIndex[len(rf.peers)/2]
+	// newCommitIndex := sortedMatchIndex[len(sortedMatchIndex)-1]
 	// fmt.Printf("newconmittindex%v\n",newCommitIndex)
 	// if语句的第一个条件则是排除掉还没有复制到大多数server的情况
 	// fmt.Printf("此时log的长度：%v以及newcommitindex的值：%v\n",len(rf.log),newCommitIndex)
@@ -1512,35 +1516,53 @@ func (rf *Raft) appendEntriesLoop() {
 			// 	rf.LastAppendTime = time.Now()
 			// }
 
-			select {
-			case value1 := <-rf.SyncChans[0]:
-				if value1 == "NotLeader" {
-					fmt.Println("被 server 0 告知不是NotLeader，退出")
-					return
+			for i := 0; i < len(rf.peers); i++ {
+				if i == rf.me {
+					continue
 				}
-				rf.doAppendEntries(0)
-			default:
+
+				select {
+				case val := <-rf.SyncChans[i]:
+					if val == "NotLeader" {
+						fmt.Printf("被 server %d 告知不是NotLeader，退出\n", i)
+						return
+					}
+					// 收到信号，触发日志同步
+					rf.doAppendEntries(i)
+				default:
+					// 通道为空，非阻塞跳过
+				}
 			}
 
-			select {
-			case value2 := <-rf.SyncChans[1]:
-				if value2 == "NotLeader" {
-					fmt.Println("被 server 1 告知不是NotLeader，退出")
-					return
-				}
-				rf.doAppendEntries(1)
-			default:
-			}
+			// select {
+			// case value1 := <-rf.SyncChans[0]:
+			// 	if value1 == "NotLeader" {
+			// 		fmt.Println("被 server 0 告知不是NotLeader，退出")
+			// 		return
+			// 	}
+			// 	rf.doAppendEntries(0)
+			// default:
+			// }
 
-			select {
-			case value3 := <-rf.SyncChans[2]:
-				if value3 == "NotLeader" {
-					fmt.Println("被 server 2 告知不是NotLeader，退出")
-					return
-				}
-				rf.doAppendEntries(2)
-			default:
-			}
+			// select {
+			// case value2 := <-rf.SyncChans[1]:
+			// 	if value2 == "NotLeader" {
+			// 		fmt.Println("被 server 1 告知不是NotLeader，退出")
+			// 		return
+			// 	}
+			// 	rf.doAppendEntries(1)
+			// default:
+			// }
+
+			// select {
+			// case value3 := <-rf.SyncChans[2]:
+			// 	if value3 == "NotLeader" {
+			// 		fmt.Println("被 server 2 告知不是NotLeader，退出")
+			// 		return
+			// 	}
+			// 	rf.doAppendEntries(2)
+			// default:
+			// }
 
 			// select { //   日志同步由对方服务器发来的反馈触发，避免过于重复的日志同步
 			// // case value := <-rf.SyncChan:
@@ -1769,6 +1791,38 @@ func (rf *Raft) memoryControlLoop() {
 	}
 }
 
+func (rf *Raft) SetOriginalLog(filename string) {
+    // 1. 获取当前代码文件 (raft.go) 的绝对路径
+    _, currentFile, _, ok := runtime.Caller(0)
+    if !ok {
+        log.Fatalf("无法获取源代码路径")
+    }
+
+    // 2. 获取 raft.go 所在的目录 (即 .../Nezha/raft/)
+    raftDir := filepath.Dir(currentFile)
+
+    // 3. 将文件名拼接到该绝对路径下
+    absPath := filepath.Join(raftDir, filename)
+    rf.originalLog = absPath
+
+    // 4. 确保目录存在
+    if err := os.MkdirAll(raftDir, 0755); err != nil {
+        log.Printf("无法创建目录: %v", err)
+        return
+    }
+
+    // 5. 创建或覆盖文件
+    file, err := os.Create(absPath)
+    if err != nil {
+        log.Printf("无法在路径 %s 创建文件: %v", absPath, err)
+        return
+    }
+    file.Close()
+    
+    // 打印绝对路径，方便你检查
+    fmt.Printf("RaftNode[%d] 原始日志绝对路径: %s\n", rf.me, absPath)
+}
+
 // 最后的index
 func (rf *Raft) lastIndex() int {
 	return len(rf.log)
@@ -1789,6 +1843,18 @@ func (rf *Raft) index2LogPos(index int) (pos int) {
 	return index - 1
 }
 
+func (rf *Raft) commitIndexUpdateLoop() {
+	for !rf.killed() {
+		time.Sleep(10 * time.Millisecond)
+
+		rf.mu.Lock()
+		if rf.role == ROLE_LEADER {
+			rf.updateCommitIndex()
+		}
+		rf.mu.Unlock()
+	}
+}
+
 // 服务器地址数组；当前方法对应的服务器地址数组中的下标；持久化存储了当前服务器状态的结构体；传递消息的通道结构体
 func Make(peers []string, me int,
 	persister *Persister, applyCh chan ApplyMsg, ctx context.Context) *Raft {
@@ -1796,7 +1862,7 @@ func Make(peers []string, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	for i := 0; i < 3; i++ {
+	for i := 0; i < len(peers); i++ {
 		rf.SyncChans = append(rf.SyncChans, make(chan string, 1000))
 	}
 
@@ -1805,7 +1871,8 @@ func Make(peers []string, me int,
 	rf.votedFor = -1
 	rf.lastActiveTime = time.Now()
 	rf.applyCh = applyCh
-	rf.Offsets = append(rf.Offsets, 0) // 初始化时添加一个0，使得后续对index的访问和raft的对其，从1开始
+	// rf.SetOriginalLog("originalKvs.log") 
+	rf.Offsets = append(rf.Offsets, 0)     // 初始化时添加一个0，使得后续对index的访问和raft的对其，从1开始
 
 	// 这就是自己修改grpc线程池option参数的做法
 	DesignOptions := pool.Options{
@@ -1839,6 +1906,8 @@ func Make(peers []string, me int,
 	go rf.applyLogLoop()
 	// 检查有没有收到日志同步的消息，若没有则连接有问题
 	go rf.AppendMonitor()
+
+	// go rf.commitIndexUpdateLoop()
 
 	// go rf.memoryControlLoop()
 
