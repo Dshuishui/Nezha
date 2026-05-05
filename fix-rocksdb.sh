@@ -12,4 +12,4 @@ done < files_to_fix.txt
 
 rm files_to_fix.txt
 
-make shared_lib -j$(nproc)
+make shared_lib -j$(nproc) EXTRA_CXXFLAGS="-Wno-error=deprecated-copy"
