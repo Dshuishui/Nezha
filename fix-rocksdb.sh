@@ -1,7 +1,8 @@
-# 查找所有可能需要修复的头文件
+#!/bin/bash
+# Fix missing <cstdint> includes for GCC 9+ compatibility (Ubuntu 20.04+)
+
 find . -name "*.h" -exec grep -l "uint64_t\|uint32_t\|uint16_t\|uint8_t" {} \; | grep -v "include.*cstdint" > files_to_fix.txt
 
-# 批量在这些文件开头添加 #include <cstdint>
 while read file; do
     if ! grep -q "#include <cstdint>" "$file"; then
         sed -i '1i#include <cstdint>' "$file"
@@ -9,8 +10,6 @@ while read file; do
     fi
 done < files_to_fix.txt
 
-# 清理临时文件
 rm files_to_fix.txt
 
-# 重新编译
-make shared_lib
+make shared_lib -j$(nproc)

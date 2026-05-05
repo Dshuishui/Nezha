@@ -14,7 +14,7 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 GO_VERSION="1.22.0"
-ROCKSDB_VERSION="v5.18.3"
+ROCKSDB_VERSION="5.18.fb"
 ROCKSDB_DIR="$HOME/rocksdb"
 
 info "=== Nezha Environment Setup ==="
