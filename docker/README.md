@@ -1,379 +1,191 @@
-# Nezha Distributed Key-Value Store - Docker Deployment Guide
+# Nezha Docker Deployment Guide
 
-![Nezha Logo](https://img.shields.io/badge/Nezha-Distributed%20KV%20Store-blue)
-![Docker](https://img.shields.io/badge/Docker-Supported-blue)
-![Raft](https://img.shields.io/badge/Consensus-Raft-green)
+This guide covers building and running Nezha using Docker on a single host.
 
-Nezha is a high-performance distributed key-value storage system that implements optimized Raft integration with key-value separation technology, achieving exceptional performance under strong consistency guarantees.
+---
 
-## 📁 Directory Structure
+## Directory Structure
 
 ```
 docker/
-├── Dockerfile.ubuntu24      # Docker image definition (Ubuntu 24.04)
+├── Dockerfile.ubuntu24      # Image definition (Ubuntu 24.04)
+├── docker-compose.yml       # Single-node orchestration
+├── manage.sh                # Management script
 ├── build.sh                 # Image build script
-├── manage.sh                # Cluster management script
-├── docker-compose.yml       # Cluster orchestration file
-├── README.md                # This documentation
-├── nezha                    # Compiled binary *
-├── librocksdb.so.5.18       # RocksDB library file *
-└── libgflags.so.2           # gflags library file *
+├── README.md                # This guide
+├── nezha                    # Compiled binary (required, not in repo)
+├── librocksdb.so.5.18       # RocksDB shared library (required, not in repo)
+└── libgflags.so.2           # gflags shared library (required, not in repo)
 ```
 
-**Note:** Files marked with `*` are large library files (approximately 135MB total) and are not included directly in the Git repository. These files can be obtained from the `nezha-multiGC-linux-x86_64.tar.gz` archive in [GitHub Release V1.0.0-multiGC](https://github.com/Dshuishui/Nezha/releases/tag/V1.0.0-multiGC).
+The three files marked "not in repo" must be provided before building the image. See [Step 1](#step-1-prepare-required-files) below.
 
-## 🚀 Quick Start
+---
 
-### Prerequisites
+## Prerequisites
 
-- Docker Engine 20.0+
+- Docker Engine 20.10+
 - Docker Compose 2.0+
-- At least 4GB available memory
-- x86_64 architecture
+- x86_64 (amd64) architecture
+- At least 2GB available memory
 
-### 1. Build Image
+---
+
+## Step 1: Prepare Required Files
+
+The image bundles the Nezha binary and its RocksDB runtime dependencies. These must be compiled from source and copied into the `docker/` directory.
+
+Follow [Method 1 in the main README](../README.md#method-1-source-code-compilation) to compile, then:
+
+```bash
+# From the project root after compiling
+cp nezha docker/
+cp /usr/local/lib/librocksdb.so.5.18 docker/
+cp /usr/local/lib/libgflags.so.2 docker/
+```
+
+Verify:
+```bash
+ls -lh docker/nezha docker/librocksdb.so.5.18 docker/libgflags.so.2
+```
+
+---
+
+## Step 2: Build the Image
 
 ```bash
 cd docker
 ./build.sh
 ```
 
-The build process includes:
-- Creating image based on Ubuntu 24.04
-- Installing runtime dependencies
-- Copying Nezha binary and library files
-- Configuring container environment
+Verify the image was built:
+```bash
+docker images nezha-multigc:latest
+```
 
-### 2. Start Cluster
+---
 
-#### Using Docker Compose (Recommended)
+## Step 3: Run
+
+### Using Docker Compose (Recommended)
 
 ```bash
-# One-click start of three-node cluster
+cd docker
 ./manage.sh start
-
-# Check startup status
-./manage.sh status
 ```
 
-**Note:** This deployment method simulates a three-node cluster on a single host, suitable for development, testing, and demonstration environments.
+This starts a single Nezha node using host networking. The node listens on:
+- **Client port**: `127.0.0.1:3088`
+- **Raft port**: `127.0.0.1:30881`
 
-#### Using Native Docker Commands
+### Using Docker CLI
 
 ```bash
-# Start three-node cluster (manual method)
-./manage.sh start-manual
-
-# Check cluster status
-docker ps | grep nezha
-```
-
-### 3. Verify Deployment
-
-```bash
-# View all node logs
-./manage.sh logs
-
-# View specific node
-./manage.sh logs nezha-multigc-node1
-
-# Check cluster status
-docker ps | grep nezha
-```
-
-## 📋 Management Commands
-
-### Image Management
-```bash
-# Build image
-./manage.sh build
-
-# Test image
-./manage.sh test
-```
-
-### Cluster Operations
-```bash
-# Start three-node cluster (Docker Compose)
-./manage.sh start
-
-# Start three-node cluster (manual mode)
-./manage.sh start-manual
-
-# Stop cluster
-./manage.sh stop
-
-# Restart cluster
-./manage.sh restart
-
-# Check cluster status
-./manage.sh status
-
-# Scale cluster (if supported)
-./manage.sh scale 5
-```
-
-### Log Management
-```bash
-# View all node logs
-./manage.sh logs
-
-# View specific node logs
-./manage.sh logs nezha-multigc-node1
-./manage.sh logs nezha-multigc-node2
-./manage.sh logs nezha-multigc-node3
-
-# Follow logs in real-time
-./manage.sh logs -f nezha-multigc-node1
-```
-
-### Testing and Debugging
-```bash
-# Start single node test
-./manage.sh single
-
-# Complete environment cleanup
-./manage.sh clean
-
-```
-
-## 🐳 Docker Compose Configuration
-
-### Cluster Architecture
-
-The `docker-compose.yml` defines a three-node Nezha cluster running on a single host:
-
-```yaml
-# Simplified configuration example
-version: '3.8'
-services:
-  nezha-node1:
-    image: nezha-multigc:latest
-    container_name: nezha-multigc-node1
-    ports:
-      - "3088:3088"
-      - "30881:30881"
-    environment:
-      - NODE_ID=1
-    volumes:
-      - nezha-data1:/app/data
-    networks:
-      - nezha-network
-
-  nezha-node2:
-    image: nezha-multigc:latest
-    container_name: nezha-multigc-node2
-    ports:
-      - "3089:3088"
-      - "30882:30882"
-    environment:
-      - NODE_ID=2
-    volumes:
-      - nezha-data2:/app/data
-    networks:
-      - nezha-network
-
-  nezha-node3:
-    image: nezha-multigc:latest
-    container_name: nezha-multigc-node3
-    ports:
-      - "3090:3088"
-      - "30883:30883"
-    environment:
-      - NODE_ID=3
-    volumes:
-      - nezha-data3:/app/data
-    networks:
-      - nezha-network
-
-volumes:
-  nezha-data1:
-  nezha-data2:
-  nezha-data3:
-
-networks:
-  nezha-network:
-    driver: bridge
-```
-
-### Cluster Features
-
-- **Single-Host Simulation**: Running three container instances on one host
-- **Network Isolation**: Using dedicated Docker network
-- **Data Persistence**: Independent data volumes for each node
-- **Port Mapping**: Configuration avoiding port conflicts
-- **Service Discovery**: Automatic service discovery between containers
-
-## 🔧 Manual Deployment
-
-### Single Container Startup
-
-```bash
-# Start single node
-docker run -d --name nezha-node1 \
-  -p 3088:3088 -p 30881:30881 \
+docker run -d \
+  --name nezha-node1 \
+  --network host \
   -v nezha-data:/app/data \
   nezha-multigc:latest \
-  -address 0.0.0.0:3088 -internalAddress 0.0.0.0:30881 -peers 127.0.0.1:30881
+  -address 127.0.0.1:3088 \
+  -internalAddress 127.0.0.1:30881 \
+  -peers 127.0.0.1:30881
 ```
 
-### Three-Node Cluster Manual Deployment
+---
+
+## Management Commands
 
 ```bash
-# Create network
-docker network create nezha-network
-
-# Start node 1
-docker run -d --name nezha-node1 \
-  --network nezha-network \
-  -p 3088:3088 -p 30881:30881 \
-  -v nezha-data1:/app/data \
-  nezha-multigc:latest \
-  -address 0.0.0.0:3088 -internalAddress 0.0.0.0:30881 \
-  -peers nezha-node1:30881,nezha-node2:30882,nezha-node3:30883
-
-# Start node 2
-docker run -d --name nezha-node2 \
-  --network nezha-network \
-  -p 3089:3088 -p 30882:30882 \
-  -v nezha-data2:/app/data \
-  nezha-multigc:latest \
-  -address 0.0.0.0:3088 -internalAddress 0.0.0.0:30882 \
-  -peers nezha-node1:30881,nezha-node2:30882,nezha-node3:30883
-
-# Start node 3
-docker run -d --name nezha-node3 \
-  --network nezha-network \
-  -p 3090:3088 -p 30883:30883 \
-  -v nezha-data3:/app/data \
-  nezha-multigc:latest \
-  -address 0.0.0.0:3088 -internalAddress 0.0.0.0:30883 \
-  -peers nezha-node1:30881,nezha-node2:30882,nezha-node3:30883
+./manage.sh build    # Build image
+./manage.sh start    # Start node
+./manage.sh stop     # Stop node
+./manage.sh restart  # Restart node
+./manage.sh logs     # Follow logs
+./manage.sh status   # Show status and port bindings
+./manage.sh clean    # Remove containers, volumes, and image
+./manage.sh test     # Smoke-test image (prints usage)
 ```
 
-## 📊 Network Configuration
+---
 
-### Port Mapping
-| Node | Client Port | Raft Port | Description |
-|------|-------------|-----------|-------------|
-| Node 1 | 3088 | 30881 | Leader node |
-| Node 2 | 3089 | 30882 | Follower node |
-| Node 3 | 3090 | 30883 | Follower node |
+## Networking
 
-### Service Discovery
-- **Client Connection**: `localhost:3088-3090`
-- **Internal Communication**: Docker network automatic discovery
+The deployment uses Docker **host networking** (`network_mode: "host"`). This means the container shares the host's network stack directly — no port mapping required, and the node is reachable at the host's IP address.
 
-- **Load Balancing**: Clients can connect to any node
+This is the recommended mode for single-host deployments. For multi-machine clusters, run one container per machine and set `-peers` to the actual IP addresses of all nodes.
 
-### Cluster Communication
-```bash
-# Inter-node communication test
-docker exec nezha-multigc-node1 ping nezha-multigc-node2
-docker exec nezha-multigc-node1 telnet nezha-multigc-node2 30882
+---
 
-# Check Raft status
-docker exec nezha-multigc-node1 curl http://localhost:3088/status
-```
+## Data Persistence
 
-## 💾 Data Persistence
+Container data is stored in a named Docker volume:
 
-### Data Volumes
-- `nezha-multigc-data1`: Node 1 data storage
-- `nezha-multigc-data2`: Node 2 data storage
-- `nezha-multigc-data3`: Node 3 data storage
+| Volume | Container path | Description |
+|--------|---------------|-------------|
+| `nezha-multigc-data1` | `/app/data` | All node data (index + value log) |
 
-### Data Directory Structure
+The actual on-disk layout inside `/app/data`:
 ```
 /app/data/
-├── raft_log/          # Raft log files
-├── rocksdb/           # RocksDB data
-├── value_log/         # Value log files
-└── gc_temp/           # GC temporary files
+└── data/
+    ├── dbfile/
+    │   └── keyIndex/       # LevelDB key-to-offset index
+    └── valuelog/
+        └── RaftState.log   # Raft log + value store
 ```
 
-### Backup and Recovery
-```bash
-# Backup data
-docker run --rm -v nezha-multigc-data1:/data -v $(pwd):/backup \
-  ubuntu:24.04 tar czf /backup/nezha-backup.tar.gz -C /data .
+### Backup
 
-# Restore data
-docker run --rm -v nezha-multigc-data1:/data -v $(pwd):/backup \
-  ubuntu:24.04 tar xzf /backup/nezha-backup.tar.gz -C /data
+```bash
+docker run --rm \
+  -v nezha-multigc-data1:/data \
+  -v $(pwd):/backup \
+  ubuntu:24.04 \
+  tar czf /backup/nezha-backup.tar.gz -C /data .
 ```
 
-## 🚨 Troubleshooting
+### Restore
 
-### Common Issues
-
-#### 1. Build Failure
 ```bash
-# Check necessary files
-ls -la nezha librocksdb.so.5.18 libgflags.so.2
-
-# Check file permissions
-chmod +x nezha
-chmod 644 lib*.so*
-
-# Rebuild
-./manage.sh clean
-./manage.sh build
+docker run --rm \
+  -v nezha-multigc-data1:/data \
+  -v $(pwd):/backup \
+  ubuntu:24.04 \
+  tar xzf /backup/nezha-backup.tar.gz -C /data
 ```
 
-#### 2. Container Startup Failure
+---
+
+## Troubleshooting
+
+### Build fails: missing files
+
 ```bash
-# View detailed errors
+# Check all three required files exist
+ls -lh docker/nezha docker/librocksdb.so.5.18 docker/libgflags.so.2
+chmod +x docker/nezha
+```
+
+### Container exits immediately
+
+```bash
+# View logs for error details
 docker logs nezha-multigc-node1
 
-# Check port occupation
-netstat -tulpn | grep -E "3088|30881"
-
-# Check disk space
-df -h
-
-# Manual startup debugging
-docker run -it --rm nezha-multigc:latest /bin/bash
+# Smoke-test the binary inside the container
+docker run --rm nezha-multigc:latest -h
 ```
 
-#### 3. Cluster Communication Issues
+### Port already in use
+
 ```bash
-# Check network
-docker network ls
-docker network inspect nezha-multigc-network
-
-# Check container network
-docker inspect nezha-multigc-node1 | grep -A 10 "NetworkSettings"
-
-# Test network connectivity
-docker exec nezha-multigc-node1 ping nezha-multigc-node2
-docker exec nezha-multigc-node1 telnet nezha-multigc-node2 30882
+ss -tulpn | grep -E "3088|30881"
 ```
 
-#### 4. Docker Compose Issues
+### Removing all data and starting fresh
+
 ```bash
-# Check compose configuration
-docker-compose config
-
-# View service status
-docker-compose ps
-
-# Recreate services
-docker-compose down
-docker-compose up -d
-
-# View service logs
-docker-compose logs nezha-node1
-```
-
-#### 5. Performance Issues
-```bash
-# Check resource limits
-docker inspect nezha-multigc-node1 | grep -A 5 "Memory\|Cpu"
-
-# Adjust resource limits
-docker update --memory 4g --cpus 2 nezha-multigc-node1
-
-# Check disk I/O
-docker exec nezha-multigc-node1 iostat -x 1
+cd docker
+./manage.sh clean
+./manage.sh start
 ```
