@@ -75,7 +75,7 @@ else
     done
 
     info "Compiling RocksDB (this takes 5–15 minutes)..."
-    make shared_lib -j$(nproc)
+    make shared_lib -j$(nproc) EXTRA_CXXFLAGS="-Wno-error=deprecated-copy"
     sudo make install-shared INSTALL_PATH=/usr/local
     sudo ldconfig
     cd "$PROJECT_DIR"
