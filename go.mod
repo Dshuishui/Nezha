@@ -1,6 +1,6 @@
 module gitee.com/dong-shuishui/FlexSync
 
-go 1.18
+go 1.22
 
 require (
 	github.com/edsrzf/mmap-go v1.2.0
