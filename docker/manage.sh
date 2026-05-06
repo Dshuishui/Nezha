@@ -5,8 +5,9 @@ cd "$SCRIPT_DIR"
 
 case "$1" in
     "build")
-        echo "Building Nezha Docker image..."
-        ./build.sh
+        echo "Building Nezha Docker image (first build takes 10-20 min for RocksDB compilation)..."
+        PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+        docker build -f "$SCRIPT_DIR/Dockerfile" -t nezha-multigc:latest "$PROJECT_DIR"
         ;;
     "start")
         echo "Starting Nezha node..."

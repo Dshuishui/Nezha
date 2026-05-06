@@ -2,6 +2,9 @@ version: '3.8'
 
 services:
   nezha-node1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     image: nezha-multigc:latest
     container_name: nezha-multigc-node1
     network_mode: "host"
