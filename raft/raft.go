@@ -1107,11 +1107,10 @@ func (rf *Raft) electionLoop() {
 					}(peerId)
 				}
 
+				maxTerm := 0
 				if voteCount > len(rf.peers)/2 {
 					goto VOTE_END
 				}
-
-				maxTerm := 0
 				for {
 					select {
 					case voteResult := <-voteResultChan:
