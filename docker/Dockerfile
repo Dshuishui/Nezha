@@ -1,54 +1,68 @@
-# Nezha multiGC 版本 Dockerfile
-FROM alpine:3.18
+# ── Stage 1: Builder ──────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS builder
 
-# 配置国内镜像源
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH=$PATH:/usr/local/go/bin
 
-# 安装运行时依赖
-RUN apk add --no-cache \
-    snappy \
-    zlib \
-    bzip2 \
-    lz4 \
-    zstd \
-    libstdc++ \
-    libgcc \
-    ca-certificates
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ cmake make git wget ca-certificates \
+    libsnappy-dev zlib1g-dev libbz2-dev \
+    liblz4-dev libzstd-dev libgflags-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# 复制编译好的 nezha 程序
-COPY nezha /usr/local/bin/nezha
+# Go 1.22
+RUN wget -q https://go.dev/dl/go1.22.0.linux-amd64.tar.gz -O /tmp/go.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz
 
-# 复制依赖库文件
-COPY librocksdb.so.5.18 /usr/local/lib/
-COPY libgflags.so.2 /usr/local/lib/
+# RocksDB v8.11.3
+RUN git clone --depth 1 --branch v8.11.3 \
+        https://github.com/facebook/rocksdb.git /tmp/rocksdb \
+    && cmake -S /tmp/rocksdb -B /tmp/rocksdb/build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DROCKSDB_BUILD_SHARED=ON \
+        -DWITH_SNAPPY=ON -DWITH_LZ4=ON -DWITH_ZSTD=ON \
+        -DWITH_ZLIB=ON -DWITH_BZ2=ON -DWITH_GFLAGS=ON \
+        -DFAIL_ON_WARNINGS=OFF \
+        -DWITH_TESTS=OFF -DWITH_TOOLS=OFF -DWITH_BENCHMARK_TOOLS=OFF \
+    && cmake --build /tmp/rocksdb/build -j$(nproc) \
+    && cmake --install /tmp/rocksdb/build \
+    && rm -rf /tmp/rocksdb
 
-# 创建符号链接
-RUN ln -sf /usr/local/lib/librocksdb.so.5.18 /usr/local/lib/librocksdb.so.5 && \
-    ln -sf /usr/local/lib/librocksdb.so.5 /usr/local/lib/librocksdb.so
+# Build Nezha binary
+WORKDIR /src
+COPY . .
+RUN CGO_CFLAGS="-I/usr/local/include" \
+    CGO_LDFLAGS="-L/usr/local/lib -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd" \
+    go build -o /nezha ./kvstore/FlexSync/
 
-# 创建非 root 用户
-RUN addgroup -g 1001 nezha && \
-    adduser -D -u 1001 -G nezha nezha
+# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
+FROM ubuntu:24.04
 
-# 设置权限
-RUN chmod +x /usr/local/bin/nezha
+ENV DEBIAN_FRONTEND=noninteractive
 
-# 更新库缓存
-RUN ldconfig /usr/local/lib || true
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libsnappy1v5 zlib1g libbz2-1.0 liblz4-1 libzstd1 \
+    libstdc++6 libc6 libgcc-s1 libgflags2.2 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# 创建数据目录（multiGC 版本的新特性）
-RUN mkdir -p /app/data && chown nezha:nezha /app/data
+COPY --from=builder /usr/local/lib/librocksdb.so.8* /usr/local/lib/
+RUN ldconfig
 
-# 切换到非 root 用户
+COPY --from=builder /nezha /usr/local/bin/nezha
+
+RUN groupadd -g 1001 nezha \
+    && useradd -r -u 1001 -g nezha nezha \
+    && mkdir -p /app/data \
+    && chown nezha:nezha /app/data
+
 USER nezha
 WORKDIR /app
 
-# 暴露端口
 EXPOSE 3088 30881
 
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD pgrep nezha > /dev/null || exit 1
 
-# 设置启动命令（默认使用 /app/data 作为数据目录）
 ENTRYPOINT ["/usr/local/bin/nezha", "-data", "/app/data"]

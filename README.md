@@ -194,7 +194,7 @@ After startup, Nezha creates the following layout under the specified `-data` di
 
 ## Method 2: Docker Container
 
-For quick deployment without compiling from source.
+Self-contained deployment — no manual dependency installation required. The Docker image compiles RocksDB and Nezha from source in a multi-stage build.
 
 ### Prerequisites
 
@@ -202,40 +202,26 @@ For quick deployment without compiling from source.
 - Docker Compose 2.0+
 - x86_64 (amd64) architecture
 
-### Step 1: Obtain Required Files
-
-The Docker image requires a pre-compiled `nezha` binary and RocksDB shared libraries. These must be placed in the `docker/` directory before building:
-
-```
-docker/
-├── nezha                  # compiled binary
-├── librocksdb.so.5.18     # RocksDB shared library
-└── libgflags.so.2         # gflags shared library
-```
-
-To obtain these files, compile from source (Method 1) and copy:
-
-```bash
-# After building via Method 1
-cp nezha docker/
-cp /usr/local/lib/librocksdb.so.5.18 docker/
-cp /usr/local/lib/libgflags.so.2 docker/
-```
-
-### Step 2: Build Docker Image
+### Step 1: Build Docker Image
 
 ```bash
 cd docker
-./build.sh
+./manage.sh build
 ```
 
-### Step 3: Run
+> **Note:** The first build takes 10–20 minutes — it compiles RocksDB v8.11.3 from source inside the container. Subsequent builds use Docker layer cache and are much faster.
 
-#### Using Docker Compose (Recommended)
+### Step 2: Start Node
 
 ```bash
-cd docker
 ./manage.sh start
+```
+
+### Step 3: Verify
+
+```bash
+./manage.sh status   # Check node status
+./manage.sh logs     # Follow live logs
 ```
 
 #### Using Docker CLI Directly
@@ -254,12 +240,13 @@ docker run -d \
 #### Management Commands
 
 ```bash
+./manage.sh build    # Build Docker image
 ./manage.sh start    # Start node
 ./manage.sh stop     # Stop node
 ./manage.sh restart  # Restart node
 ./manage.sh logs     # View logs
 ./manage.sh status   # View status
-./manage.sh clean    # Remove all containers and volumes
+./manage.sh clean    # Remove all containers, volumes, and image
 ```
 
 ---
