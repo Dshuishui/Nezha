@@ -1733,7 +1733,7 @@ func (rf *Raft) applyLogLoop() {
 					rf.applyCh <- appliedMsg
 					rf.Offsets = rf.Offsets[1:]
 					rf.shotOffset++
-					if rf.lastApplied%rf.Gap == 0 {
+					if rf.Gap > 0 && rf.lastApplied%rf.Gap == 0 {
 						util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, len(rf.Offsets))
 					}
 					noMore = false
