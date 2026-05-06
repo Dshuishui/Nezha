@@ -12,14 +12,14 @@ import (
 	// "syscall"
 	"time"
 
-	"github.com/tecbot/gorocksdb"
+	"github.com/linxGnu/grocksdb"
 )
 
 type WALTest struct {
 	DBPath     string
 	TargetSize uint64
-	DB         *gorocksdb.DB
-	Options    *gorocksdb.Options
+	DB         *grocksdb.DB
+	Options    *grocksdb.Options
 }
 
 type RecoveryResult struct {
@@ -41,7 +41,7 @@ func NewWALTest(dbPath string, targetSize uint64) *WALTest {
 
 // 配置RocksDB选项，控制WAL大小
 func (wt *WALTest) setupDBOptions() {
-	wt.Options = gorocksdb.NewDefaultOptions()
+	wt.Options = grocksdb.NewDefaultOptions()
 	wt.Options.SetCreateIfMissing(true)
 	
 	// 调整写入缓冲区，避免过早flush到SST，让数据保留在WAL中
@@ -61,7 +61,7 @@ func (wt *WALTest) setupDBOptions() {
 // 打开数据库
 func (wt *WALTest) openDB() error {
 	var err error
-	wt.DB, err = gorocksdb.OpenDb(wt.Options, wt.DBPath)
+	wt.DB, err = grocksdb.OpenDb(wt.Options, wt.DBPath)
 	if err != nil {
 		return fmt.Errorf("打开数据库失败: %v", err)
 	}
@@ -107,7 +107,7 @@ func (wt *WALTest) getWALSize() (int64, error) {
 
 // 写入测试数据直到WAL达到目标大小
 func (wt *WALTest) writeDataUntilTarget() (int, error) {
-	wo := gorocksdb.NewDefaultWriteOptions()
+	wo := grocksdb.NewDefaultWriteOptions()
 	defer wo.Destroy()
 	
 	recordCount := 0
@@ -120,7 +120,7 @@ func (wt *WALTest) writeDataUntilTarget() (int, error) {
 	
 	for {
 		// 使用批量写入来提高效率并控制WAL大小
-		batch := gorocksdb.NewWriteBatch()
+		batch := grocksdb.NewWriteBatch()
 		
 		for i := 0; i < batchSize; i++ {
 			key := keyPrefix + strconv.Itoa(recordCount)
@@ -150,7 +150,7 @@ func (wt *WALTest) writeDataUntilTarget() (int, error) {
 		if walSize >= int64(wt.TargetSize) {
 			fmt.Printf("达到目标WAL大小，继续写入一批数据...\n")
 			// 再写入一批数据
-			batch := gorocksdb.NewWriteBatch()
+			batch := grocksdb.NewWriteBatch()
 			for i := 0; i < batchSize; i++ {
 				key := keyPrefix + strconv.Itoa(recordCount)
 				batch.Put([]byte(key), []byte(value+strconv.Itoa(recordCount)))
@@ -214,7 +214,7 @@ func (wt *WALTest) measureRecovery() (time.Duration, error) {
 func (wt *WALTest) verifyDataIntegrity(expectedRecords int) (int, bool) {
 	fmt.Println("验证数据完整性...")
 	
-	ro := gorocksdb.NewDefaultReadOptions()
+	ro := grocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 	
 	keyPrefix := "test_key_"

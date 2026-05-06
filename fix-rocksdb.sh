@@ -1,15 +1,6 @@
 #!/bin/bash
-# Fix missing <cstdint> includes for GCC 9+ compatibility (Ubuntu 20.04+)
-
-find . -name "*.h" -exec grep -l "uint64_t\|uint32_t\|uint16_t\|uint8_t" {} \; | grep -v "include.*cstdint" > files_to_fix.txt
-
-while read file; do
-    if ! grep -q "#include <cstdint>" "$file"; then
-        sed -i '1i#include <cstdint>' "$file"
-        echo "Fixed: $file"
-    fi
-done < files_to_fix.txt
-
-rm files_to_fix.txt
-
-make shared_lib -j$(nproc) EXTRA_CXXFLAGS="-Wno-error=deprecated-copy"
+# This script is no longer needed.
+# The project now uses github.com/linxGnu/grocksdb with RocksDB 8.x,
+# which compiles cleanly on GCC 13 (Ubuntu 24.04) via CMake.
+# See scripts/setup-env.sh for the current build process.
+echo "fix-rocksdb.sh is no longer needed. See scripts/setup-env.sh."

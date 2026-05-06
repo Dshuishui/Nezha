@@ -15,7 +15,7 @@ package main
 
 // 	"gitee.com/dong-shuishui/FlexSync/raft"
 // 	lru "github.com/hashicorp/golang-lru"
-// 	"github.com/tecbot/gorocksdb"
+// 	"github.com/linxGnu/grocksdb"
 // )
 
 // // 修改这三个全局变量的路径，需要在运行时根据用户指定的data目录动态设置
@@ -113,7 +113,7 @@ package main
 // 	// }
 
 // 	// Iterate through RocksDB
-// 	it := kvs.oldPersister.GetDb().NewIterator(gorocksdb.NewDefaultReadOptions())
+// 	it := kvs.oldPersister.GetDb().NewIterator(grocksdb.NewDefaultReadOptions())
 // 	defer it.Close()
 
 // 	var writeNum = 0
@@ -425,7 +425,7 @@ package main
 // 		return fmt.Errorf("database is not initialized")
 // 	}
 
-// 	ro := gorocksdb.NewDefaultReadOptions()
+// 	ro := grocksdb.NewDefaultReadOptions()
 // 	defer ro.Destroy()
 
 // 	iter := kvs.oldPersister.GetDb().NewIterator(ro)
@@ -484,7 +484,7 @@ package main
 // 	}
 // 	defer logFile.Close()
 
-// 	ro := gorocksdb.NewDefaultReadOptions()
+// 	ro := grocksdb.NewDefaultReadOptions()
 // 	defer ro.Destroy()
 
 // 	iter := kvs.persister.GetDb().NewIterator(ro)

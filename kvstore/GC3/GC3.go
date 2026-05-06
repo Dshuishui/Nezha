@@ -6,7 +6,7 @@ import (
     "os"
     "bufio"
     "io"
-    "github.com/tecbot/gorocksdb"
+    "github.com/linxGnu/grocksdb"
 )
 
 type Entry struct {
@@ -18,7 +18,7 @@ type Entry struct {
     Offset      int64
 }
 
-func CompactAndSort(oldFilename, newFilename string, db *gorocksdb.DB) error {
+func CompactAndSort(oldFilename, newFilename string, db *grocksdb.DB) error {
     // 1. 读取原文件中的所有 Entry
     entries, err := readAllEntries(oldFilename)
     if err != nil {
@@ -104,12 +104,12 @@ func readEntry(file *os.File, reader *bufio.Reader) (Entry, int64, error) {
     return entry, entry.Offset, nil
 }
 
-func deduplicateEntries(entries []Entry, db *gorocksdb.DB) []Entry {
+func deduplicateEntries(entries []Entry, db *grocksdb.DB) []Entry {
     keyMap := make(map[string]Entry)
 
     for _, entry := range entries {
         // 使用 NewDefaultReadOptions() 替代 NewReadOptions()
-        ro := gorocksdb.NewDefaultReadOptions()
+        ro := grocksdb.NewDefaultReadOptions()
         defer ro.Destroy()
 
         offsetBytes, err := db.Get(ro, []byte(entry.Key))
@@ -134,7 +134,7 @@ func deduplicateEntries(entries []Entry, db *gorocksdb.DB) []Entry {
     return deduplicatedEntries
 }
 
-func writeEntriesAndUpdateDB(entries []Entry, filename string, db *gorocksdb.DB) error {
+func writeEntriesAndUpdateDB(entries []Entry, filename string, db *grocksdb.DB) error {
     file, err := os.Create(filename)
     if err != nil {
         return err
@@ -143,7 +143,7 @@ func writeEntriesAndUpdateDB(entries []Entry, filename string, db *gorocksdb.DB)
 
     writer := bufio.NewWriter(file)
 
-    wo := gorocksdb.NewDefaultWriteOptions()
+    wo := grocksdb.NewDefaultWriteOptions()
     defer wo.Destroy()
 
     for _, entry := range entries {

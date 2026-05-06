@@ -12,7 +12,7 @@ import (
 	// "sync"
 	"time"
 
-	"github.com/tecbot/gorocksdb"
+	"github.com/linxGnu/grocksdb"
 )
 
 type TestType int
@@ -38,8 +38,8 @@ type WALComparisonTest struct {
 	TestType    TestType
 	RecordCount int
 	ValueSize   int
-	DB          *gorocksdb.DB
-	Options     *gorocksdb.Options
+	DB          *grocksdb.DB
+	Options     *grocksdb.Options
 	LogFile     *os.File
 }
 
@@ -142,7 +142,7 @@ func (wct *WALComparisonTest) monitorCPUPeak(done chan bool) <-chan float64 {
 
 // 配置RocksDB选项
 // func (wct *WALComparisonTest) setupDBOptions() {
-// 	wct.Options = gorocksdb.NewDefaultOptions()
+// 	wct.Options = grocksdb.NewDefaultOptions()
 // 	wct.Options.SetCreateIfMissing(true)
 	
 // 	// 设置较大的写入缓冲区确保数据在WAL中
@@ -159,7 +159,7 @@ func (wct *WALComparisonTest) monitorCPUPeak(done chan bool) <-chan float64 {
 // }
 
 func (wct *WALComparisonTest) setupDBOptions() {
-	wct.Options = gorocksdb.NewDefaultOptions()
+	wct.Options = grocksdb.NewDefaultOptions()
 	wct.Options.SetCreateIfMissing(true)
 	
 	// === 生产环境内存配置 ===
@@ -169,15 +169,15 @@ func (wct *WALComparisonTest) setupDBOptions() {
 	wct.Options.SetMinWriteBufferNumberToMerge(2)       // 2个buffer合并
 	
 	// Block Cache配置 (2GB缓存)
-	blockCache := gorocksdb.NewLRUCache(2 * 1024 * 1024 * 1024)
-	blockOpts := gorocksdb.NewDefaultBlockBasedTableOptions()
+	blockCache := grocksdb.NewLRUCache(2 * 1024 * 1024 * 1024)
+	blockOpts := grocksdb.NewDefaultBlockBasedTableOptions()
 	blockOpts.SetBlockCache(blockCache)
 	blockOpts.SetBlockSize(16 * 1024) // 16KB block size
 	blockOpts.SetCacheIndexAndFilterBlocks(true) // 缓存索引和过滤器
 	wct.Options.SetBlockBasedTableFactory(blockOpts)
 	
 	// === 压缩配置 ===
-	// wct.Options.SetCompression(gorocksdb.LZ4Compression)
+	// wct.Options.SetCompression(grocksdb.LZ4Compression)
 	
 	// === Level配置 ===
 	wct.Options.SetNumLevels(7)
@@ -220,7 +220,7 @@ func (wct *WALComparisonTest) setupDBOptions() {
 // 打开数据库
 func (wct *WALComparisonTest) openDB() error {
 	var err error
-	wct.DB, err = gorocksdb.OpenDb(wct.Options, wct.DBPath)
+	wct.DB, err = grocksdb.OpenDb(wct.Options, wct.DBPath)
 	if err != nil {
 		wct.logfToFile("打开数据库失败: %v\n", err)
 		return fmt.Errorf("打开数据库失败: %v", err)
@@ -265,7 +265,7 @@ func (wct *WALComparisonTest) getWALSize() (int64, error) {
 
 // 写入测试数据
 func (wct *WALComparisonTest) writeTestData() (int64, error) {
-	wo := gorocksdb.NewDefaultWriteOptions()
+	wo := grocksdb.NewDefaultWriteOptions()
 	defer wo.Destroy()
 	
 	batchSize := 10000
@@ -287,7 +287,7 @@ func (wct *WALComparisonTest) writeTestData() (int64, error) {
 	
 	totalBatches := wct.RecordCount / batchSize
 	for batchNum := 0; batchNum < totalBatches; batchNum++ {
-		batch := gorocksdb.NewWriteBatch()
+		batch := grocksdb.NewWriteBatch()
 		
 		for i := 0; i < batchSize; i++ {
 			recordIndex := batchNum*batchSize + i
@@ -319,7 +319,7 @@ func (wct *WALComparisonTest) writeTestData() (int64, error) {
 	// 处理剩余的记录
 	remaining := wct.RecordCount % batchSize
 	if remaining > 0 {
-		batch := gorocksdb.NewWriteBatch()
+		batch := grocksdb.NewWriteBatch()
 		for i := 0; i < remaining; i++ {
 			recordIndex := totalBatches*batchSize + i
 			key := keyPrefix + strconv.Itoa(recordIndex)
@@ -422,7 +422,7 @@ func (wct *WALComparisonTest) verifyDataIntegrity() bool {
 	fmt.Printf("验证数据完整性 (%s): ", wct.TestType.String())
 	wct.logfToFile("开始数据完整性验证...\n")
 	
-	ro := gorocksdb.NewDefaultReadOptions()
+	ro := grocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 	
 	keyPrefix := "test_key_"
