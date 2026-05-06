@@ -7,7 +7,8 @@ case "$1" in
     "build")
         echo "Building Nezha Docker image (first build takes 10-20 min for RocksDB compilation)..."
         PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-        docker build -f "$SCRIPT_DIR/Dockerfile" \
+        docker build --network=host \
+            -f "$SCRIPT_DIR/Dockerfile" \
             -t dshuishui/nezha:latest \
             -t dshuishui/nezha:multiGC \
             "$PROJECT_DIR"
