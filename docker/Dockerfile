@@ -10,8 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     liblz4-dev libzstd-dev libgflags-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Go 1.22
-RUN wget -q https://go.dev/dl/go1.22.0.linux-amd64.tar.gz -O /tmp/go.tar.gz \
+# Go 1.22 (golang.google.cn is the official China mirror)
+RUN wget -q https://golang.google.cn/dl/go1.22.0.linux-amd64.tar.gz -O /tmp/go.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz
 
@@ -34,6 +34,7 @@ WORKDIR /src
 COPY . .
 RUN CGO_CFLAGS="-I/usr/local/include" \
     CGO_LDFLAGS="-L/usr/local/lib -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd" \
+    GOPROXY=https://goproxy.cn,direct \
     go build -o /nezha ./kvstore/FlexSync/
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
