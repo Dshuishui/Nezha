@@ -2,39 +2,26 @@
 FROM ubuntu:24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PATH=$PATH:/usr/local/go/bin
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ cmake make git wget ca-certificates \
+    build-essential git ca-certificates \
+    golang-1.22-go \
+    librocksdb-dev \
     libsnappy-dev zlib1g-dev libbz2-dev \
     liblz4-dev libzstd-dev libgflags-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Go 1.22 (golang.google.cn is the official China mirror)
-RUN wget -q https://golang.google.cn/dl/go1.22.0.linux-amd64.tar.gz -O /tmp/go.tar.gz \
-    && tar -C /usr/local -xzf /tmp/go.tar.gz \
-    && rm /tmp/go.tar.gz
+ENV PATH=$PATH:/usr/lib/go-1.22/bin
 
-# RocksDB v8.11.3
-RUN git clone --depth 1 --branch v8.11.3 \
-        https://github.com/facebook/rocksdb.git /tmp/rocksdb \
-    && cmake -S /tmp/rocksdb -B /tmp/rocksdb/build \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DROCKSDB_BUILD_SHARED=ON \
-        -DWITH_SNAPPY=ON -DWITH_LZ4=ON -DWITH_ZSTD=ON \
-        -DWITH_ZLIB=ON -DWITH_BZ2=ON -DWITH_GFLAGS=ON \
-        -DFAIL_ON_WARNINGS=OFF \
-        -DWITH_TESTS=OFF -DWITH_TOOLS=OFF -DWITH_BENCHMARK_TOOLS=OFF \
-    && cmake --build /tmp/rocksdb/build -j$(nproc) \
-    && cmake --install /tmp/rocksdb/build \
-    && rm -rf /tmp/rocksdb
+# Download Go modules first for better layer caching
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN GOPROXY=https://goproxy.cn,direct go mod download
 
 # Build Nezha binary
-WORKDIR /src
 COPY . .
-RUN CGO_CFLAGS="-I/usr/local/include" \
-    CGO_LDFLAGS="-L/usr/local/lib -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd" \
-    GOPROXY=https://goproxy.cn,direct \
+RUN CGO_CFLAGS="-I/usr/include" \
+    CGO_LDFLAGS="-L/usr/lib/x86_64-linux-gnu -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd" \
     go build -o /nezha ./kvstore/FlexSync/
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
@@ -44,11 +31,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsnappy1v5 zlib1g libbz2-1.0 liblz4-1 libzstd1 \
-    libstdc++6 libc6 libgcc-s1 libgflags2.2 \
-    ca-certificates \
+    libstdc++6 libgflags2.2 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/local/lib/librocksdb.so.8* /usr/local/lib/
+COPY --from=builder /usr/lib/x86_64-linux-gnu/librocksdb.so* /usr/lib/x86_64-linux-gnu/
 RUN ldconfig
 
 COPY --from=builder /nezha /usr/local/bin/nezha
