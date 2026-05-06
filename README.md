@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Go 1.22+](https://img.shields.io/badge/go-1.22+-blue.svg)](https://golang.org/dl/)
-[![RocksDB](https://img.shields.io/badge/RocksDB-5.18.fb-green.svg)](https://rocksdb.org/)
+[![RocksDB](https://img.shields.io/badge/RocksDB-8.x-green.svg)](https://rocksdb.org/)
 
 **High-Performance Distributed Key-Value Storage System with Key-Value Separation Optimized Raft Consensus Protocol**
 
@@ -82,31 +82,29 @@ sudo apt-get install -y gcc g++ make git \
     liblz4-dev libzstd-dev libgflags-dev
 ```
 
-#### 3. RocksDB 5.18.fb (Source Compilation)
+#### 3. RocksDB 8.x (Source Compilation)
 
 ```bash
-# Clone RocksDB
-git clone https://github.com/facebook/rocksdb.git
-cd rocksdb
-git checkout v5.18.3
+# Clone RocksDB v8.11.3
+git clone --depth 1 --branch v8.11.3 https://github.com/facebook/rocksdb.git
+cd rocksdb && mkdir build && cd build
 
-# Compile shared library (takes 5–15 minutes)
-make shared_lib -j$(nproc)
+# Configure
+cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DROCKSDB_BUILD_SHARED=ON \
+    -DWITH_SNAPPY=ON -DWITH_LZ4=ON -DWITH_ZSTD=ON \
+    -DWITH_ZLIB=ON -DWITH_BZ2=ON -DWITH_GFLAGS=ON \
+    -DFAIL_ON_WARNINGS=OFF \
+    -DWITH_TESTS=OFF -DWITH_TOOLS=OFF
 
-# Install
-sudo make install-shared INSTALL_PATH=/usr/local
-
-# Update library cache
+# Compile and install (takes 5–10 minutes)
+make -j$(nproc)
+sudo make install
 sudo ldconfig
 
-cd ..
+cd ../..
 ```
-
-> **Note:** If compilation fails with `'uint64_t' does not name a type` on Ubuntu 20.04+, run the included fix script:
-> ```bash
-> ./fix-rocksdb.sh
-> ```
-> Then retry `make shared_lib`.
 
 #### 4. Configure CGO Environment Variables
 
@@ -355,17 +353,6 @@ Nezha/
 ---
 
 ## Troubleshooting
-
-### RocksDB Compilation: Missing `<cstdint>` Headers
-
-**Symptom:** `error: 'uint64_t' does not name a type`
-
-**Cause:** RocksDB 5.18.fb predates modern GCC requirements for explicit `<cstdint>` inclusion.
-
-**Fix:**
-```bash
-./fix-rocksdb.sh
-```
 
 ### CGO Linking Error
 

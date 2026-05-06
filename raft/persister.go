@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/tecbot/gorocksdb"
+	"github.com/linxGnu/grocksdb"
 
 	"sync"
 	"strings"
@@ -23,9 +23,9 @@ var ErrKeyNotFound = errors.New("key not found")
 
 type Persister struct {
 	// db *leveldb.DB
-	db *gorocksdb.DB
-	ro   *gorocksdb.ReadOptions
-	wo   *gorocksdb.WriteOptions
+	db *grocksdb.DB
+	ro   *grocksdb.ReadOptions
+	wo   *grocksdb.WriteOptions
 	muRO sync.Mutex
 	muWO sync.Mutex
 }
@@ -56,8 +56,8 @@ func (p *Persister) UnpadKey(paddedKey string) string {
 
 func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
     var err error
-    bbto := gorocksdb.NewDefaultBlockBasedTableOptions()
-    opts := gorocksdb.NewDefaultOptions()
+    bbto := grocksdb.NewDefaultBlockBasedTableOptions()
+    opts := grocksdb.NewDefaultOptions()
     
     if disableCache {
         // 完全禁用所有缓存
@@ -67,21 +67,21 @@ func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
         opts.SetAllowMmapReads(false)            // 关闭预读/内存映射读取
     } else {
         // 启用缓存
-        bbto.SetBlockCache(gorocksdb.NewLRUCache(3 << 30))
+        bbto.SetBlockCache(grocksdb.NewLRUCache(3 << 30))
         bbto.SetCacheIndexAndFilterBlocks(true)
     }
     
     opts.SetBlockBasedTableFactory(bbto)
     opts.SetCreateIfMissing(true)
     
-    p.db, err = gorocksdb.OpenDb(opts, path)
+    p.db, err = grocksdb.OpenDb(opts, path)
     if err != nil {
         return nil, fmt.Errorf("open db failed: %w", err)
     }
     
-    p.wo = gorocksdb.NewDefaultWriteOptions()
+    p.wo = grocksdb.NewDefaultWriteOptions()
 	// p.wo.DisableWAL(true)  // pasv 这里添加，关闭 WAL
-    p.ro = gorocksdb.NewDefaultReadOptions()
+    p.ro = grocksdb.NewDefaultReadOptions()
     
     if disableCache {
         p.ro.SetFillCache(false)  // 防止读取操作填充缓存
@@ -114,7 +114,7 @@ func (p *Persister) Close() {
 
 func (p *Persister) Put_opt(key string, value int64) {
     // 不要创建新的 wo，使用对象中已经配置好的
-    // wo := gorocksdb.NewDefaultWriteOptions()
+    // wo := grocksdb.NewDefaultWriteOptions()
     // defer wo.Destroy()
     
     valueBytes := make([]byte, 8)
@@ -131,7 +131,7 @@ func (p *Persister) Put_opt(key string, value int64) {
 
 func (p *Persister) Put(key string, value string) {
     // 不要创建新的 wo，使用对象中已经配置好的
-    // wo := gorocksdb.NewDefaultWriteOptions()
+    // wo := grocksdb.NewDefaultWriteOptions()
     // defer wo.Destroy()
     
     paddedKey := p.PadKey(key)
@@ -145,7 +145,7 @@ func (p *Persister) Put(key string, value string) {
 }
 
 func (p *Persister) Get_opt(key string) (int64, error) {
-	ro := gorocksdb.NewDefaultReadOptions()
+	ro := grocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
 	paddedKey := p.PadKey(key)
@@ -177,7 +177,7 @@ func (p *Persister) Get_opt(key string) (int64, error) {
 }
 
 func (p *Persister) Get(key string) (string, error) {
-	ro := gorocksdb.NewDefaultReadOptions()
+	ro := grocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
 	paddedKey := p.PadKey(key)
@@ -200,7 +200,7 @@ func (p *Persister) Get(key string) (string, error) {
 func (p *Persister) ScanRange_opt(startKey, endKey string) (map[string]int64, error) {
 	// p.muRO.Lock()
 	// defer p.muRO.Unlock()
-	ro := gorocksdb.NewDefaultReadOptions()
+	ro := grocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 	result := make(map[string]int64)
 
@@ -268,14 +268,14 @@ func parseValueInt64(value []byte) (int64, error) {
 	return int64(binary.LittleEndian.Uint64(value)), nil
 }
 
-func (p *Persister) GetDb() (db *gorocksdb.DB) {
+func (p *Persister) GetDb() (db *grocksdb.DB) {
 	return p.db
 }
 
 func (p *Persister) ScanRange(startKey, endKey string) (map[string]string, error) {
 	// p.muRO.Lock()
 	// defer p.muRO.Unlock()
-	ro := gorocksdb.NewDefaultReadOptions()
+	ro := grocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 	result := make(map[string]string)
 

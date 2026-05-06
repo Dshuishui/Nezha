@@ -32,7 +32,7 @@ package main
 // 	// "google.golang.org/grpc/credentials/insecure"
 // 	"gitee.com/dong-shuishui/FlexSync/pool"
 // 	"github.com/syndtr/goleveldb/leveldb"
-// 	"github.com/tecbot/gorocksdb"
+// 	"github.com/linxGnu/grocksdb"
 // 	"google.golang.org/grpc/keepalive"
 // 	"google.golang.org/grpc/reflection"
 // 	// "gitee.com/dong-shuishui/FlexSync/kvstore/GC"
@@ -740,7 +740,7 @@ package main
 // 		return fmt.Errorf("database is not initialized")
 // 	}
 
-// 	ro := gorocksdb.NewDefaultReadOptions()
+// 	ro := grocksdb.NewDefaultReadOptions()
 // 	defer ro.Destroy()
 
 // 	iter := kvs.persister.GetDb().NewIterator(ro)
