@@ -1702,35 +1702,42 @@ func (rf *Raft) applyLogLoop() {
 			defer rf.mu.Unlock()
 
 			noMore = true
-			// fmt.Printf("此时的offset的长度是多少：%v",len(rf.Offsets))
-			if (rf.commitIndex > rf.lastApplied) && ((rf.lastApplied - rf.shotOffset) <
-				len(rf.Offsets)) {
-				// fmt.Printf("提交了一次commitidnex%v-lastapplied%v-shotoffset%v-len(off)%v\n",rf.commitIndex,rf.lastApplied,rf.shotOffset,len(rf.Offsets))
-				// fmt.Println("offset",rf.Offsets)
-				// if rf.commitIndex > rf.lastApplied {
-				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-				rf.lastApplied += 1
-				// util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets%d", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
-				appliedIndex := rf.index2LogPos(rf.lastApplied)
-				realIndex := rf.lastApplied - rf.shotOffset // 截断前1个数据,后续可以优化，考虑批量删除
-				appliedMsg := ApplyMsg{
-					CommandValid: true,
-					Command:      rf.log[appliedIndex].Command,
-					CommandIndex: rf.lastApplied,
-					CommandTerm:  int(rf.log[appliedIndex].Term),
-					Offset:       rf.Offsets[realIndex-1], // 将偏移量传进通道
-					// Offset:       rf.Offsets[appliedIndex],
+			if rf.commitIndex > rf.lastApplied {
+				nextApplied := rf.lastApplied + 1
+				appliedIndex := rf.index2LogPos(nextApplied)
+				cmd := rf.log[appliedIndex].Command
+
+				if cmd.OpType == "TermLog" {
+					// TermLog has no valuelog entry, so don't consume an Offset slot.
+					// Advance shotOffset to keep the realIndex formula correct for subsequent entries.
+					rf.lastApplied = nextApplied
+					rf.shotOffset++
+					rf.applyCh <- ApplyMsg{
+						CommandValid: true,
+						Command:      cmd,
+						CommandIndex: nextApplied,
+						CommandTerm:  int(rf.log[appliedIndex].Term),
+						Offset:       0,
+					}
+					noMore = false
+				} else if (rf.lastApplied - rf.shotOffset) < len(rf.Offsets) {
+					rf.lastApplied = nextApplied
+					realIndex := rf.lastApplied - rf.shotOffset
+					appliedMsg := ApplyMsg{
+						CommandValid: true,
+						Command:      cmd,
+						CommandIndex: rf.lastApplied,
+						CommandTerm:  int(rf.log[appliedIndex].Term),
+						Offset:       rf.Offsets[realIndex-1],
+					}
+					rf.applyCh <- appliedMsg
+					rf.Offsets = rf.Offsets[1:]
+					rf.shotOffset++
+					if rf.lastApplied%rf.Gap == 0 {
+						util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, len(rf.Offsets))
+					}
+					noMore = false
 				}
-				// fmt.Printf("发了index:%v给服务器端\n",appliedMsg.Offset)
-				rf.applyCh <- appliedMsg // 引入snapshot后，这里必须在锁内投递了，否则会和snapshot的交错产生bug
-				rf.Offsets = rf.Offsets[1:]
-				rf.shotOffset++
-				// rf.originalKvs(rf.log[rf.lastIndex()-1].Command) // original-kvs - dwisckey
-				if rf.lastApplied%rf.Gap == 0 {
-					// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, len(rf.Offsets))
-				}
-				noMore = false
 			}
 		}()
 		//		设置一个定时器，每十秒检查一次条件
