@@ -1,3 +1,4 @@
+.context/
 dump.rdb
 .vscode/
 benchmark/result/*
