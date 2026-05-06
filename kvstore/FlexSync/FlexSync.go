@@ -62,7 +62,7 @@ var (
 	internalAddress_arg = flag.String("internalAddress", "", "Input Your address") // 返回的是一个指向string类型的指针
 	address_arg         = flag.String("address", "", "Input Your address")
 	peers_arg           = flag.String("peers", "", "Input Your Peers")
-	gap_arg             = flag.String("gap", "", "Input Your gap")
+	gap_arg             = flag.String("gap", "1000", "Input Your gap")
 	syncTime_arg        = flag.String("syncTime", "", "Input Your syncTime")
 	data_arg            = flag.String("data", ".", "Input Your data storage directory") // 新增data参数，默认为当前目录
 )
