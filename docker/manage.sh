@@ -7,7 +7,16 @@ case "$1" in
     "build")
         echo "Building Nezha Docker image (first build takes 10-20 min for RocksDB compilation)..."
         PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-        docker build -f "$SCRIPT_DIR/Dockerfile" -t nezha-multigc:latest "$PROJECT_DIR"
+        docker build -f "$SCRIPT_DIR/Dockerfile" \
+            -t dshuishui/nezha:latest \
+            -t dshuishui/nezha:multiGC \
+            "$PROJECT_DIR"
+        ;;
+    "push")
+        echo "Pushing image to Docker Hub..."
+        docker push dshuishui/nezha:latest
+        docker push dshuishui/nezha:multiGC
+        echo "Done. Users can now run: docker pull dshuishui/nezha:latest"
         ;;
     "start")
         echo "Starting Nezha node..."
@@ -61,10 +70,11 @@ case "$1" in
     *)
         echo "Nezha Docker Management Script"
         echo ""
-        echo "Usage: $0 {build|start|stop|restart|logs|status|clean|test}"
+        echo "Usage: $0 {build|push|start|stop|restart|logs|status|clean|test}"
         echo ""
         echo "Commands:"
-        echo "  build    - Build Docker image"
+        echo "  build    - Build Docker image from source (10-20 min first time)"
+        echo "  push     - Push image to Docker Hub (requires docker login)"
         echo "  start    - Start node"
         echo "  stop     - Stop node"
         echo "  restart  - Restart node"
@@ -74,9 +84,9 @@ case "$1" in
         echo "  test     - Test image"
         echo ""
         echo "Examples:"
-        echo "  $0 build    # Build image first"
-        echo "  $0 start    # Start node"
-        echo "  $0 logs     # Follow logs"
+        echo "  $0 build && $0 push   # Build and publish to Docker Hub"
+        echo "  $0 start              # Start node (pulls image if not built locally)"
+        echo "  $0 logs               # Follow logs"
         exit 1
         ;;
 esac

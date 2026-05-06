@@ -194,59 +194,73 @@ After startup, Nezha creates the following layout under the specified `-data` di
 
 ## Method 2: Docker Container
 
-Self-contained deployment — no manual dependency installation required. The Docker image compiles RocksDB and Nezha from source in a multi-stage build.
+No compilation required. Pull the pre-built image and run immediately.
 
 ### Prerequisites
 
-- Docker Engine 20.10+
-- Docker Compose 2.0+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Mac / Windows) or Docker Engine 20.10+ (Linux)
 - x86_64 (amd64) architecture
 
-### Step 1: Build Docker Image
-
-```bash
-cd docker
-./manage.sh build
-```
-
-> **Note:** The first build takes 10–20 minutes — it compiles RocksDB v8.11.3 from source inside the container. Subsequent builds use Docker layer cache and are much faster.
-
-### Step 2: Start Node
-
-```bash
-./manage.sh start
-```
-
-### Step 3: Verify
-
-```bash
-./manage.sh status   # Check node status
-./manage.sh logs     # Follow live logs
-```
-
-#### Using Docker CLI Directly
+### Run (Single Command)
 
 ```bash
 docker run -d \
-  --name nezha-node1 \
+  --name nezha \
   --network host \
   -v nezha-data:/app/data \
-  nezha-multigc:latest \
+  dshuishui/nezha:latest \
   -address 127.0.0.1:3088 \
   -internalAddress 127.0.0.1:30881 \
   -peers 127.0.0.1:30881
 ```
 
-#### Management Commands
+> **Mac / Windows users:** `--network host` is Linux-only. Use port mapping instead:
+> ```bash
+> docker run -d \
+>   --name nezha \
+>   -p 3088:3088 -p 30881:30881 \
+>   -v nezha-data:/app/data \
+>   dshuishui/nezha:latest \
+>   -address 0.0.0.0:3088 \
+>   -internalAddress 0.0.0.0:30881 \
+>   -peers 127.0.0.1:30881
+> ```
+
+### Using Docker Compose
 
 ```bash
-./manage.sh build    # Build Docker image
+cd docker
+docker-compose up -d
+```
+
+### Management
+
+```bash
+docker logs nezha -f      # Follow logs
+docker stop nezha         # Stop
+docker start nezha        # Start again
+docker rm -v nezha        # Remove container and data
+```
+
+Or use the management script:
+
+```bash
+cd docker
 ./manage.sh start    # Start node
 ./manage.sh stop     # Stop node
 ./manage.sh restart  # Restart node
-./manage.sh logs     # View logs
+./manage.sh logs     # Follow logs
 ./manage.sh status   # View status
 ./manage.sh clean    # Remove all containers, volumes, and image
+```
+
+### Build from Source (Optional)
+
+If you want to build the image yourself instead of using the pre-built one:
+
+```bash
+cd docker
+./manage.sh build   # ~10–20 min first time (compiles RocksDB from source)
 ```
 
 ---
