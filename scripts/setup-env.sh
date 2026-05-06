@@ -1,7 +1,6 @@
 #!/bin/bash
 set -e
 
-# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -14,24 +13,23 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 GO_VERSION="1.22.0"
-ROCKSDB_VERSION="v8.11.3"
-ROCKSDB_DIR="$HOME/rocksdb"
 
 info "=== Nezha Environment Setup ==="
 info "Project: $PROJECT_DIR"
 echo ""
 
 # ── Step 1: System dependencies ────────────────────────────────────────────────
-info "Step 1/5: Installing system dependencies..."
+info "Step 1/4: Installing system dependencies..."
 sudo apt-get update -qq
-sudo apt-get install -y gcc g++ cmake make git wget \
+sudo apt-get install -y gcc g++ make git wget \
+    librocksdb-dev \
     libsnappy-dev zlib1g-dev libbz2-dev \
     liblz4-dev libzstd-dev libgflags-dev
 info "System dependencies installed."
 echo ""
 
 # ── Step 2: Go ─────────────────────────────────────────────────────────────────
-info "Step 2/5: Installing Go $GO_VERSION..."
+info "Step 2/4: Installing Go $GO_VERSION..."
 if command -v go &>/dev/null && [[ "$(go version)" == *"go$GO_VERSION"* ]]; then
     info "Go $GO_VERSION already installed, skipping."
 else
@@ -48,51 +46,8 @@ else
 fi
 echo ""
 
-# ── Step 3: RocksDB ────────────────────────────────────────────────────────────
-info "Step 3/5: Building RocksDB $ROCKSDB_VERSION..."
-if ldconfig -p | grep -q librocksdb; then
-    info "RocksDB already installed, skipping."
-else
-    if [ ! -d "$ROCKSDB_DIR" ]; then
-        info "Cloning RocksDB $ROCKSDB_VERSION..."
-        git clone --depth 1 --branch "$ROCKSDB_VERSION" \
-            https://github.com/facebook/rocksdb.git "$ROCKSDB_DIR"
-    else
-        info "RocksDB source already present at $ROCKSDB_DIR"
-    fi
-
-    cd "$ROCKSDB_DIR"
-    mkdir -p build && cd build
-
-    info "Configuring RocksDB with CMake..."
-    cmake .. \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DROCKSDB_BUILD_SHARED=ON \
-        -DWITH_SNAPPY=ON \
-        -DWITH_LZ4=ON \
-        -DWITH_ZSTD=ON \
-        -DWITH_ZLIB=ON \
-        -DWITH_BZ2=ON \
-        -DWITH_GFLAGS=ON \
-        -DFAIL_ON_WARNINGS=OFF \
-        -DWITH_TESTS=OFF \
-        -DWITH_TOOLS=OFF \
-        -DWITH_BENCHMARK_TOOLS=OFF
-
-    info "Compiling RocksDB (this takes 5–10 minutes)..."
-    make -j$(nproc)
-
-    info "Installing RocksDB..."
-    sudo make install
-    sudo ldconfig
-
-    cd "$PROJECT_DIR"
-    info "RocksDB $ROCKSDB_VERSION installed."
-fi
-echo ""
-
-# ── Step 4: CGO environment variables ──────────────────────────────────────────
-info "Step 4/5: Configuring CGO environment variables..."
+# ── Step 3: CGO environment variables ──────────────────────────────────────────
+info "Step 3/4: Configuring CGO environment variables..."
 
 add_to_bashrc() {
     local line="$1"
@@ -101,7 +56,6 @@ add_to_bashrc() {
     fi
 }
 
-# Locate where CMake installed librocksdb
 ROCKSDB_LIB_DIR=""
 for d in /usr/lib/x86_64-linux-gnu /usr/local/lib /usr/lib; do
     if [ -f "$d/librocksdb.so" ]; then
@@ -110,19 +64,21 @@ for d in /usr/lib/x86_64-linux-gnu /usr/local/lib /usr/lib; do
     fi
 done
 
-add_to_bashrc 'export CGO_CFLAGS="-I/usr/local/include"'
+[ -z "$ROCKSDB_LIB_DIR" ] && error "librocksdb.so not found after installation."
+
+add_to_bashrc 'export CGO_CFLAGS="-I/usr/include"'
 add_to_bashrc "export CGO_LDFLAGS=\"-L${ROCKSDB_LIB_DIR} -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd\""
 add_to_bashrc "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:${ROCKSDB_LIB_DIR}"
 
-export CGO_CFLAGS="-I/usr/local/include"
+export CGO_CFLAGS="-I/usr/include"
 export CGO_LDFLAGS="-L${ROCKSDB_LIB_DIR} -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd"
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${ROCKSDB_LIB_DIR}
 
-info "CGO environment configured."
+info "CGO environment configured (RocksDB at ${ROCKSDB_LIB_DIR})."
 echo ""
 
-# ── Step 5: Go module dependencies ─────────────────────────────────────────────
-info "Step 5/5: Downloading Go module dependencies..."
+# ── Step 4: Go module dependencies ─────────────────────────────────────────────
+info "Step 4/4: Downloading Go module dependencies..."
 cd "$PROJECT_DIR"
 go mod download
 info "Dependencies downloaded."

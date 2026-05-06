@@ -53,23 +53,35 @@ Nezha provides two deployment options:
 
 ## Method 1: Source Code Compilation
 
-### Prerequisites
+### Quick Setup (Recommended)
+
+For Ubuntu 20.04+, use the one-command setup script:
+
+```bash
+bash scripts/setup-env.sh
+source ~/.bashrc
+```
+
+This installs Go 1.22, RocksDB, and all dependencies automatically (~1 minute).
+
+Then start the node:
+
+```bash
+./scripts/run-node.sh
+```
+
+---
+
+### Manual Setup
 
 #### 1. Go Environment (1.22+)
 
 ```bash
-# Download Go 1.22
 wget https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
-
-# Install
 sudo rm -rf /usr/local/go
 sudo tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz
-
-# Add to PATH
 echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
 source ~/.bashrc
-
-# Verify
 go version
 ```
 
@@ -78,45 +90,21 @@ go version
 ```bash
 sudo apt-get update
 sudo apt-get install -y gcc g++ make git \
+    librocksdb-dev \
     libsnappy-dev zlib1g-dev libbz2-dev \
     liblz4-dev libzstd-dev libgflags-dev
 ```
 
-#### 3. RocksDB 8.x (Source Compilation)
+#### 3. Configure CGO Environment Variables
 
 ```bash
-# Clone RocksDB v8.11.3
-git clone --depth 1 --branch v8.11.3 https://github.com/facebook/rocksdb.git
-cd rocksdb && mkdir build && cd build
-
-# Configure
-cmake .. \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DROCKSDB_BUILD_SHARED=ON \
-    -DWITH_SNAPPY=ON -DWITH_LZ4=ON -DWITH_ZSTD=ON \
-    -DWITH_ZLIB=ON -DWITH_BZ2=ON -DWITH_GFLAGS=ON \
-    -DFAIL_ON_WARNINGS=OFF \
-    -DWITH_TESTS=OFF -DWITH_TOOLS=OFF
-
-# Compile and install (takes 5–10 minutes)
-make -j$(nproc)
-sudo make install
-sudo ldconfig
-
-cd ../..
-```
-
-#### 4. Configure CGO Environment Variables
-
-```bash
-# Add to ~/.bashrc (replace /path/to/rocksdb with your actual path)
-echo 'export CGO_CFLAGS="-I/path/to/rocksdb/include"' >> ~/.bashrc
-echo 'export CGO_LDFLAGS="-L/path/to/rocksdb -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd"' >> ~/.bashrc
-echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib' >> ~/.bashrc
+echo 'export CGO_CFLAGS="-I/usr/include"' >> ~/.bashrc
+echo 'export CGO_LDFLAGS="-L/usr/lib/x86_64-linux-gnu -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd"' >> ~/.bashrc
+echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-#### 5. Download Project Dependencies
+#### 4. Download Project Dependencies
 
 ```bash
 cd Nezha
@@ -126,7 +114,6 @@ go mod download
 ### Build
 
 ```bash
-# Build the server binary
 go build -o nezha ./kvstore/FlexSync/
 ```
 
@@ -260,7 +247,7 @@ If you want to build the image yourself instead of using the pre-built one:
 
 ```bash
 cd docker
-./manage.sh build   # ~10–20 min first time (compiles RocksDB from source)
+./manage.sh build   # ~2 min
 ```
 
 ---
@@ -307,15 +294,18 @@ go run ./benchmark/scan_pro/scan_pro.go \
 ```
 Nezha/
 ├── go.mod / go.sum            # Go module dependencies
-├── fix-rocksdb.sh             # RocksDB compilation fix script
-├── setup-go.sh                # Go environment setup script
+│
+├── scripts/                   # Deployment helper scripts
+│   ├── setup-env.sh           # One-command environment setup
+│   └── run-node.sh            # One-command node startup
 │
 ├── docker/                    # Docker deployment files
-│   ├── Dockerfile.ubuntu24    # Container image definition (Ubuntu 24.04)
+│   ├── Dockerfile             # Container image definition (Ubuntu 24.04)
 │   ├── docker-compose.yml     # Single-node orchestration
-│   ├── manage.sh              # Node management script
-│   ├── build.sh               # Image build script
-│   └── README.md              # Docker deployment guide
+│   └── manage.sh              # Node management script
+│
+├── .github/workflows/         # CI/CD
+│   └── docker-publish.yml     # Auto build and push to Docker Hub
 │
 ├── kvstore/                   # Storage service implementations
 │   ├── FlexSync/              # KVS-Raft core (main entry point)
@@ -364,7 +354,7 @@ echo $CGO_LDFLAGS
 echo $LD_LIBRARY_PATH
 
 # Verify RocksDB is installed
-ls /usr/local/lib/librocksdb*
+ls /usr/lib/x86_64-linux-gnu/librocksdb*
 ```
 
 ### Port Already in Use
