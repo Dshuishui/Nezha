@@ -1917,7 +1917,7 @@ func Make(peers []string, me int,
 	// 检查有没有收到日志同步的消息，若没有则连接有问题
 	go rf.AppendMonitor()
 
-	// go rf.commitIndexUpdateLoop()
+	go rf.commitIndexUpdateLoop()
 
 	// go rf.memoryControlLoop()
 
