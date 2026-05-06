@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   nezha-node1:
-    image: dshuishui/nezha:latest
+    image: dyucong/nezha:latest
     container_name: nezha-multigc-node1
     network_mode: "host"
     command: [
