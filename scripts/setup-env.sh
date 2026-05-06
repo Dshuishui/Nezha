@@ -50,8 +50,8 @@ echo ""
 
 # ── Step 3: RocksDB ────────────────────────────────────────────────────────────
 info "Step 3/5: Building RocksDB $ROCKSDB_VERSION..."
-if [ -f /usr/local/lib/librocksdb.so ]; then
-    info "RocksDB already installed at /usr/local/lib, skipping."
+if ldconfig -p | grep -q librocksdb; then
+    info "RocksDB already installed, skipping."
 else
     if [ ! -d "$ROCKSDB_DIR" ]; then
         info "Cloning RocksDB $ROCKSDB_VERSION..."
@@ -101,13 +101,22 @@ add_to_bashrc() {
     fi
 }
 
+# Locate where CMake installed librocksdb
+ROCKSDB_LIB_DIR=""
+for d in /usr/lib/x86_64-linux-gnu /usr/local/lib /usr/lib; do
+    if [ -f "$d/librocksdb.so" ]; then
+        ROCKSDB_LIB_DIR="$d"
+        break
+    fi
+done
+
 add_to_bashrc 'export CGO_CFLAGS="-I/usr/local/include"'
-add_to_bashrc 'export CGO_LDFLAGS="-L/usr/local/lib -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd"'
-add_to_bashrc 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib'
+add_to_bashrc "export CGO_LDFLAGS=\"-L${ROCKSDB_LIB_DIR} -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd\""
+add_to_bashrc "export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:${ROCKSDB_LIB_DIR}"
 
 export CGO_CFLAGS="-I/usr/local/include"
-export CGO_LDFLAGS="-L/usr/local/lib -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd"
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib
+export CGO_LDFLAGS="-L${ROCKSDB_LIB_DIR} -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd"
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${ROCKSDB_LIB_DIR}
 
 info "CGO environment configured."
 echo ""
