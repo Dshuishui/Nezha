@@ -4,7 +4,7 @@ go 1.22
 
 require (
 	github.com/edsrzf/mmap-go v1.2.0
-	github.com/linxGnu/grocksdb v1.8.14
+	github.com/linxGnu/grocksdb v1.8.12
 	github.com/syndtr/goleveldb v1.0.0
 )
 
