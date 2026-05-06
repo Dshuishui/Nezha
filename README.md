@@ -208,7 +208,7 @@ docker run -d \
   --name nezha \
   --network host \
   -v nezha-data:/app/data \
-  dshuishui/nezha:latest \
+  dyucong/nezha:latest \
   -address 127.0.0.1:3088 \
   -internalAddress 127.0.0.1:30881 \
   -peers 127.0.0.1:30881
@@ -220,7 +220,7 @@ docker run -d \
 >   --name nezha \
 >   -p 3088:3088 -p 30881:30881 \
 >   -v nezha-data:/app/data \
->   dshuishui/nezha:latest \
+>   dyucong/nezha:latest \
 >   -address 0.0.0.0:3088 \
 >   -internalAddress 0.0.0.0:30881 \
 >   -peers 127.0.0.1:30881

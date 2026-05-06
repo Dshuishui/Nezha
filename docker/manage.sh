@@ -9,15 +9,15 @@ case "$1" in
         PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
         docker build --network=host \
             -f "$SCRIPT_DIR/Dockerfile" \
-            -t dshuishui/nezha:latest \
-            -t dshuishui/nezha:multiGC \
+            -t dyucong/nezha:latest \
+            -t dyucong/nezha:multiGC \
             "$PROJECT_DIR"
         ;;
     "push")
         echo "Pushing image to Docker Hub..."
-        docker push dshuishui/nezha:latest
-        docker push dshuishui/nezha:multiGC
-        echo "Done. Users can now run: docker pull dshuishui/nezha:latest"
+        docker push dyucong/nezha:latest
+        docker push dyucong/nezha:multiGC
+        echo "Done. Users can now run: docker pull dyucong/nezha:latest"
         ;;
     "start")
         echo "Starting Nezha node..."
