@@ -20,9 +20,19 @@ DATA_DIR="${DATA_DIR:-$PROJECT_DIR/data}"
 
 # ── Source environment ──────────────────────────────────────────────────────────
 export PATH=$PATH:/usr/local/go/bin
+
+# Locate RocksDB (CMake installs to /usr/lib/x86_64-linux-gnu on Debian/Ubuntu)
+ROCKSDB_LIB_DIR=""
+for d in /usr/lib/x86_64-linux-gnu /usr/local/lib /usr/lib; do
+    if [ -f "$d/librocksdb.so" ]; then
+        ROCKSDB_LIB_DIR="$d"
+        break
+    fi
+done
+
 export CGO_CFLAGS="-I/usr/local/include"
-export CGO_LDFLAGS="-L/usr/local/lib -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd"
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib
+export CGO_LDFLAGS="-L${ROCKSDB_LIB_DIR} -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd"
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${ROCKSDB_LIB_DIR}
 
 # ── Checks ─────────────────────────────────────────────────────────────────────
 if ! command -v go &>/dev/null; then
@@ -30,7 +40,7 @@ if ! command -v go &>/dev/null; then
     exit 1
 fi
 
-if [ ! -f /usr/local/lib/librocksdb.so ]; then
+if [ -z "$ROCKSDB_LIB_DIR" ]; then
     echo "RocksDB not found. Run scripts/setup-env.sh first."
     exit 1
 fi
