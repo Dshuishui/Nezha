@@ -4,14 +4,17 @@ FROM ubuntu:24.04 AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential git ca-certificates \
-    golang-1.22-go \
+    build-essential git ca-certificates wget \
     librocksdb-dev \
     libsnappy-dev zlib1g-dev libbz2-dev \
     liblz4-dev libzstd-dev libgflags-dev \
     && rm -rf /var/lib/apt/lists/*
 
-ENV PATH=$PATH:/usr/lib/go-1.22/bin
+RUN wget -q https://golang.google.cn/dl/go1.24.0.linux-amd64.tar.gz -O /tmp/go.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz
+
+ENV PATH=$PATH:/usr/local/go/bin
 
 # Download Go modules first for better layer caching
 WORKDIR /src

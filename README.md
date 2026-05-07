@@ -1,7 +1,7 @@
 # Nezha: A Key-Value Separated Distributed Store with Optimized Raft Integration
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Go 1.22+](https://img.shields.io/badge/go-1.22+-blue.svg)](https://golang.org/dl/)
+[![Go 1.24+](https://img.shields.io/badge/go-1.24+-blue.svg)](https://golang.org/dl/)
 [![RocksDB](https://img.shields.io/badge/RocksDB-8.x-green.svg)](https://rocksdb.org/)
 [![ICDE 2026](https://img.shields.io/badge/ICDE-2026-orange.svg)](https://icde2026.github.io/)
 
@@ -82,7 +82,7 @@ bash scripts/setup-env.sh
 source ~/.bashrc
 ```
 
-This installs Go 1.22, RocksDB, and all dependencies automatically (~1 minute).
+This installs Go 1.24, RocksDB, and all dependencies automatically (~1 minute).
 
 Then start the node:
 
@@ -94,12 +94,12 @@ Then start the node:
 
 ### Manual Setup
 
-#### 1. Go Environment (1.22+)
+#### 1. Go Environment (1.24+)
 
 ```bash
-wget https://go.dev/dl/go1.22.0.linux-amd64.tar.gz
+wget https://go.dev/dl/go1.24.0.linux-amd64.tar.gz
 sudo rm -rf /usr/local/go
-sudo tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.24.0.linux-amd64.tar.gz
 echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
 source ~/.bashrc
 go version
