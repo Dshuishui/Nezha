@@ -12,7 +12,7 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-GO_VERSION="1.22.0"
+GO_VERSION="1.24.0"
 
 info "=== Nezha Environment Setup ==="
 info "Project: $PROJECT_DIR"
@@ -30,7 +30,7 @@ echo ""
 
 # ── Step 2: Go ─────────────────────────────────────────────────────────────────
 info "Step 2/4: Installing Go $GO_VERSION..."
-if command -v go &>/dev/null && [[ "$(go version)" == *"go$GO_VERSION"* ]]; then
+if command -v go &>/dev/null && [[ "$(go version 2>/dev/null)" == *"go$GO_VERSION"* ]]; then
     info "Go $GO_VERSION already installed, skipping."
 else
     wget -q "https://golang.google.cn/dl/go${GO_VERSION}.linux-amd64.tar.gz" -O /tmp/go.tar.gz
