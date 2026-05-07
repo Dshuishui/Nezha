@@ -1,4 +1,5 @@
 .context/
+.DS_Store
 dump.rdb
 .vscode/
 benchmark/result/*
