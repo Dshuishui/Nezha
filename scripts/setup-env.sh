@@ -33,7 +33,7 @@ info "Step 2/4: Installing Go $GO_VERSION..."
 if command -v go &>/dev/null && [[ "$(go version)" == *"go$GO_VERSION"* ]]; then
     info "Go $GO_VERSION already installed, skipping."
 else
-    wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -O /tmp/go.tar.gz
+    wget -q "https://golang.google.cn/dl/go${GO_VERSION}.linux-amd64.tar.gz" -O /tmp/go.tar.gz
     sudo rm -rf /usr/local/go
     sudo tar -C /usr/local -xzf /tmp/go.tar.gz
     rm /tmp/go.tar.gz
