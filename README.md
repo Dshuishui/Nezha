@@ -3,10 +3,30 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Go 1.22+](https://img.shields.io/badge/go-1.22+-blue.svg)](https://golang.org/dl/)
 [![RocksDB](https://img.shields.io/badge/RocksDB-8.x-green.svg)](https://rocksdb.org/)
+[![ICDE 2026](https://img.shields.io/badge/ICDE-2026-orange.svg)](https://icde2026.github.io/)
 
 **High-Performance Distributed Key-Value Storage System with Key-Value Separation Optimized Raft Consensus Protocol**
 
 Nezha is an innovative distributed key-value storage system that deeply integrates key-value separation technology with the Raft consensus protocol, significantly reducing redundant persistence operations while providing scalable throughput and strong consistency guarantees. By redesigning the persistence strategy and introducing a tiered garbage collection mechanism, the system dramatically improves read and write performance while maintaining Raft's safety properties.
+
+---
+
+## Quick Start
+
+**Docker (no installation required):**
+
+```bash
+docker run -d --name nezha --network host \
+  -v nezha-data:/app/data dyucong/nezha:latest \
+  -address 127.0.0.1:3088 -internalAddress 127.0.0.1:30881 -peers 127.0.0.1:30881
+```
+
+**From source (Ubuntu 20.04+):**
+
+```bash
+bash scripts/setup-env.sh && source ~/.bashrc
+./scripts/run-node.sh
+```
 
 ---
 
@@ -17,7 +37,7 @@ Nezha is an innovative distributed key-value storage system that deeply integrat
 - **Raft-Aware Garbage Collection**: Adaptive GC framework that balances read and write performance
 - **Three-Phase Request Processing**: Ensures correct request handling during GC operations
 - **Strong Consistency Guarantee**: Maintains Raft's safety properties and linearizability
-- **High Performance Improvement**: Average throughput improvements of 445.8% (PUT), 12.5% (GET), 72.6% (SCAN)
+- **High Performance**: Average throughput improvements of **460.2% (PUT)**, **12.5% (GET)**, **72.6% (SCAN)** over standard Raft+RocksDB
 
 ---
 
@@ -181,11 +201,11 @@ After startup, Nezha creates the following layout under the specified `-data` di
 
 ## Method 2: Docker Container
 
-No compilation required. Pull the pre-built image and run immediately.
+No compilation required. Pull the pre-built image from [Docker Hub](https://hub.docker.com/r/dyucong/nezha) and run immediately.
 
 ### Prerequisites
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Mac / Windows) or Docker Engine 20.10+ (Linux)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Mac / Windows) or [Docker Engine](https://docs.docker.com/engine/install/) 20.10+ (Linux)
 - x86_64 (amd64) architecture
 
 ### Run (Single Command)
@@ -247,12 +267,26 @@ If you want to build the image yourself instead of using the pre-built one:
 
 ```bash
 cd docker
-./manage.sh build   # ~2 min
+./manage.sh build   # ~2 min (uses apt librocksdb, no source compilation)
 ```
 
 ---
 
 ## Performance Testing
+
+### Experimental Environment
+
+Benchmarks were conducted on a 3-node cluster, each node equipped with:
+
+| Component | Specification |
+|-----------|---------------|
+| CPU | Intel Xeon E5-2603 v3 (12 cores, 2.4 GHz) |
+| Memory | 64 GB DRAM |
+| Storage | 2 TB SSD |
+| OS | Ubuntu 20.04.4 LTS |
+| Network | 10 Gigabit Ethernet |
+
+Dataset: 100 GB, key size 10 B, value size 1 KB–256 KB, Zipf access distribution.
 
 ### PUT (Random Write)
 
@@ -375,6 +409,14 @@ sudo ufw status
 sudo ufw allow 3088/tcp
 sudo ufw allow 30881/tcp
 ```
+
+---
+
+## Citation
+
+This work has been accepted at **ICDE 2026**. If you use Nezha in your research, please cite:
+
+> Yangyang Wang, Yucong Dong, Ziqian Cheng, and Zichen Xu. "Nezha: A Key-Value Separated Distributed Store with Optimized Raft Integration." *Accepted at IEEE International Conference on Data Engineering (ICDE 2026).*
 
 ---
 
