@@ -59,12 +59,13 @@ import (
 )
 
 var (
-	internalAddress_arg = flag.String("internalAddress", "", "Input Your address") // 返回的是一个指向string类型的指针
-	address_arg         = flag.String("address", "", "Input Your address")
-	peers_arg           = flag.String("peers", "", "Input Your Peers")
-	gap_arg             = flag.String("gap", "1000", "Input Your gap")
-	syncTime_arg        = flag.String("syncTime", "", "Input Your syncTime")
-	data_arg            = flag.String("data", ".", "Input Your data storage directory") // 新增data参数，默认为当前目录
+	internalAddress_arg    = flag.String("internalAddress", "", "Input Your address") // 返回的是一个指向string类型的指针
+	address_arg            = flag.String("address", "", "Input Your address")
+	peers_arg              = flag.String("peers", "", "Input Your Peers")
+	gap_arg                = flag.String("gap", "1000", "Input Your gap")
+	syncTime_arg           = flag.String("syncTime", "", "Input Your syncTime")
+	data_arg               = flag.String("data", ".", "Input Your data storage directory")
+	inlineThreshold_arg    = flag.Int("inlineThreshold", 512, "Value size threshold in bytes: values smaller than this are inlined in the sorted file index")
 )
 
 const (
@@ -78,9 +79,9 @@ type IndexEntry struct {
 }
 
 type SortedFileIndex struct {
-	Entries  map[string]int64 // 改用map来存储键值对
-	FilePath string
-	// sortedKey []keyOffset
+	Entries      map[string]int64  // large values: key → offset in sorted file
+	InlineValues map[string][]byte // small values: key → value bytes (inlined, no file seek needed)
+	FilePath     string
 }
 
 type KVServer struct {
@@ -130,6 +131,9 @@ type KVServer struct {
 	lastSortedFileIndex    *SortedFileIndex
 	InitialRaftStateLog    string
 	lastGCFinish           bool
+
+	// AVP: adaptive value placement
+	inlineThreshold int // values smaller than this (bytes) are inlined in SortedFileIndex
 }
 
 // ValueLog represents the Value Log file for storing values.
@@ -1250,8 +1254,14 @@ func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (stri
 		return "", errors.New("invalid index: index is nil")
 	}
 
-	// 缓存未命中，使用索引查找
-	// index := kvs.sortedFileIndex
+	// check inlined small values first — no file I/O needed
+	if index.InlineValues != nil {
+		if value, ok := index.InlineValues[key]; ok {
+			return string(value), nil
+		}
+	}
+
+	// fall back to offset-based lookup in sorted file
 	offset, exists := GetOffset(key, index)
 	if !exists {
 		return "", errors.New(raft.ErrNoKey)
@@ -1626,24 +1636,38 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string, index *SortedFi
 
 	paddedStartKey := kvs.persister.PadKey(startKey)
 	paddedEndKey := kvs.persister.PadKey(endKey)
-	startOffset := int64(-1)
 
+	result := make(map[string]string)
+
+	// AVP: collect inline small values in [startKey, endKey] directly from map — no file I/O
+	if index.InlineValues != nil {
+		for k, v := range index.InlineValues {
+			paddedK := kvs.persister.PadKey(k)
+			if paddedK >= paddedStartKey && paddedK <= paddedEndKey {
+				result[k] = string(v)
+			}
+		}
+	}
+
+	// collect large values from sortedFile via mmap sequential scan
+	startOffset := int64(-1)
 	currentKey := startKey
-	// for startKey <= endKey {
 	paddedCurrentKey := paddedStartKey
 	for paddedCurrentKey <= paddedEndKey {
-		// 创建的索引中的 key 是未填充的
 		offset, exists := GetOffset(currentKey, index)
 		if exists {
 			startOffset = offset
 			break
 		}
-		// 移动到下一个可能的键
 		currentKey = kvs.getNextPossibleKey(currentKey)
 		paddedCurrentKey = kvs.persister.PadKey(currentKey)
 	}
-	if startOffset == -1 { // map中都没有要scan查询的key
-		return nil, nil
+	if startOffset == -1 {
+		// no large-value keys in range; return whatever inline values we found
+		if len(result) == 0 {
+			return nil, nil
+		}
+		return result, nil
 	}
 
 	// 二分查找第一个大于等于 startkey 的索引项
@@ -1695,8 +1719,6 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string, index *SortedFi
 		return nil, err
 	}
 	defer mmap.Unmap()
-
-	result := make(map[string]string)
 
 	// 从startOffset开始读取和处理数据
 	for offset := startOffset; offset < fileSize; {
@@ -2089,6 +2111,7 @@ func main() {
 	kvs.anotherStartGC = false
 	kvs.anotherEndGC = false
 	kvs.FirstGC = true
+	kvs.inlineThreshold = *inlineThreshold_arg
 
 	// 初始化存储value的文件，使用用户指定的数据目录
 	kvs.InitialRaftStateLog = filepath.Join(dataDir, "data", "valuelog", "RaftState.log")

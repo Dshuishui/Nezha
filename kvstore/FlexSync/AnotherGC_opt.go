@@ -150,6 +150,7 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	
 	// 初始化索引数据结构和偏移量跟踪
 	indexMap := make(map[string]int64)
+	inlineMap := make(map[string][]byte)
 	var currentOffset int64 = 0
 	
 	// Create buffered writer for the merged file   2 + 3 -> 1   =============
@@ -247,10 +248,16 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 			valueSize := uint32(len(entryToWrite.Value))
 			entrySize := int64(20 + keySize + valueSize) // 20字节头部 + key + value
 			
-			// 构建索引：记录每个entry的偏移量
+			// AVP: inline small values directly in the index to avoid a file seek on reads
 			unpadKey := kvs.persister.UnpadKey(entryToWrite.Key)
-			indexMap[unpadKey] = beforeWriteOffset
-			
+			if len(entryToWrite.Value) < kvs.inlineThreshold {
+				valueCopy := make([]byte, len(entryToWrite.Value))
+				copy(valueCopy, entryToWrite.Value)
+				inlineMap[unpadKey] = valueCopy
+			} else {
+				indexMap[unpadKey] = beforeWriteOffset
+			}
+
 			// 更新当前偏移量
 			currentOffset += entrySize
 			
@@ -273,8 +280,9 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	kvs.mu.Lock()
 	kvs.anotherSortedFilePath = mergedSortedFilePath
 	kvs.anothersortedFileIndex = &SortedFileIndex{
-		Entries:  indexMap,
-		FilePath: mergedSortedFilePath,
+		Entries:      indexMap,
+		InlineValues: inlineMap,
+		FilePath:     mergedSortedFilePath,
 	}
 	kvs.mu.Unlock()
 
