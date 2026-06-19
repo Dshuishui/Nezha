@@ -103,6 +103,7 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	
 	// 初始化索引数据结构
 	indexMap := make(map[string]int64)
+	inlineMap := make(map[string][]byte)
 	var currentOffset int64 = 0
 	
 	// 创建bufio.Writer来写入排序文件
@@ -131,22 +132,29 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 
 		// 记录写入前的偏移量
 		beforeWriteOffset := currentOffset
-		
-		// Write the entry to the sorted file
+
+		// Write the entry to the sorted file for durability (always, regardless of inline decision)
 		err = kvs.WriteEntryToSortedFile(writer, entry)
 		if err != nil {
 			return fmt.Errorf("failed to write entry to sorted file: %v", err)
 		}
-		
+
 		// 计算entry的大小（与WriteEntryToSortedFile的格式一致）
 		keySize := uint32(len(entry.Key))
 		valueSize := uint32(len(entry.Value))
 		entrySize := int64(20 + keySize + valueSize) // 20字节头部 + key + value
-		
-		// 构建索引：每个entry都记录索引（不使用稀疏索引）
+
 		unpadKey := kvs.persister.UnpadKey(entry.Key)
-		indexMap[unpadKey] = beforeWriteOffset
-		
+
+		// AVP: inline small values directly in the index to avoid a file seek on reads
+		if len(entry.Value) < kvs.inlineThreshold {
+			valueCopy := make([]byte, len(entry.Value))
+			copy(valueCopy, entry.Value)
+			inlineMap[unpadKey] = valueCopy
+		} else {
+			indexMap[unpadKey] = beforeWriteOffset
+		}
+
 		// 更新当前偏移量
 		currentOffset += entrySize
 		
@@ -168,8 +176,9 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	kvs.mu.Lock()
 	kvs.firstSortedFilePath = firstSortedFilePath
 	kvs.firstSortedFileIndex = &SortedFileIndex{
-		Entries:  indexMap,
-		FilePath: firstSortedFilePath,
+		Entries:      indexMap,
+		InlineValues: inlineMap,
+		FilePath:     firstSortedFilePath,
 	}
 	kvs.mu.Unlock()
 
