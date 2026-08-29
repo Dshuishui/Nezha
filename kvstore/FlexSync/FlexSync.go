@@ -67,6 +67,7 @@ var (
 	data_arg            = flag.String("data", ".", "Input Your data storage directory")
 	inlineThreshold_arg = flag.Int("inlineThreshold", 512, "Value size threshold in bytes: values smaller than this are cached inline in the sorted file index")
 	inlineCacheMB_arg   = flag.Int("inlineCacheMB", 256, "Memory budget in MB for the inline small-value cache (0 disables it)")
+	gcThresholdGB_arg   = flag.Float64("gcThresholdGB", 4000, "Value log size in GB that triggers garbage collection; lower it to exercise GC in tests")
 )
 
 const (
@@ -219,8 +220,9 @@ type KVServer struct {
 	lastGCFinish           bool
 
 	// AVP: adaptive value placement
-	inlineThreshold  int   // values smaller than this (bytes) are eligible for the inline cache
-	inlineCacheBytes int64 // memory budget for each SortedFileIndex's inline cache
+	inlineThreshold  int     // values smaller than this (bytes) are eligible for the inline cache
+	inlineCacheBytes int64   // memory budget for each SortedFileIndex's inline cache
+	gcThresholdGB    float64 // value log size in GB that triggers GC
 }
 
 // ValueLog represents the Value Log file for storing values.
@@ -2188,6 +2190,7 @@ func main() {
 	kvs.FirstGC = true
 	kvs.inlineThreshold = *inlineThreshold_arg
 	kvs.inlineCacheBytes = int64(*inlineCacheMB_arg) * 1024 * 1024
+	kvs.gcThresholdGB = *gcThresholdGB_arg
 
 	// 初始化存储value的文件，使用用户指定的数据目录
 	kvs.InitialRaftStateLog = filepath.Join(dataDir, "data", "valuelog", "RaftState.log")
@@ -2219,7 +2222,7 @@ func main() {
 			}
 
 			fileSizeGB := float64(fileInfo.Size()) / (1024 * 1024 * 1024)
-			if fileSizeGB <= 4000 {
+			if fileSizeGB <= kvs.gcThresholdGB {
 				// fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.currentLog, fileSizeGB)
 				continue
 			}
