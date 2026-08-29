@@ -1868,35 +1868,35 @@ func (rf *Raft) compactLog() {
 }
 
 func (rf *Raft) SetOriginalLog(filename string) {
-    // 1. 获取当前代码文件 (raft.go) 的绝对路径
-    _, currentFile, _, ok := runtime.Caller(0)
-    if !ok {
-        log.Fatalf("无法获取源代码路径")
-    }
+	// 1. 获取当前代码文件 (raft.go) 的绝对路径
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		log.Fatalf("无法获取源代码路径")
+	}
 
-    // 2. 获取 raft.go 所在的目录 (即 .../Nezha/raft/)
-    raftDir := filepath.Dir(currentFile)
+	// 2. 获取 raft.go 所在的目录 (即 .../Nezha/raft/)
+	raftDir := filepath.Dir(currentFile)
 
-    // 3. 将文件名拼接到该绝对路径下
-    absPath := filepath.Join(raftDir, filename)
-    rf.originalLog = absPath
+	// 3. 将文件名拼接到该绝对路径下
+	absPath := filepath.Join(raftDir, filename)
+	rf.originalLog = absPath
 
-    // 4. 确保目录存在
-    if err := os.MkdirAll(raftDir, 0755); err != nil {
-        log.Printf("无法创建目录: %v", err)
-        return
-    }
+	// 4. 确保目录存在
+	if err := os.MkdirAll(raftDir, 0755); err != nil {
+		log.Printf("无法创建目录: %v", err)
+		return
+	}
 
-    // 5. 创建或覆盖文件
-    file, err := os.Create(absPath)
-    if err != nil {
-        log.Printf("无法在路径 %s 创建文件: %v", absPath, err)
-        return
-    }
-    file.Close()
-    
-    // 打印绝对路径，方便你检查
-    fmt.Printf("RaftNode[%d] 原始日志绝对路径: %s\n", rf.me, absPath)
+	// 5. 创建或覆盖文件
+	file, err := os.Create(absPath)
+	if err != nil {
+		log.Printf("无法在路径 %s 创建文件: %v", absPath, err)
+		return
+	}
+	file.Close()
+
+	// 打印绝对路径，方便你检查
+	fmt.Printf("RaftNode[%d] 原始日志绝对路径: %s\n", rf.me, absPath)
 }
 
 // 最后的index
@@ -1965,8 +1965,12 @@ func Make(peers []string, me int,
 	rf.votedFor = -1
 	rf.lastActiveTime = time.Now()
 	rf.applyCh = applyCh
-	// rf.SetOriginalLog("originalKvs.log") 
-	rf.Offsets = append(rf.Offsets, 0)     // 初始化时添加一个0，使得后续对index的访问和raft的对其，从1开始
+	// rf.SetOriginalLog("originalKvs.log")
+	// 这里曾经 append 过一个哨兵 0，靠 index=1 的 TermLog 把它消费掉来对齐偏移量。
+	// 该方案只对第一个 TermLog 成立：每次重新选主都会产生新的 TermLog，第二个就会吃掉一个
+	// 真实偏移量，使其后所有 key 的偏移量整体错开一条 entry。
+	// 现在的不变式是 Offsets[0] 恒对应日志下标 shotOffset+1，TermLog 只递增 shotOffset 而不出队，
+	// 因此不需要哨兵。
 
 	// 这就是自己修改grpc线程池option参数的做法
 	DesignOptions := pool.Options{
