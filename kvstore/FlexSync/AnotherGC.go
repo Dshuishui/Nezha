@@ -146,7 +146,7 @@ package main
 // 	} else {
 // 		// 提取下划线之前的部分，并追加新的 kvs.numGC
 // 		mergedSortedFilePath = fmt.Sprintf("%s_%d", kvs.lastSortedFileIndex.FilePath[:lastUnderscoreIndex], kvs.numGC)
-// 	}	
+// 	}
 // 	// mergedSortedFilePath := fmt.Sprintf("%s_merged_%d", kvs.lastSortedFileIndex.FilePath, kvs.numGC)
 // 	kvs.anotherSortedFilePath = mergedSortedFilePath
 // 	if _, err := os.Stat(mergedSortedFilePath); err == nil {

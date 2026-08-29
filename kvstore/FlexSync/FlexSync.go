@@ -68,6 +68,7 @@ var (
 	inlineThreshold_arg = flag.Int("inlineThreshold", 512, "Value size threshold in bytes: values smaller than this are cached inline in the sorted file index")
 	inlineCacheMB_arg   = flag.Int("inlineCacheMB", 256, "Memory budget in MB for the inline small-value cache (0 disables it)")
 	gcThresholdGB_arg   = flag.Float64("gcThresholdGB", 4000, "Value log size in GB that triggers garbage collection; lower it to exercise GC in tests")
+	indexBlockKB_arg    = flag.Int("indexBlockKB", 64, "Sparse index block size in KB: one in-memory index entry per block. Larger uses less memory but scans more per lookup")
 )
 
 const (
@@ -81,8 +82,10 @@ type IndexEntry struct {
 }
 
 type SortedFileIndex struct {
-	// Entries 覆盖 sortedFile 中的所有 key（含小值），是查找 value 的唯一权威来源。
-	Entries map[string]int64 // key → offset in sorted file
+	// Sparse 是按 key 升序的稀疏块索引，每约 indexBlockBytes 一项。
+	// 查找时二分定位到块，再在块内顺序扫描，内存从 O(key 数) 降为 O(块数)。
+	Sparse   []SparseEntry
+	FileSize int64 // sortedFile 总长度，用于界定最后一块的右边界
 	// InlineValues 是小值的有界缓存，纯读加速层，命中则免去一次文件 seek。
 	// 它可以为 nil、可以随时淘汰任何条目，都不影响正确性——value 始终在 sortedFile 里。
 	InlineValues *InlineCache
@@ -223,6 +226,7 @@ type KVServer struct {
 	inlineThreshold  int     // values smaller than this (bytes) are eligible for the inline cache
 	inlineCacheBytes int64   // memory budget for each SortedFileIndex's inline cache
 	gcThresholdGB    float64 // value log size in GB that triggers GC
+	indexBlockBytes  int64   // sparse index granularity: one index entry per this many bytes
 }
 
 // ValueLog represents the Value Log file for storing values.
@@ -1325,12 +1329,6 @@ func min(a, b int) int {
 	return b
 }
 
-// 添加一个方法来快速查找键的偏移量
-func GetOffset(key string, sfi *SortedFileIndex) (int64, bool) {
-	offset, exists := sfi.Entries[key]
-	return offset, exists
-}
-
 // getFromSortedFile 增加直接缓存value的LRU缓存功能
 func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (string, error) {
 	// 先检查LRU缓存
@@ -1348,26 +1346,8 @@ func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (stri
 		return string(value), nil
 	}
 
-	// 未命中：按 offset 从 sortedFile 读取
-	offset, exists := GetOffset(key, index)
-	if !exists {
-		return "", errors.New(raft.ErrNoKey)
-	}
-
-	// 打开文件并移动到索引位置
-	file, err := os.Open(index.FilePath)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	_, err = file.Seek(offset, 0)
-	if err != nil {
-		return "", err
-	}
-
-	reader := bufio.NewReader(file)
-	entry, _, err := ReadEntry(reader, offset)
+	// 未命中：经稀疏索引二分定位到块，块内顺序扫描
+	entry, err := kvs.lookupInSortedFile(index, key)
 	if err != nil {
 		return "", err
 	}
@@ -1731,19 +1711,10 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string, index *SortedFi
 	// 范围查询直接走 sortedFile 顺序读：Entries 已覆盖所有 key（含小值），
 	// 且顺序读本就是范围查询的最优路径。不再遍历内联缓存——那是 O(缓存条目数)，
 	// 与查询范围无关，小值场景下会让窄范围 scan 退化。
-	startOffset := int64(-1)
-	currentKey := startKey
-	paddedCurrentKey := paddedStartKey
-	for paddedCurrentKey <= paddedEndKey {
-		offset, exists := GetOffset(currentKey, index)
-		if exists {
-			startOffset = offset
-			break
-		}
-		currentKey = kvs.getNextPossibleKey(currentKey)
-		paddedCurrentKey = kvs.persister.PadKey(currentKey)
-	}
-	if startOffset == -1 { // 范围内没有任何 key
+	// 用稀疏索引二分定位扫描起点。原先是从 startKey 起逐个 +1 试探直到命中，
+	// 复杂度随键空间稀疏程度恶化；二分与之无关。
+	startOffset, ok := index.firstBlockAtOrAfter(paddedStartKey)
+	if !ok { // 索引为空，文件里没有数据
 		return nil, nil
 	}
 
@@ -2191,6 +2162,7 @@ func main() {
 	kvs.inlineThreshold = *inlineThreshold_arg
 	kvs.inlineCacheBytes = int64(*inlineCacheMB_arg) * 1024 * 1024
 	kvs.gcThresholdGB = *gcThresholdGB_arg
+	kvs.indexBlockBytes = int64(*indexBlockKB_arg) * 1024
 
 	// 初始化存储value的文件，使用用户指定的数据目录
 	kvs.InitialRaftStateLog = filepath.Join(dataDir, "data", "valuelog", "RaftState.log")

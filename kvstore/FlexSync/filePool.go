@@ -6,9 +6,9 @@ import (
 )
 
 type FileDescriptorPool struct {
-	filePath string       // 文件路径
+	filePath string        // 文件路径
 	pool     chan *os.File // 文件描述符池
-	mu       sync.Mutex   // 保护池的互斥锁
+	mu       sync.Mutex    // 保护池的互斥锁
 }
 
 // NewFileDescriptorPool 创建一个文件描述符池
