@@ -121,6 +121,11 @@ type Raft struct {
 	nullLogEntry   *raftrpc.LogEntry // 用于替换已应用的日志
 	lastNulled     int
 	numGC          int
+
+	// 日志压缩基址：rf.log[0] 对应的日志 index 为 lastIncludedIndex+1。
+	// 已压缩的条目从内存中物理删除，其内容仍保留在 rf.currentLog 磁盘文件中。
+	lastIncludedIndex int   // 已压缩掉的最后一条日志的 index
+	lastIncludedTerm  int32 // 上述条目的 term，用于 PrevLogTerm 一致性检查
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -655,15 +660,24 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		return reply, nil
 	}
 	// prevLogIndex位置有日志，那么判断term必须相同，否则false
-	if args.PrevLogIndex != 0 && (rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term != int32(args.PrevLogTerm)) {
-		reply.ConflictTerm = rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term
-		for index := 1; index <= int(args.PrevLogIndex); index++ { // 找到冲突term的首次出现位置，最差就是PrevLogIndex
-			if rf.log[rf.index2LogPos(index)].Term == int32(reply.ConflictTerm) {
-				reply.ConflictIndex = int32(index)
-				break
-			}
+	if args.PrevLogIndex != 0 {
+		prevTerm := rf.termAt(int(args.PrevLogIndex))
+		if prevTerm == -1 { // 该位置已被本节点压缩，无法校验，要求leader从内存中保留的首条重发
+			reply.ConflictIndex = int32(rf.firstIndex())
+			return reply, nil
 		}
-		return reply, nil
+		if prevTerm != int32(args.PrevLogTerm) { // prevLogIndex位置有日志，那么判断term必须相同，否则false
+			reply.ConflictTerm = prevTerm
+			// 找到冲突term的首次出现位置（不早于内存中保留的首条），最差就是PrevLogIndex
+			reply.ConflictIndex = int32(rf.firstIndex())
+			for index := rf.firstIndex(); index <= int(args.PrevLogIndex); index++ {
+				if rf.termAt(index) == reply.ConflictTerm {
+					reply.ConflictIndex = int32(index)
+					break
+				}
+			}
+			return reply, nil
+		}
 	}
 	// fmt.Printf("此时同步的日志为%v\n",len(logEntrys))
 	// 找到了第一个不同的index，开始同步日志
@@ -725,8 +739,8 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				offset := rf.Offsets[index-rf.shotOffset-1] // 这个要减一
 				// offset := rf.Offsets[index-rf.shotOffset] // 将上面的改为加一了
 				// rf.Offsets = rf.Offsets[:logPos] // 删除当前错误的offset，以及后续的所有
-				rf.Offsets = rf.Offsets[:logPos-rf.shotOffset] // 不用减一，因为logPos已经是减一了的
-				arrEntry := []*Entry{&entry}                   // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
+				rf.Offsets = rf.Offsets[:index-rf.shotOffset-1] // logPos 现在是相对基址的，改用绝对 index 推导
+				arrEntry := []*Entry{&entry}                    // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
 				// offsets2, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
 				// rf.mu.Unlock()
 				rf.WriteEntryToFile(arrEntry, rf.currentLog, offset)
@@ -1193,7 +1207,7 @@ func (rf *Raft) updateCommitIndex() {
 	// fmt.Printf("newconmittindex%v\n",newCommitIndex)
 	// if语句的第一个条件则是排除掉还没有复制到大多数server的情况
 	// fmt.Printf("此时log的长度：%v以及newcommitindex的值：%v\n",len(rf.log),newCommitIndex)
-	if newCommitIndex > rf.commitIndex && rf.log[rf.index2LogPos(newCommitIndex)].Term == int32(rf.currentTerm) {
+	if newCommitIndex > rf.commitIndex && rf.termAt(newCommitIndex) == int32(rf.currentTerm) {
 		rf.commitIndex = newCommitIndex // 保证是当前的Term才能根据同步到server的副本数量判断是否可以提交
 		// fmt.Println("上任空包被提交了")	// 提交了的，因为虽然是空包，但是也赋予了当前任期，满足提交条件
 	}
@@ -1212,11 +1226,28 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	args.LeaderId = int32(rf.me)
 	args.LeaderCommit = int32(rf.commitIndex)
 	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1) // 减一是为了拿到下标
-	if args.PrevLogIndex == 0 {                         // 确保在从0开始的时候直接进行日志追加即可
+
+	// 待发送的起始位置必须仍在内存中。nextIndex 落在已压缩区间时无法从 rf.log 取到条目
+	// （包括 PrevLogIndex==0 但本节点已压缩过的情况），跳过本轮。
+	// 压缩点受 matchIndex 约束，正常不会走到这里；第三步将改为从磁盘回读旧条目。
+	if rf.index2LogPos(rf.nextIndex[peerId]) < 0 {
+		util.DPrintf("RaftNode[%d] peer[%d] nextIndex[%d] 落后于已压缩点[%d]，跳过本轮日志同步",
+			rf.me, peerId, rf.nextIndex[peerId], rf.lastIncludedIndex)
+		go func(id int) { rf.SyncChans[id] <- strconv.Itoa(id) }(peerId)
+		return
+	}
+
+	if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
 		args.PrevLogTerm = 0
 	} else {
-		// fmt.Printf("此时log%v,PrevLogIndex%v\n",len(rf.log),args.PrevLogIndex)
-		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
+		prevTerm := rf.termAt(int(args.PrevLogIndex))
+		if prevTerm == -1 {
+			util.DPrintf("RaftNode[%d] peer[%d] PrevLogIndex[%d] 已压缩，跳过本轮日志同步",
+				rf.me, peerId, args.PrevLogIndex)
+			go func(id int) { rf.SyncChans[id] <- strconv.Itoa(id) }(peerId)
+			return
+		}
+		args.PrevLogTerm = prevTerm
 	}
 	// start := rf.index2LogPos(int(args.PrevLogIndex)+1)
 	// if (start + 0)<len(rf.log)  {
@@ -1311,13 +1342,13 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				if reply.ConflictTerm != -1 { // follower的prevLogIndex位置term冲突了
 					// 我们找leader log中conflictTerm最后出现位置，如果找到了就用它作为nextIndex，否则用follower的conflictIndex
 					conflictTermIndex := -1
-					for index := args.PrevLogIndex; index > 0; index-- {
+					for index := args.PrevLogIndex; index >= int32(rf.firstIndex()); index-- {
 						// if rf.log[rf.index2LogPos(int(index))].Term == reply.ConflictTerm {
 						// 	conflictTermIndex = int(index)
 						// 	break
 						// }
 						// 我认为下方这个效果更好，这样PrevLogIndex的值就为 index
-						if rf.log[rf.index2LogPos(int(index))].Term != reply.ConflictTerm {
+						if rf.termAt(int(index)) != reply.ConflictTerm {
 							conflictTermIndex = int(index + 1)
 							break
 						}
@@ -1352,7 +1383,10 @@ func (rf *Raft) doHeartBeat(peerId int) {
 	if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
 		args.PrevLogTerm = 0
 	} else {
-		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
+		args.PrevLogTerm = rf.termAt(int(args.PrevLogIndex))
+		if args.PrevLogTerm == -1 { // 已压缩；心跳不携带日志，follower 不校验该字段
+			args.PrevLogTerm = rf.lastIncludedTerm
+		}
 	}
 	args.Entries = []*raftrpc.LogEntry{}
 	go func(peerId int) {
@@ -1385,7 +1419,10 @@ func (rf *Raft) CheckActive(peerId int, resultChan chan<- bool) {
 	if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
 		args.PrevLogTerm = 0
 	} else {
-		args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
+		args.PrevLogTerm = rf.termAt(int(args.PrevLogIndex))
+		if args.PrevLogTerm == -1 { // 已压缩；心跳不携带日志，follower 不校验该字段
+			args.PrevLogTerm = rf.lastIncludedTerm
+		}
 	}
 	args.Entries = []*raftrpc.LogEntry{}
 	if reply, ok := rf.sendHeartbeat(rf.peers[peerId], &args, rf.pools[peerId]); ok {
@@ -1705,6 +1742,12 @@ func (rf *Raft) applyLogLoop() {
 			if rf.commitIndex > rf.lastApplied {
 				nextApplied := rf.lastApplied + 1
 				appliedIndex := rf.index2LogPos(nextApplied)
+				if appliedIndex < 0 || appliedIndex >= len(rf.log) {
+					// 压缩点由 compactLog 限制在 lastApplied 之前，正常不会发生
+					util.DPrintf("RaftNode[%d] applyLogLoop: index[%d] 越界(pos=%d, len=%d, base=%d)",
+						rf.me, nextApplied, appliedIndex, len(rf.log), rf.lastIncludedIndex)
+					return
+				}
 				cmd := rf.log[appliedIndex].Command
 
 				if cmd.OpType == "TermLog" {
@@ -1753,49 +1796,72 @@ func (rf *Raft) applyLogLoop() {
 	}
 }
 
-func (rf *Raft) memoryControlLoop() {
+// compactLog 定期物理截断 rf.log，把已应用且所有 follower 都已复制的条目从内存中删除。
+//
+// 原先的 memoryControlLoop 只把已应用条目的 Value 置为 "NULL"，但 protobuf 三层结构
+// （[]*LogEntry 槽位 + LogEntry + DetailCod）本身就占约 216B/条，与 value 大小无关。
+// 实测：16KB value 能省 99%，64B value 只能省 23%，小值场景下内存仍随写入量线性增长。
+// 因此这里改为物理删除条目，使 rf.log 内存变为 O(保留窗口)，与写入总量无关。
+func (rf *Raft) compactLog() {
 	const (
-		checkInterval = 60 * time.Second // 检查间隔
-		logThreshold  = 200000           // 内存中保留的日志数量阈值
-		batchSize     = 100000           // 每次清理的日志数量
+		checkInterval  = 10 * time.Second // 检查间隔
+		logThreshold   = 20000            // 超过这么多条才触发压缩
+		catchUpEntries = 5000             // 压缩点之后保留的条数，供慢 follower 追赶
 	)
-
-	// 初始化空日志条目
-	// rf.nullLogEntry = &raftrpc.LogEntry{
-	//     Command: &raftrpc.DetailCod{
-	//         OpType: "NULL",  // 标记为空日志
-	//     },
-	//     Term: 0,
-	// }
 
 	for !rf.killed() {
 		time.Sleep(checkInterval)
 
 		rf.mu.Lock()
 
-		// 检查日志数量是否超过阈值
-		if len(rf.log) > logThreshold {
-			startIndex := rf.lastNulled
-			// 只处理已经应用到状态机的日志
-			endIndex := rf.lastApplied
-			if endIndex > startIndex {
-				if endIndex-startIndex > batchSize {
-					endIndex = startIndex + batchSize
-				}
-				for i := startIndex; i < endIndex; i++ {
-					rf.log[i].Command.Value = "NULL"
-				}
-				rf.lastNulled = endIndex
-			}
-
-			// 将已应用的日志替换为空日志
-			// for i := 0; i < endIndex; i++ {
-			//     rf.log[i].Command.Value = "NULL"
-			// }
-
-			util.DPrintf("RaftNode[%d] replaced %d logs with null entries, total logs: %d",
-				rf.me, endIndex, len(rf.log))
+		if len(rf.log) <= logThreshold {
+			rf.mu.Unlock()
+			continue
 		}
+
+		// 压缩上界：只能压缩已应用的条目
+		safeIndex := rf.lastApplied - catchUpEntries
+
+		// 且不能压缩掉任何 follower 尚未复制的条目，否则它再也追不上。
+		// matchIndex 仅在成为 leader 时分配；follower 上为 nil，此时无需该约束。
+		// 单节点时该循环为空，压缩仅受 lastApplied 约束。
+		if rf.role == ROLE_LEADER && rf.matchIndex != nil {
+			for i := 0; i < len(rf.peers); i++ {
+				if i == rf.me {
+					continue
+				}
+				if rf.matchIndex[i] < safeIndex {
+					safeIndex = rf.matchIndex[i]
+				}
+			}
+		}
+
+		if safeIndex <= rf.lastIncludedIndex {
+			rf.mu.Unlock()
+			continue
+		}
+
+		pos := rf.index2LogPos(safeIndex)
+		if pos < 0 || pos >= len(rf.log) {
+			rf.mu.Unlock()
+			continue
+		}
+
+		before := len(rf.log)
+		newBase := safeIndex
+		newTerm := rf.log[pos].Term
+
+		// 关键：必须 make + copy 重新分配。
+		// rf.log = rf.log[pos+1:] 只是移动切片头指针，底层数组仍被引用、内存不会释放。
+		newLog := make([]*raftrpc.LogEntry, len(rf.log)-pos-1)
+		copy(newLog, rf.log[pos+1:])
+		rf.log = newLog
+
+		rf.lastIncludedIndex = newBase
+		rf.lastIncludedTerm = newTerm
+
+		util.DPrintf("RaftNode[%d] compactLog: %d -> %d 条, lastIncludedIndex[%d] lastApplied[%d]",
+			rf.me, before, len(rf.log), rf.lastIncludedIndex, rf.lastApplied)
 
 		rf.mu.Unlock()
 	}
@@ -1835,7 +1901,7 @@ func (rf *Raft) SetOriginalLog(filename string) {
 
 // 最后的index
 func (rf *Raft) lastIndex() int {
-	return len(rf.log)
+	return rf.lastIncludedIndex + len(rf.log)
 }
 
 // 最后的term
@@ -1843,14 +1909,32 @@ func (rf *Raft) lastTerm() (lastLogTerm int) {
 	if len(rf.log) != 0 {
 		lastLogTerm = int(rf.log[len(rf.log)-1].Term)
 	} else {
-		lastLogTerm = 0
+		lastLogTerm = int(rf.lastIncludedTerm) // 日志已被全部压缩
 	}
 	return
 }
 
 // 日志index转化成log数组下标
 func (rf *Raft) index2LogPos(index int) (pos int) {
-	return index - 1
+	return index - rf.lastIncludedIndex - 1
+}
+
+// firstIndex 返回内存中仍保留的第一条日志的 index
+func (rf *Raft) firstIndex() int {
+	return rf.lastIncludedIndex + 1
+}
+
+// termAt 返回 index 处日志的 term。
+// 若该 index 已被压缩（且不等于 lastIncludedIndex）或尚不存在，返回 -1。
+func (rf *Raft) termAt(index int) int32 {
+	if index == rf.lastIncludedIndex {
+		return rf.lastIncludedTerm
+	}
+	pos := rf.index2LogPos(index)
+	if pos < 0 || pos >= len(rf.log) {
+		return -1
+	}
+	return rf.log[pos].Term
 }
 
 func (rf *Raft) commitIndexUpdateLoop() {
@@ -1919,7 +2003,7 @@ func Make(peers []string, me int,
 
 	go rf.commitIndexUpdateLoop()
 
-	// go rf.memoryControlLoop()
+	go rf.compactLog()
 
 	// 设置一个定时器，每十秒检查一次条件
 	ticker := time.NewTicker(5 * time.Second)
