@@ -147,12 +147,12 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	defer oldFile.Close()
 
 	// ============= 优化开始：边写边构建索引 =============
-	
+
 	// 初始化索引数据结构和偏移量跟踪
 	indexMap := make(map[string]int64)
-	inlineMap := make(map[string][]byte)
+	inlineCache := NewInlineCache(kvs.inlineCacheBytes)
 	var currentOffset int64 = 0
-	
+
 	// Create buffered writer for the merged file   2 + 3 -> 1   =============
 	writer := bufio.NewWriter(mergedFile)
 
@@ -200,7 +200,7 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	}()
 
 	// ============= 优化的合并写入逻辑：边写边建索引 =============
-	
+
 	// Merge entries and write to new file while building index
 	var oldEntry, existingEntry *raft.Entry
 	var oldOk, existingOk bool
@@ -236,31 +236,31 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 		if entryToWrite != nil {
 			// ============= 关键优化：记录写入前的偏移量 =============
 			beforeWriteOffset := currentOffset
-			
+
 			// Write the entry to the sorted file
 			err := kvs.WriteEntryToSortedFile(writer, entryToWrite)
 			if err != nil {
 				return fmt.Errorf("failed to write merged entry: %v", err)
 			}
-			
+
 			// 计算entry的大小（与WriteEntryToSortedFile的格式一致）
 			keySize := uint32(len(entryToWrite.Key))
 			valueSize := uint32(len(entryToWrite.Value))
 			entrySize := int64(20 + keySize + valueSize) // 20字节头部 + key + value
-			
-			// AVP: inline small values directly in the index to avoid a file seek on reads
+
+			// offset 对所有 key 都要记录：内联缓存有界，条目随时可能被淘汰，
+			// 届时必须能退回 sortedFile 读取。
 			unpadKey := kvs.persister.UnpadKey(entryToWrite.Key)
+			indexMap[unpadKey] = beforeWriteOffset
+
+			// AVP: 小值在预算内预热进内联缓存
 			if len(entryToWrite.Value) < kvs.inlineThreshold {
-				valueCopy := make([]byte, len(entryToWrite.Value))
-				copy(valueCopy, entryToWrite.Value)
-				inlineMap[unpadKey] = valueCopy
-			} else {
-				indexMap[unpadKey] = beforeWriteOffset
+				inlineCache.Add(unpadKey, entryToWrite.Value)
 			}
 
 			// 更新当前偏移量
 			currentOffset += entrySize
-			
+
 			writeCount++
 			if writeCount%100000 == 0 {
 				fmt.Printf("Merged %d entries\n", writeCount)
@@ -275,13 +275,13 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	}
 
 	// ============= 直接构建SortedFileIndex对象，避免AnotherCreateIndex =============
-	
+
 	// 使用加锁保护索引更新
 	kvs.mu.Lock()
 	kvs.anotherSortedFilePath = mergedSortedFilePath
 	kvs.anothersortedFileIndex = &SortedFileIndex{
 		Entries:      indexMap,
-		InlineValues: inlineMap,
+		InlineValues: inlineCache,
 		FilePath:     mergedSortedFilePath,
 	}
 	kvs.mu.Unlock()
@@ -306,7 +306,7 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 
 	kvs.anotherEndGC = true
 
-	fmt.Printf("Merged garbage collection completed in %v - round %v, processed %d entries\n", 
+	fmt.Printf("Merged garbage collection completed in %v - round %v, processed %d entries\n",
 		time.Since(startTime), kvs.numGC, writeCount)
 	return nil
 }

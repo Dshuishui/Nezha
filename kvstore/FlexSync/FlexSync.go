@@ -49,8 +49,8 @@ import (
 	"gitee.com/dong-shuishui/FlexSync/pool"
 	// "gitee.com/dong-shuishui/FlexSync/kvstore/GC4"
 	lru "github.com/hashicorp/golang-lru"
-	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/linxGnu/grocksdb"
+	"github.com/syndtr/goleveldb/leveldb"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
 
@@ -59,13 +59,14 @@ import (
 )
 
 var (
-	internalAddress_arg    = flag.String("internalAddress", "", "Input Your address") // 返回的是一个指向string类型的指针
-	address_arg            = flag.String("address", "", "Input Your address")
-	peers_arg              = flag.String("peers", "", "Input Your Peers")
-	gap_arg                = flag.String("gap", "1000", "Input Your gap")
-	syncTime_arg           = flag.String("syncTime", "", "Input Your syncTime")
-	data_arg               = flag.String("data", ".", "Input Your data storage directory")
-	inlineThreshold_arg    = flag.Int("inlineThreshold", 512, "Value size threshold in bytes: values smaller than this are inlined in the sorted file index")
+	internalAddress_arg = flag.String("internalAddress", "", "Input Your address") // 返回的是一个指向string类型的指针
+	address_arg         = flag.String("address", "", "Input Your address")
+	peers_arg           = flag.String("peers", "", "Input Your Peers")
+	gap_arg             = flag.String("gap", "1000", "Input Your gap")
+	syncTime_arg        = flag.String("syncTime", "", "Input Your syncTime")
+	data_arg            = flag.String("data", ".", "Input Your data storage directory")
+	inlineThreshold_arg = flag.Int("inlineThreshold", 512, "Value size threshold in bytes: values smaller than this are cached inline in the sorted file index")
+	inlineCacheMB_arg   = flag.Int("inlineCacheMB", 256, "Memory budget in MB for the inline small-value cache (0 disables it)")
 )
 
 const (
@@ -79,9 +80,94 @@ type IndexEntry struct {
 }
 
 type SortedFileIndex struct {
-	Entries      map[string]int64  // large values: key → offset in sorted file
-	InlineValues map[string][]byte // small values: key → value bytes (inlined, no file seek needed)
+	// Entries 覆盖 sortedFile 中的所有 key（含小值），是查找 value 的唯一权威来源。
+	Entries map[string]int64 // key → offset in sorted file
+	// InlineValues 是小值的有界缓存，纯读加速层，命中则免去一次文件 seek。
+	// 它可以为 nil、可以随时淘汰任何条目，都不影响正确性——value 始终在 sortedFile 里。
+	InlineValues *InlineCache
 	FilePath     string
+}
+
+// InlineCache 是按字节预算限制的小值缓存（AVP 的加速层）。
+//
+// 早期实现用无界 map 把 GC 时遇到的所有小值全部驻留内存，内存随数据集线性增长：
+// 100GB 的 64B 小值约需 190GB 内存，普通机器无法运行。改为有界后内存变成固定预算，
+// Zipf 访问下少量内存即可覆盖绝大部分请求，未命中的冷 key 退回 sortedFile 读取。
+type InlineCache struct {
+	mu       sync.Mutex
+	lru      *lru.Cache
+	curBytes int64
+	maxBytes int64
+	hits     uint64
+	misses   uint64
+}
+
+// NewInlineCache 创建一个字节预算为 maxBytes 的缓存；maxBytes<=0 返回 nil（表示禁用）。
+func NewInlineCache(maxBytes int64) *InlineCache {
+	if maxBytes <= 0 {
+		return nil
+	}
+	// 条目数上限只作兜底，真正的约束是字节预算。按每条最小开销约 128B 估算。
+	countLimit := int(maxBytes / 128)
+	if countLimit < 1 {
+		countLimit = 1
+	}
+	c := &InlineCache{maxBytes: maxBytes}
+	l, err := lru.NewWithEvict(countLimit, func(k, v interface{}) {
+		// 由 lru 自身按条目数淘汰时同步扣减字节计数
+		if b, ok := v.([]byte); ok {
+			c.curBytes -= int64(len(b)) + inlineEntryOverhead
+		}
+	})
+	if err != nil {
+		return nil
+	}
+	c.lru = l
+	return c
+}
+
+// inlineEntryOverhead 是每条缓存除 value 字节外的估算开销（key 字符串 + LRU 链表节点 + map 槽位）
+const inlineEntryOverhead = 96
+
+func (c *InlineCache) Get(key string) ([]byte, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if v, ok := c.lru.Get(key); ok {
+		c.hits++
+		return v.([]byte), true
+	}
+	c.misses++
+	return nil, false
+}
+
+// Add 接收 string（Entry.Value 的原生类型）；转 []byte 时 Go 自带拷贝，
+// 缓存不会持有调用方缓冲区的引用。
+func (c *InlineCache) Add(key string, val string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cp := []byte(val)
+	c.lru.Add(key, cp)
+	c.curBytes += int64(len(cp)) + inlineEntryOverhead
+	// 超预算则淘汰最旧的，直到回到预算内（onEvict 回调负责扣减 curBytes）
+	for c.curBytes > c.maxBytes && c.lru.Len() > 0 {
+		c.lru.RemoveOldest()
+	}
+}
+
+// Stats 返回命中数、未命中数、当前字节数、条目数
+func (c *InlineCache) Stats() (hits, misses uint64, bytes int64, entries int) {
+	if c == nil {
+		return 0, 0, 0, 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.hits, c.misses, c.curBytes, c.lru.Len()
 }
 
 type KVServer struct {
@@ -133,7 +219,8 @@ type KVServer struct {
 	lastGCFinish           bool
 
 	// AVP: adaptive value placement
-	inlineThreshold int // values smaller than this (bytes) are inlined in SortedFileIndex
+	inlineThreshold  int   // values smaller than this (bytes) are eligible for the inline cache
+	inlineCacheBytes int64 // memory budget for each SortedFileIndex's inline cache
 }
 
 // ValueLog represents the Value Log file for storing values.
@@ -1254,14 +1341,12 @@ func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (stri
 		return "", errors.New("invalid index: index is nil")
 	}
 
-	// check inlined small values first — no file I/O needed
-	if index.InlineValues != nil {
-		if value, ok := index.InlineValues[key]; ok {
-			return string(value), nil
-		}
+	// 先查内联缓存，命中则免去文件 I/O
+	if value, ok := index.InlineValues.Get(key); ok {
+		return string(value), nil
 	}
 
-	// fall back to offset-based lookup in sorted file
+	// 未命中：按 offset 从 sortedFile 读取
 	offset, exists := GetOffset(key, index)
 	if !exists {
 		return "", errors.New(raft.ErrNoKey)
@@ -1285,8 +1370,10 @@ func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (stri
 		return "", err
 	}
 
-	// // 将查询到的value添加到缓存中
-	// kvs.sortedFileCache.Add(key, entry.Value)
+	// 小值回填内联缓存，供后续读命中（Zipf 热点下命中率很高）
+	if len(entry.Value) < kvs.inlineThreshold {
+		index.InlineValues.Add(key, entry.Value)
+	}
 
 	return entry.Value, nil
 }
@@ -1639,17 +1726,9 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string, index *SortedFi
 
 	result := make(map[string]string)
 
-	// AVP: collect inline small values in [startKey, endKey] directly from map — no file I/O
-	if index.InlineValues != nil {
-		for k, v := range index.InlineValues {
-			paddedK := kvs.persister.PadKey(k)
-			if paddedK >= paddedStartKey && paddedK <= paddedEndKey {
-				result[k] = string(v)
-			}
-		}
-	}
-
-	// collect large values from sortedFile via mmap sequential scan
+	// 范围查询直接走 sortedFile 顺序读：Entries 已覆盖所有 key（含小值），
+	// 且顺序读本就是范围查询的最优路径。不再遍历内联缓存——那是 O(缓存条目数)，
+	// 与查询范围无关，小值场景下会让窄范围 scan 退化。
 	startOffset := int64(-1)
 	currentKey := startKey
 	paddedCurrentKey := paddedStartKey
@@ -1662,12 +1741,8 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string, index *SortedFi
 		currentKey = kvs.getNextPossibleKey(currentKey)
 		paddedCurrentKey = kvs.persister.PadKey(currentKey)
 	}
-	if startOffset == -1 {
-		// no large-value keys in range; return whatever inline values we found
-		if len(result) == 0 {
-			return nil, nil
-		}
-		return result, nil
+	if startOffset == -1 { // 范围内没有任何 key
+		return nil, nil
 	}
 
 	// 二分查找第一个大于等于 startkey 的索引项
@@ -2112,6 +2187,7 @@ func main() {
 	kvs.anotherEndGC = false
 	kvs.FirstGC = true
 	kvs.inlineThreshold = *inlineThreshold_arg
+	kvs.inlineCacheBytes = int64(*inlineCacheMB_arg) * 1024 * 1024
 
 	// 初始化存储value的文件，使用用户指定的数据目录
 	kvs.InitialRaftStateLog = filepath.Join(dataDir, "data", "valuelog", "RaftState.log")

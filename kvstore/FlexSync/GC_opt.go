@@ -20,9 +20,9 @@ import (
 
 // 修改这三个全局变量的路径，需要在运行时根据用户指定的data目录动态设置
 var (
-	firstSortedFilePath       string
-	firstNewRaftStateLogPath  string
-	firstNewPersisterPath     string
+	firstSortedFilePath      string
+	firstNewRaftStateLogPath string
+	firstNewPersisterPath    string
 )
 
 // 在main函数中或者适当的地方初始化这些路径
@@ -100,12 +100,12 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	kvs.SwitchToNewFiles(firstNewRaftStateLogPath, newPersister)
 
 	// ============= 优化开始：边写边构建索引 =============
-	
+
 	// 初始化索引数据结构
 	indexMap := make(map[string]int64)
-	inlineMap := make(map[string][]byte)
+	inlineCache := NewInlineCache(kvs.inlineCacheBytes)
 	var currentOffset int64 = 0
-	
+
 	// 创建bufio.Writer来写入排序文件
 	writer := bufio.NewWriter(sortedFile)
 	defer writer.Flush()
@@ -146,18 +146,18 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 
 		unpadKey := kvs.persister.UnpadKey(entry.Key)
 
-		// AVP: inline small values directly in the index to avoid a file seek on reads
+		// offset 对所有 key 都要记录：内联缓存是有界的，条目随时可能被淘汰，
+		// 届时必须能退回 sortedFile 读取，否则小值会查不到。
+		indexMap[unpadKey] = beforeWriteOffset
+
+		// AVP: 小值在预算内预热进内联缓存，读命中即可免去文件 seek
 		if len(entry.Value) < kvs.inlineThreshold {
-			valueCopy := make([]byte, len(entry.Value))
-			copy(valueCopy, entry.Value)
-			inlineMap[unpadKey] = valueCopy
-		} else {
-			indexMap[unpadKey] = beforeWriteOffset
+			inlineCache.Add(unpadKey, entry.Value)
 		}
 
 		// 更新当前偏移量
 		currentOffset += entrySize
-		
+
 		writeNum++
 		if writeNum%200000 == 0 {
 			fmt.Printf("成功写入 %d个entry \n", writeNum)
@@ -169,15 +169,15 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	if err != nil {
 		return fmt.Errorf("failed to flush sorted file: %v", err)
 	}
-	
+
 	// ============= 直接构建SortedFileIndex对象 =============
-	
+
 	// 使用加锁保护索引更新
 	kvs.mu.Lock()
 	kvs.firstSortedFilePath = firstSortedFilePath
 	kvs.firstSortedFileIndex = &SortedFileIndex{
 		Entries:      indexMap,
-		InlineValues: inlineMap,
+		InlineValues: inlineCache,
 		FilePath:     firstSortedFilePath,
 	}
 	kvs.mu.Unlock()
