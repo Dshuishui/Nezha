@@ -149,7 +149,7 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	// ============= 优化开始：边写边构建索引 =============
 
 	// 初始化索引数据结构和偏移量跟踪
-	indexMap := make(map[string]int64)
+	sparse := NewSparseIndexBuilder(kvs.indexBlockBytes)
 	inlineCache := NewInlineCache(kvs.inlineCacheBytes)
 	var currentOffset int64 = 0
 
@@ -248,10 +248,9 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 			valueSize := uint32(len(entryToWrite.Value))
 			entrySize := int64(20 + keySize + valueSize) // 20字节头部 + key + value
 
-			// offset 对所有 key 都要记录：内联缓存有界，条目随时可能被淘汰，
-			// 届时必须能退回 sortedFile 读取。
+			// 每约 indexBlockBytes 记录一个块起点
 			unpadKey := kvs.persister.UnpadKey(entryToWrite.Key)
-			indexMap[unpadKey] = beforeWriteOffset
+			sparse.Observe(entryToWrite.Key, beforeWriteOffset, entrySize)
 
 			// AVP: 小值在预算内预热进内联缓存
 			if len(entryToWrite.Value) < kvs.inlineThreshold {
@@ -280,7 +279,8 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	kvs.mu.Lock()
 	kvs.anotherSortedFilePath = mergedSortedFilePath
 	kvs.anothersortedFileIndex = &SortedFileIndex{
-		Entries:      indexMap,
+		Sparse:       sparse.Build(),
+		FileSize:     currentOffset,
 		InlineValues: inlineCache,
 		FilePath:     mergedSortedFilePath,
 	}

@@ -102,7 +102,7 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	// ============= 优化开始：边写边构建索引 =============
 
 	// 初始化索引数据结构
-	indexMap := make(map[string]int64)
+	sparse := NewSparseIndexBuilder(kvs.indexBlockBytes)
 	inlineCache := NewInlineCache(kvs.inlineCacheBytes)
 	var currentOffset int64 = 0
 
@@ -146,9 +146,9 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 
 		unpadKey := kvs.persister.UnpadKey(entry.Key)
 
-		// offset 对所有 key 都要记录：内联缓存是有界的，条目随时可能被淘汰，
-		// 届时必须能退回 sortedFile 读取，否则小值会查不到。
-		indexMap[unpadKey] = beforeWriteOffset
+		// 每约 indexBlockBytes 记录一个块起点。索引项用文件里的 padded key，
+		// 与查找时的比较保持一致。
+		sparse.Observe(entry.Key, beforeWriteOffset, entrySize)
 
 		// AVP: 小值在预算内预热进内联缓存，读命中即可免去文件 seek
 		if len(entry.Value) < kvs.inlineThreshold {
@@ -176,7 +176,8 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	kvs.mu.Lock()
 	kvs.firstSortedFilePath = firstSortedFilePath
 	kvs.firstSortedFileIndex = &SortedFileIndex{
-		Entries:      indexMap,
+		Sparse:       sparse.Build(),
+		FileSize:     currentOffset,
 		InlineValues: inlineCache,
 		FilePath:     firstSortedFilePath,
 	}
@@ -320,52 +321,22 @@ func (kvs *KVServer) warmupCache(filePath string) {
 	fmt.Printf("Cache warmup completed with %d entries\n", count)
 }
 
+// CreateSortedFileIndex 扫描整个 sortedFile 重建索引（重启或 GC 合并后使用）。
+//
+// 原实现为每个 key 建一条 key→offset 的内存记录，索引内存随 key 数线性增长。
+// 现在改建稀疏块索引，内存降为 O(块数)。注意此路径不重建内联缓存——那是纯加速层，
+// 冷启动为空即可，读路径会在未命中时自然回填。
 func (kvs *KVServer) CreateSortedFileIndex(filePath string) (*SortedFileIndex, error) {
-	file, err := os.Open(filePath)
+	sparse, fileSize, err := kvs.BuildSparseIndex(filePath, kvs.indexBlockBytes)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-
-	reader := bufio.NewReader(file)
-	index := make(map[string]int64) // 使用map而不是切片
-	var offset int64 = 0
-	entryCount := 0
-
-	for {
-		entry, entrySize, err := ReadEntry(reader, offset)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-		unpadKey := kvs.persister.UnpadKey(entry.Key)
-
-		// 直接将键和偏移量存入map
-		index[unpadKey] = offset
-
-		offset += entrySize
-		entryCount++
-
-		if entryCount%100000 == 0 {
-			// 可以保留这个日志，但频率降低，以减少输出
-			// fmt.Printf("Processed %d entries, current offset: %d\n", entryCount, offset)
-		}
-	}
-	// 给索引排序
-	// entries := make([]keyOffset, 0, len(index))
-	// for k, v := range index {
-	// 	// 排序前得先填充
-	// 	key := kvs.oldPersister.PadKey(k)
-	// 	entries = append(entries, keyOffset{key: key, offset: v})
-	// }
-	// // 按 key 排序
-	// sort.Slice(entries, func(i, j int) bool {
-	// 	return entries[i].key < entries[j].key
-	// })
-
-	return &SortedFileIndex{Entries: index, FilePath: filePath}, nil
+	return &SortedFileIndex{
+		Sparse:       sparse,
+		FileSize:     fileSize,
+		InlineValues: NewInlineCache(kvs.inlineCacheBytes),
+		FilePath:     filePath,
+	}, nil
 }
 
 func (kvs *KVServer) processSortedFile() ([]*raft.Entry, error) {
