@@ -24,7 +24,9 @@ export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}:$L
 
 LABEL="${1:?用法: $0 <标签> [写入量] [vsize] [cacheMB] [blockKB]}"
 N="${2:-500000}"; VSIZE="${3:-64}"; CACHE_MB="${4:-64}"; BLOCK_KB="${5:-64}"
-GC_GB="${GC_GB:-0.05}"
+# valuelog 每条约 20B 头 + 10B key + value。阈值取预计总量的三分之一，确保 GC 必然触发。
+BYTES_PER_ENTRY=$((20 + 10 + VSIZE))
+GC_GB="${GC_GB:-$(awk -v n="$N" -v b="$BYTES_PER_ENTRY" 'BEGIN{printf "%.4f", n*b/1073741824/3}')}"
 COMMIT=$(git rev-parse --short HEAD)
 CSV="/tmp/avpcmp_${LABEL}.csv"
 
@@ -70,27 +72,33 @@ if grep -q "垃圾回收完成" "$D/n.log"; then
     info "GC 已完成 —— 读路径将走 sortedFile（稀疏索引生效）"
     GC_RAN=yes
 else
-    warn "GC 未触发，读路径不经 sortedFile，本轮 GET/SCAN 不反映稀疏索引代价"
-    GC_RAN=no
+    ls -la "$D"/data/valuelog/ 2>/dev/null | tail -3
+    kill $PID 2>/dev/null
+    fail "GC 未触发（valuelog 未达 ${GC_GB}GB）——读路径不经 sortedFile，本轮测不出稀疏索引代价"
 fi
 kill -0 $PID 2>/dev/null || { tail -30 "$D/n.log"; fail "节点在 GC 中崩溃"; }
 
 info "[$LABEL] GET (Zipf)..."
 GET=$(go run ./benchmark/zipf_read/zipf_read.go \
-    -cnums 20 -dnums 20000 -servers 127.0.0.1:3088 2>&1 | grep elapse:) || GET="(失败)"
+    -cnums 20 -dnums 20000 -servers 127.0.0.1:3088 2>&1 | grep -i "elapse" | tail -1) || GET="(失败)"
 echo "  $GET"
 
 info "[$LABEL] SCAN..."
 SCAN=$(go run ./benchmark/scan_pro/scan_pro.go \
-    -cnums 1 -dnums 100 -servers 127.0.0.1:3088 2>&1 | grep elapse:) || SCAN="(失败)"
+    -cnums 1 -dnums 100 -servers 127.0.0.1:3088 2>&1 | grep -i "elapse" | tail -1) || SCAN="(失败)"
 echo "  $SCAN"
 
 kill $SAMPLER 2>/dev/null
 PEAK=$(awk '{if($1>m)m=$1}END{print int(m/1024)}' "$D/rss.txt")
 FINAL=$(( $(rss) / 1024 ))
 
-lat(){ sed -n 's/.*latency:\([0-9.]*\)ms.*/\1/p' <<<"$1"; }
-thr(){ sed -n 's/.*throughput:\([0-9.]*\)MB\/S.*/\1/p' <<<"$1"; }
+# 三个 benchmark 的输出格式各不相同：
+#   randwrite : "elapse:..., throughput:0.1666MB/S, avg latency:14.32ms, ..."
+#   zipf_read : "... Elapse: 2.68s, Throughput: 0.3319 MB/S, ..., Average Latency: 3.81ms"
+#   scan_pro  : "Test N: elapse:..., throught:0.44MB/S, avg latency:..., ..."   (throught 是原文拼写)
+# 因此解析必须忽略大小写、容忍冒号后的空格，并同时匹配 throughput/throught。
+lat(){ grep -oiE "latency: *[0-9.]+(ms|s)" <<<"$1" | tail -1 | grep -oE "[0-9.]+"; }
+thr(){ grep -oiE "throughp?u?t?h?t?: *[0-9.]+ *MB/S" <<<"$1" | tail -1 | grep -oE "[0-9.]+"; }
 
 {
   echo "label,commit,writes,vsize,gc_ran,peak_rss_mb,final_rss_mb,put_lat_ms,put_thr,get_lat_ms,get_thr,scan_lat_ms,scan_thr"
