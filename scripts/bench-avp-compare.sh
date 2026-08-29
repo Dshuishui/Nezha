@@ -83,9 +83,11 @@ GET=$(go run ./benchmark/zipf_read/zipf_read.go \
     -cnums 20 -dnums 20000 -servers 127.0.0.1:3088 2>&1 | grep -i "elapse" | tail -1) || GET="(失败)"
 echo "  $GET"
 
+# scan_pro 内部把轮数硬编码成 numTests=100，每轮跑 dnums 次范围扫描。
+# dnums=100 时在 50 万 key 上要跑 4 小时以上，用 README 文档化的 dnums=4 规模，快 25 倍。
 info "[$LABEL] SCAN..."
 SCAN=$(go run ./benchmark/scan_pro/scan_pro.go \
-    -cnums 1 -dnums 100 -servers 127.0.0.1:3088 2>&1 | grep -i "elapse" | tail -1) || SCAN="(失败)"
+    -cnums 1 -dnums 4 -servers 127.0.0.1:3088 2>&1 | grep -i "elapse" | tail -1) || SCAN="(失败)"
 echo "  $SCAN"
 
 kill $SAMPLER 2>/dev/null
