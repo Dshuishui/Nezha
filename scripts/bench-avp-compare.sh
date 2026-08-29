@@ -90,7 +90,19 @@ SCAN=$(go run ./benchmark/scan_pro/scan_pro.go \
     -cnums 1 -dnums 4 -servers 127.0.0.1:3088 2>&1 | grep -i "elapse" | tail -1) || SCAN="(失败)"
 echo "  $SCAN"
 
+for pair in "GET:$GET" "SCAN:$SCAN"; do
+    name=${pair%%:*}; text=${pair#*:}
+    if grep -qiE "goodput:? *0[,[:space:]]" <<<"$text"; then
+        echo "--- 节点日志尾部 ---"; tail -40 "$D/n.log"
+        fail "$name 的 GoodPut 为 0 —— 一条都没读到，本轮数据无效"
+    fi
+done
+
 kill $SAMPLER 2>/dev/null
+if ! kill -0 $PID 2>/dev/null; then
+    echo "--- 节点日志尾部 ---"; tail -40 "$D/n.log"
+    fail "节点在读取阶段退出（GET/SCAN 数据不可用）"
+fi
 PEAK=$(awk '{if($1>m)m=$1}END{print int(m/1024)}' "$D/rss.txt")
 FINAL=$(( $(rss) / 1024 ))
 
