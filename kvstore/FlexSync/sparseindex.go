@@ -19,9 +19,8 @@ import (
 // 光索引就要 58GB。
 //
 // 这里改为每约 blockBytes 记录一个块起点：查找时二分定位到块，再在块内顺序扫描。
-// 内存从 O(key 数) 降为 O(块数)——64KB 块时同样的数据集约 64MB，降约三个数量级。
-// 代价是每次点查多读一个块（一次 seek + 一次顺序读），范围查询反而更快，因为
-// 定位起点从线性试探变成了二分。
+// 内存从 O(key 数) 降为 O(块数)——默认 4KB 块时同样的数据集约 1GB，降约两个数量级。
+// 代价是每次点查要顺序解析一个块内的 entry，见 defaultIndexBlockBytes 处的实测数据。
 
 // SparseEntry 是稀疏索引的一项：一个数据块的起始偏移及块内首条 entry 的 key。
 type SparseEntry struct {
@@ -45,7 +44,13 @@ func NewSparseIndexBuilder(blockBytes int64) *SparseIndexBuilder {
 	return &SparseIndexBuilder{blockBytes: blockBytes}
 }
 
-const defaultIndexBlockBytes = 64 * 1024
+// 4KB。块尺寸直接决定点查要顺序解析多少条 entry，实测（50 万条 64B value，
+// 每条 94B）GET 延迟相对稠密 map 的增幅随块内条数近似线性：
+//
+//	4KB(~44 条) +15% | 16KB(~174 条) +21% | 64KB(~697 条) +117%
+//
+// 4KB 下 SCAN 与稠密 map 持平，是内存与读代价的合理折中。
+const defaultIndexBlockBytes = 4 * 1024
 
 // Observe 记录一条刚写入的 entry。paddedKey 必须是写进文件的那个 key（已 padding），
 // offset 是它的起始偏移，size 是它占用的字节数。
