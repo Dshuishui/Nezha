@@ -68,7 +68,7 @@ var (
 	inlineThreshold_arg = flag.Int("inlineThreshold", 512, "Value size threshold in bytes: values smaller than this are cached inline in the sorted file index")
 	inlineCacheMB_arg   = flag.Int("inlineCacheMB", 256, "Memory budget in MB for the inline small-value cache (0 disables it)")
 	gcThresholdGB_arg   = flag.Float64("gcThresholdGB", 4000, "Value log size in GB that triggers garbage collection; lower it to exercise GC in tests")
-	indexBlockKB_arg    = flag.Int("indexBlockKB", 64, "Sparse index block size in KB: one in-memory index entry per block. Larger uses less memory but scans more per lookup")
+	indexBlockKB_arg    = flag.Int("indexBlockKB", 4, "Sparse index block size in KB: one in-memory index entry per block. Larger uses less memory but scans more entries per lookup")
 )
 
 const (
