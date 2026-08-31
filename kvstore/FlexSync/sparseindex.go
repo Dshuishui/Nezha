@@ -115,21 +115,28 @@ func (kvs *KVServer) scanBlock(index *SortedFileIndex, paddedKey string, start, 
 	}
 
 	reader := bufio.NewReaderSize(io.LimitReader(file, end-start), 64*1024)
+	// 解析条数就是 AVP 每次命中所省下的工作量，逐条计数后统一上报
+	scanned := 0
 	for {
-		entry, _, err := ReadEntry(reader, 0)
+		entry, size, err := ReadEntry(reader, 0)
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
+			avpRecordScan(scanned, end-start)
 			return nil, err
 		}
+		scanned++
+		_ = size
 		if entry.Key == paddedKey {
+			avpRecordScan(scanned, end-start)
 			return entry, nil
 		}
 		if entry.Key > paddedKey { // 已越过目标，块内有序，后面不可能再有
 			break
 		}
 	}
+	avpRecordScan(scanned, end-start)
 	return nil, errors.New(raft.ErrNoKey)
 }
 

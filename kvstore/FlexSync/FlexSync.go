@@ -1343,8 +1343,10 @@ func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (stri
 
 	// 先查内联缓存，命中则免去文件 I/O
 	if value, ok := index.InlineValues.Get(key); ok {
+		avpRecordHit()
 		return string(value), nil
 	}
+	avpRecordMiss()
 
 	// 未命中：经稀疏索引二分定位到块，块内顺序扫描
 	entry, err := kvs.lookupInSortedFile(index, key)
@@ -2161,6 +2163,8 @@ func main() {
 	kvs.FirstGC = true
 	kvs.inlineThreshold = *inlineThreshold_arg
 	kvs.inlineCacheBytes = int64(*inlineCacheMB_arg) * 1024 * 1024
+	// AVP 机理指标定期进日志，实验结束后从节点日志里抓最后一行
+	StartAVPStatsReporter(15 * time.Second)
 	kvs.gcThresholdGB = *gcThresholdGB_arg
 	kvs.indexBlockBytes = int64(*indexBlockKB_arg) * 1024
 
