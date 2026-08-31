@@ -56,7 +56,12 @@ git checkout -q "$THIS_BRANCH" -- benchmark/scan_pro/scan_pro.go
 SCAN_TESTS="$SCAN_TESTS" bash "$TOOLS/bench-avp-compare.sh" before "$N" "$VSIZE" 64 4
 RC=$?
 restore
-[ $RC -eq 0 ] || fail "对照组未跑完（rc=$RC）"
+# 对照组在这个规模跑不完是要测的结论之一，只要它写出了 CSV 就继续跑实验组，
+# 那正是最有说服力的对照：同一台机器上，一边撑不住，一边跑完了。
+if [ $RC -ne 0 ] && [ ! -s /tmp/avpcmp_before.csv ]; then
+    fail "对照组未产出任何结果（rc=$RC）"
+fi
+[ $RC -eq 0 ] || warn "对照组以 rc=$RC 结束（多半是 OOM），已记录部分结果，继续跑实验组"
 
 info "===== 实验组 ($THIS_BRANCH) ====="
 SCAN_TESTS="$SCAN_TESTS" bash "$TOOLS/bench-avp-compare.sh" after "$N" "$VSIZE" 64 4 || fail "实验组未跑完"

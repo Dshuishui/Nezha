@@ -113,6 +113,17 @@ run_bench scan go run ./benchmark/scan_pro/scan_pro.go \
     -cnums 1 -dnums 4 -tests "${SCAN_TESTS:-100}" -servers 127.0.0.1:3088
 SCAN=$(<"$D/scan.out")
 
+# 节点存活要先判：它决定后面的空数据该怎么解读。
+# 节点被 OOM 杀掉本身就是结论——"原版在这个规模连读负载都跑不完"正是要证明的事，
+# 此时把已经拿到的阶段数据丢掉才是错的。只有节点还活着却读不到东西，才是真故障。
+kill $SAMPLER 2>/dev/null
+NODE_ALIVE=yes
+if ! kill -0 $PID 2>/dev/null; then
+    NODE_ALIVE=no
+    warn "节点在读取阶段退出（多半被 OOM 杀死）——已完成阶段的数据仍然有效，之后的阶段记为 DEAD"
+    echo "--- 节点日志尾部 ---"; tail -20 "$D/n.log"
+fi
+
 # 两个读 benchmark 各跑 100 轮并自己算平均，取那个平均而不是最后一轮。
 # 空轮占比同时汇报出来：scan_pro 的扫描起点是 rand.Intn(370000) 写死的，
 # 数据量低于 37 万时大部分轮次会扫到空区间，SCAN 数字就没有意义了。
@@ -120,22 +131,20 @@ for name in GET SCAN; do
     text=$([ "$name" = GET ] && echo "$GET" || echo "$SCAN")
     read -r rounds empty <<<"$(bench_round_stats "$text")"
     if [ "$rounds" -gt 0 ] && [ "$empty" -ge "$rounds" ]; then
+        if [ "$NODE_ALIVE" = no ]; then
+            warn "$name: $rounds 轮全部 GoodPut 为 0——节点此时已被杀死，本阶段记为 DEAD"
+            continue
+        fi
         echo "--- 节点日志尾部 ---"; tail -40 "$D/n.log"
-        fail "$name 的 $rounds 轮全部 GoodPut 为 0——一条都没读到，本轮数据无效"
+        fail "$name 的 $rounds 轮全部 GoodPut 为 0，而节点仍存活——这是真故障，不是内存不足"
     fi
     if [ "$rounds" -gt 0 ] && [ "$empty" -gt $((rounds / 5)) ]; then
         warn "$name: $rounds 轮中 $empty 轮扫到空区间（数据量 $N 相对扫描范围 370000 偏小），平均值失真"
     fi
     info "  $name: $rounds 轮，平均吞吐 $(bench_avg_throughput "$text" || echo NA) MB/S，平均延迟 $(bench_avg_latency "$text" || echo NA) ms"
 done
-
-kill $SAMPLER 2>/dev/null
-if ! kill -0 $PID 2>/dev/null; then
-    echo "--- 节点日志尾部 ---"; tail -40 "$D/n.log"
-    fail "节点在读取阶段退出（GET/SCAN 数据不可用）"
-fi
 PEAK=$(peak_mb "$D/rss.txt") || fail "RSS 采样为空，无法给出峰值内存"
-FINAL=$(rss_mb "$PID")
+FINAL=$(rss_mb "$PID")   # 节点已死时为 0
 
 # 解析见 lib/bench-common.sh：三个 benchmark 的输出格式互不相同。
 # 解析结果为空说明格式又变了，宁可报错也不要往 CSV 里写空字段——
@@ -144,18 +153,25 @@ FINAL=$(rss_mb "$PID")
 # 主脚本照常把空字段写进 CSV。
 # PUT 是单轮，GET/SCAN 取各自的 100 轮平均。延迟一律换算成毫秒——
 # 三个 benchmark 混用 µs/ms/s，直接取数字会让秒被当成毫秒记进 *_lat_ms 列。
-PUT_LAT=$(bench_latency "$PUT")   || fail "PUT 延迟解析失败 -> $PUT"
-PUT_THR=$(bench_throughput "$PUT"); [ -n "$PUT_THR" ] || fail "PUT 吞吐解析失败 -> $PUT"
-GET_LAT=$(bench_avg_latency "$GET")     || fail "GET 100 轮平均延迟解析失败"
-GET_THR=$(bench_avg_throughput "$GET")  || fail "GET 100 轮平均吞吐解析失败"
-SCAN_LAT=$(bench_avg_latency "$SCAN")    || fail "SCAN 100 轮平均延迟解析失败"
-SCAN_THR=$(bench_avg_throughput "$SCAN") || fail "SCAN 100 轮平均吞吐解析失败"
+# 解析不出来分两种情况：节点已死是预期内的（记 DEAD），节点活着就是格式变了（fail）。
+parse_or_dead(){  # $1=名称 $2=解析出的值（可能为空）
+    if [ -n "$2" ]; then echo "$2"
+    elif [ "$NODE_ALIVE" = no ]; then echo "DEAD"
+    else return 1
+    fi
+}
+PUT_LAT=$(parse_or_dead PUT  "$(bench_latency "$PUT")")           || fail "PUT 延迟解析失败 -> $PUT"
+PUT_THR=$(parse_or_dead PUT  "$(bench_throughput "$PUT")")        || fail "PUT 吞吐解析失败 -> $PUT"
+GET_LAT=$(parse_or_dead GET  "$(bench_avg_latency "$GET")")       || fail "GET 平均延迟解析失败"
+GET_THR=$(parse_or_dead GET  "$(bench_avg_throughput "$GET")")    || fail "GET 平均吞吐解析失败"
+SCAN_LAT=$(parse_or_dead SCAN "$(bench_avg_latency "$SCAN")")     || fail "SCAN 平均延迟解析失败"
+SCAN_THR=$(parse_or_dead SCAN "$(bench_avg_throughput "$SCAN")")  || fail "SCAN 平均吞吐解析失败"
 read -r GET_ROUNDS GET_EMPTY <<<"$(bench_round_stats "$GET")"
 read -r SCAN_ROUNDS SCAN_EMPTY <<<"$(bench_round_stats "$SCAN")"
-ROW="$LABEL,$COMMIT,$N,$VSIZE,$GC_RAN,$PEAK,$FINAL,$PUT_LAT,$PUT_THR,$GET_LAT,$GET_THR,$SCAN_LAT,$SCAN_THR,$GET_EMPTY/$GET_ROUNDS,$SCAN_EMPTY/$SCAN_ROUNDS"
+ROW="$LABEL,$COMMIT,$N,$VSIZE,$GC_RAN,$PEAK,$FINAL,$PUT_LAT,$PUT_THR,$GET_LAT,$GET_THR,$SCAN_LAT,$SCAN_THR,$GET_EMPTY/$GET_ROUNDS,$SCAN_EMPTY/$SCAN_ROUNDS,$NODE_ALIVE"
 
 {
-  echo "label,commit,writes,vsize,gc_ran,peak_rss_mb,final_rss_mb,put_lat_ms,put_thr,get_lat_ms,get_thr,scan_lat_ms,scan_thr,get_empty_rounds,scan_empty_rounds"
+  echo "label,commit,writes,vsize,gc_ran,peak_rss_mb,final_rss_mb,put_lat_ms,put_thr,get_lat_ms,get_thr,scan_lat_ms,scan_thr,get_empty_rounds,scan_empty_rounds,node_alive"
   echo "$ROW"
 } > "$CSV"
 
