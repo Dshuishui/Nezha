@@ -29,6 +29,11 @@ var (
 	k1         = flag.Int("startkey", 0, "first key")
 	k2         = flag.Int("endkey", 20, "last key")
 	outputFile = flag.String("output", "scan_benchmark_results.txt", "输出结果文件名")
+	// 每轮都要扫遍整个数据集，耗时随数据量线性增长：50 万 key 时一轮约 30s，
+	// 300 万 key 时一轮 3 分钟以上，跑满 100 轮就是 5 小时以上。
+	// 默认值保持 100 不变，已有实验数据的口径不受影响；
+	// 大数据集下用这个 flag 把轮数降到能在合理时间内跑完。
+	numTestsFlag = flag.Int("tests", 100, "测试轮数（结果取各轮平均）")
 )
 
 type KVClient struct {
@@ -359,7 +364,7 @@ func main() {
 
 	var totalThroughput float64
 	var totalAvgLatency time.Duration
-	numTests := 100
+	numTests := *numTestsFlag
 
 	for i := 0; i < numTests; i++ {
 		startTime := time.Now()
