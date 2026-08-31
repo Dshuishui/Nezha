@@ -33,7 +33,12 @@ info "规模 $N 条 × ${VSIZE}B，GC 阈值 ${GC_GB} GB，SCAN ${SCAN_TESTS} �
 awk -v n="$N" 'BEGIN{printf "[INFO] 对照组理论内存 %.2f GB（rf.log 280B/条 + 稠密 map 55B/条）\n", n*335/1073741824}'
 info "机器内存 $(free -m | awk '/^Mem:/{print $2}') MB —— 对照组必须完整跑完读负载，规模不能贪大"
 
-restore(){ git checkout -q raft/raft.go kvstore/FlexSync/FlexSync.go 2>/dev/null; git checkout -q "$THIS_BRANCH"; }
+# 切到对照分支后，工作区里的 scripts/ 也会变成那个分支的版本——包括这个脚本
+# 自己和它依赖的 lib。先把整份 scripts/ 拷到分支外，全程从拷贝运行。
+TOOLS=$(mktemp -d)
+cp -r scripts/. "$TOOLS/"
+
+restore(){ git checkout -q -- . 2>/dev/null; git checkout -q "$THIS_BRANCH"; rm -rf "$TOOLS"; }
 trap restore EXIT
 
 # 对照组：打补丁 -> 跑 -> 立刻还原，避免脏工作区留到下一步
@@ -45,15 +50,16 @@ grep -q "fileSizeGB <= $GC_GB" kvstore/FlexSync/FlexSync.go \
     || fail "对照组 GC 阈值替换失败——不修正的话对照组不会触发 GC，两组不可比"
 grep -q "rf.Offsets = append(rf.Offsets, 0)" raft/raft.go \
     && fail "对照组哨兵未删除——会在 GC 后崩溃"
-# scan_pro 的 -tests flag 只有本分支有，对照组要用同样的轮数，把这个文件也带过去
+# scan_pro 的 -tests flag 只有本分支有；benchmark 是 go run 跑工作区里的文件，
+# 所以这个必须落到工作区，不能只放在 $TOOLS 里。
 git checkout -q "$THIS_BRANCH" -- benchmark/scan_pro/scan_pro.go
-SCAN_TESTS="$SCAN_TESTS" bash scripts/bench-avp-compare.sh before "$N" "$VSIZE" 64 4
+SCAN_TESTS="$SCAN_TESTS" bash "$TOOLS/bench-avp-compare.sh" before "$N" "$VSIZE" 64 4
 RC=$?
 restore
 [ $RC -eq 0 ] || fail "对照组未跑完（rc=$RC）"
 
 info "===== 实验组 ($THIS_BRANCH) ====="
-SCAN_TESTS="$SCAN_TESTS" bash scripts/bench-avp-compare.sh after "$N" "$VSIZE" 64 4 || fail "实验组未跑完"
+SCAN_TESTS="$SCAN_TESTS" bash "$TOOLS/bench-avp-compare.sh" after "$N" "$VSIZE" 64 4 || fail "实验组未跑完"
 
 echo ""
 info "===== 汇总 ====="
