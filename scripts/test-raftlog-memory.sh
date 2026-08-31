@@ -8,6 +8,9 @@ info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 fail() { echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 
+# shellcheck source=scripts/lib/bench-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/bench-common.sh"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
@@ -39,12 +42,10 @@ NODE_PID=$!
 sleep 8
 kill -0 "$NODE_PID" 2>/dev/null || { cat "$DATA_DIR/node.log"; fail "节点未启动"; }
 
-rss() { ps -o rss= -p "$NODE_PID" 2>/dev/null | tr -d ' '; }
-info "写入前 RSS: $(( $(rss) / 1024 )) MB"
+info "写入前 RSS: $(rss_mb "$NODE_PID") MB"
 
 # 后台采样 RSS
-( while kill -0 "$NODE_PID" 2>/dev/null; do echo "$(date +%s) $(rss)"; sleep 5; done ) > "$DATA_DIR/rss.txt" &
-SAMPLER=$!
+SAMPLER=$(start_rss_sampler "$NODE_PID" "$DATA_DIR/rss.txt" 5)
 
 info "开始写入..."
 go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
@@ -54,14 +55,15 @@ kill $SAMPLER 2>/dev/null || true
 info "写入完成，等待 compactLog 触发 (15s)..."
 sleep 15
 
-PEAK=$(awk '{if($2>m)m=$2}END{print m}' "$DATA_DIR/rss.txt")
-FINAL=$(rss)
+PEAK=$(peak_mb "$DATA_DIR/rss.txt") || fail "RSS 采样为空，无法给出峰值内存"
+FINAL=$(rss_mb "$NODE_PID")
+kill -0 "$NODE_PID" 2>/dev/null || warn "节点已退出（很可能被 OOM 杀死），压缩后 RSS 不代表稳态"
 echo ""
 echo "=============================================="
 echo " value 大小      : ${VSIZE} B"
 echo " 写入条数        : ${DNUMS}"
-echo " 峰值 RSS        : $(( PEAK / 1024 )) MB"
-echo " 压缩后 RSS      : $(( FINAL / 1024 )) MB"
+echo " 峰值 RSS        : ${PEAK} MB"
+echo " 压缩后 RSS      : ${FINAL} MB"
 echo "=============================================="
 echo ""
 info "compactLog 日志:"
