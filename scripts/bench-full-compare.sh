@@ -38,8 +38,10 @@ info "机器内存 $(free -m | awk '/^Mem:/{print $2}') MB —— 对照组必�
 TOOLS=$(mktemp -d)
 cp -r scripts/. "$TOOLS/"
 
-restore(){ git checkout -q -- . 2>/dev/null; git checkout -q "$THIS_BRANCH"; rm -rf "$TOOLS"; }
-trap restore EXIT
+# restore 在对照组结束后就要调用一次，所以它绝不能删 $TOOLS——
+# 实验组还要从那里取脚本。清理只挂在退出时做。
+restore(){ git checkout -q -- . 2>/dev/null; git checkout -q "$THIS_BRANCH"; }
+trap 'restore; rm -rf "$TOOLS"' EXIT
 
 # 对照组：打补丁 -> 跑 -> 立刻还原，避免脏工作区留到下一步
 info "===== 对照组 ($BASE_BRANCH) ====="

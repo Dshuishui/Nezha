@@ -139,7 +139,15 @@ for name in GET SCAN; do
         fail "$name 的 $rounds 轮全部 GoodPut 为 0，而节点仍存活——这是真故障，不是内存不足"
     fi
     if [ "$rounds" -gt 0 ] && [ "$empty" -gt $((rounds / 5)) ]; then
-        warn "$name: $rounds 轮中 $empty 轮扫到空区间（数据量 $N 相对扫描范围 370000 偏小），平均值失真"
+        # 空轮有两个完全不同的成因，不能混为一谈：数据量小于扫描起点范围是负载配置
+        # 问题，节点已死则是内存问题。写死的扫描范围是 370000。
+        if [ "$NODE_ALIVE" = no ]; then
+            warn "$name: $rounds 轮中 $empty 轮为空——节点已被杀死，本阶段数据作废"
+        elif [ "$N" -lt 370000 ]; then
+            warn "$name: $rounds 轮中 $empty 轮扫到空区间（数据量 $N 小于扫描起点范围 370000），平均值失真"
+        else
+            warn "$name: $rounds 轮中 $empty 轮为空，但数据量 $N 已覆盖扫描范围且节点存活——请检查读路径"
+        fi
     fi
     info "  $name: $rounds 轮，平均吞吐 $(bench_avg_throughput "$text" || echo NA) MB/S，平均延迟 $(bench_avg_latency "$text" || echo NA) ms"
 done
@@ -154,8 +162,19 @@ FINAL=$(rss_mb "$PID")   # 节点已死时为 0
 # PUT 是单轮，GET/SCAN 取各自的 100 轮平均。延迟一律换算成毫秒——
 # 三个 benchmark 混用 µs/ms/s，直接取数字会让秒被当成毫秒记进 *_lat_ms 列。
 # 解析不出来分两种情况：节点已死是预期内的（记 DEAD），节点活着就是格式变了（fail）。
+#
+# 一个阶段只要判定为 DEAD，它的每一项指标都必须记 DEAD，哪怕某项还能解析出数字。
+# 节点死后 scan_pro 照样把失败轮计进平均，于是打印出 "平均延迟 18164ms" 这种
+# 纯粹的垃圾值——一旦让它进了 CSV，看表的人没有任何办法把它和真实测量区分开。
+stage_dead(){  # $1=阶段名，判断该阶段是否发生在节点死亡之后
+    [ "$NODE_ALIVE" = no ] || return 1
+    case "$1" in SCAN) return 0;; esac   # 节点死在读阶段，SCAN 是最后一个阶段
+    # PUT/GET 若能解析出值就是死亡前完成的，保留
+    return 1
+}
 parse_or_dead(){  # $1=名称 $2=解析出的值（可能为空）
-    if [ -n "$2" ]; then echo "$2"
+    if stage_dead "$1"; then echo "DEAD"
+    elif [ -n "$2" ]; then echo "$2"
     elif [ "$NODE_ALIVE" = no ]; then echo "DEAD"
     else return 1
     fi
