@@ -126,16 +126,68 @@ type Raft struct {
 	// 已压缩的条目从内存中物理删除，其内容仍保留在 rf.currentLog 磁盘文件中。
 	lastIncludedIndex int   // 已压缩掉的最后一条日志的 index
 	lastIncludedTerm  int32 // 上述条目的 term，用于 PrevLogTerm 一致性检查
+
+	// 复用的日志文件句柄。此前每写一条日志都要 OpenFile + NewWriter + Seek +
+	// Write + Flush + Close，五次系统调用里只有一次在搬运数据。写 64B 的小 value
+	// 时这套固定开销就是全部成本；写 64KB 时它可以忽略——这正是本系统在小 value
+	// 上吞吐塌掉的原因。
+	// 句柄常驻后每条只剩 Write + Flush。持久化语义不变：仍是每批写完立刻 Flush，
+	// 且原本就没有 fsync，本改动不触碰崩溃一致性。
+	logFile   *os.File
+	logWriter *bufio.Writer
+	logOffset int64 // 下一条记录的写入位置；自行维护以省掉每次的 Seek
 }
 
 func (rf *Raft) GetOffsets() []int64 {
 	return rf.Offsets
 }
 
+// openLogFile 打开（或重开）日志文件并接管写入位置。
+// 调用方必须持有 rf.mu：它改写 rf.logFile / rf.logWriter / rf.logOffset。
+func (rf *Raft) openLogFile(filename string) error {
+	if rf.logWriter != nil {
+		rf.logWriter.Flush()
+	}
+	if rf.logFile != nil {
+		rf.logFile.Close()
+	}
+	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		return err
+	}
+	end, err := f.Seek(0, os.SEEK_END)
+	if err != nil {
+		f.Close()
+		return err
+	}
+	rf.logFile = f
+	rf.logWriter = bufio.NewWriterSize(f, 1<<20)
+	rf.logOffset = end
+	return nil
+}
+
+// CloseLogFile 刷净缓冲并释放句柄。
+func (rf *Raft) CloseLogFile() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.logWriter != nil {
+		rf.logWriter.Flush()
+		rf.logWriter = nil
+	}
+	if rf.logFile != nil {
+		rf.logFile.Close()
+		rf.logFile = nil
+	}
+}
+
 func (rf *Raft) SetCurrentLog(currentLog string) {
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
 	rf.currentLog = currentLog
+	// GC 会切到新文件，句柄要跟着换，否则后续写入还落在旧文件上。
+	if err := rf.openLogFile(currentLog); err != nil {
+		log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
+	}
 }
 
 func (rf *Raft) SetCurrentPersister(persister *Persister) {
@@ -185,37 +237,34 @@ func (rf *Raft) SetNumGC(numGC int) {
 // }
 
 // WriteEntryToFile 将条目写入指定的文件，并返回写入的起始偏移量。
+// 调用方需持有 rf.mu：本函数改写 rf.logWriter / rf.logOffset / rf.Offsets。
 func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
-	// 打开文件，如果文件不存在则创建
-	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-	if err != nil {
-		log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
-	}
-	defer file.Close()
-
-	// 包装文件对象以进行缓冲写入
-	writer := bufio.NewWriter(file)
-
-	// 获取当前写入位置，即为返回的偏移量
-	var offset int64
-	var offsets []int64
-	// var err error
-
-	// 预分配足够大的偏移量切片，避免了在循环中动态扩容偏移量切片的操作
-	offsets = make([]int64, len(e))
-
-	if startPos == 0 { // 0是直接追加
-		offset, err = file.Seek(0, os.SEEK_END)
-		if err != nil {
-			log.Fatalf("定位存储Raft日志的磁盘文件失败：%v", err)
+	// 句柄常驻，不再每条 OpenFile/Close。首次调用或换文件时才打开。
+	if rf.logWriter == nil || filename != rf.currentLog {
+		if err := rf.openLogFile(filename); err != nil {
+			log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
 		}
-	} else { // 同步日志时，需要已有的日志与leader的冲突，需要覆盖之前的错误的
-		offset, err = file.Seek(startPos, os.SEEK_SET)
-		if err != nil {
+		rf.currentLog = filename
+	}
+	writer := rf.logWriter
+
+	var offset int64
+	var err error
+	// 预分配足够大的偏移量切片，避免了在循环中动态扩容偏移量切片的操作
+	offsets := make([]int64, len(e))
+
+	if startPos == 0 { // 0 是直接追加：位置自行维护，省掉一次 Seek
+		offset = rf.logOffset
+	} else {
+		// 同步日志时需覆盖与 leader 冲突的部分。缓冲区里可能还压着尚未落盘的
+		// 追加内容，必须先刷净再回退写入位置，否则新旧数据会交错。
+		if err = writer.Flush(); err != nil {
+			log.Fatalf("刷新缓冲区失败：%v", err)
+		}
+		if _, err = rf.logFile.Seek(startPos, os.SEEK_SET); err != nil {
 			log.Fatalf("定位存储Raft日志的磁盘文件的起始位置失败：%v", err)
 		}
+		offset = startPos
 	}
 
 	for i, entry := range e {
@@ -251,10 +300,19 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
 		offsets[i] = offset
 		offset += int64(len(data))
 	}
-	// 刷新缓冲区以确保数据被写入文件
-	err = writer.Flush()
-	if err != nil {
+	// 刷新缓冲区以确保数据被写入文件。持久化语义与改造前一致：每批写完立刻 Flush。
+	if err = writer.Flush(); err != nil {
 		log.Fatalf("刷新缓冲区失败：%v", err)
+	}
+	if startPos == 0 {
+		rf.logOffset = offset
+	} else {
+		// 覆盖写之后，文件位置停在被覆盖段的末尾，而后续追加必须回到文件真实末尾。
+		end, serr := rf.logFile.Seek(0, os.SEEK_END)
+		if serr != nil {
+			log.Fatalf("恢复追加位置失败：%v", serr)
+		}
+		rf.logOffset = end
 	}
 
 	rf.Offsets = append(rf.Offsets, offsets...)
