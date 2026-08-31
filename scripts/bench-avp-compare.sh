@@ -187,10 +187,26 @@ SCAN_LAT=$(parse_or_dead SCAN "$(bench_avg_latency "$SCAN")")     || fail "SCAN 
 SCAN_THR=$(parse_or_dead SCAN "$(bench_avg_throughput "$SCAN")")  || fail "SCAN 平均吞吐解析失败"
 read -r GET_ROUNDS GET_EMPTY <<<"$(bench_round_stats "$GET")"
 read -r SCAN_ROUNDS SCAN_EMPTY <<<"$(bench_round_stats "$SCAN")"
-ROW="$LABEL,$COMMIT,$N,$VSIZE,$GC_RAN,$PEAK,$FINAL,$PUT_LAT,$PUT_THR,$GET_LAT,$GET_THR,$SCAN_LAT,$SCAN_THR,$GET_EMPTY/$GET_ROUNDS,$SCAN_EMPTY/$SCAN_ROUNDS,$NODE_ALIVE"
+
+# AVP 机理指标：节点每 15s 打一行 [AVP-STATS] 进自己的日志，取读阶段结束后的最后一行。
+# 这些数字必须在这里捞出来——$D 是 mktemp 目录，退出时连同节点日志一起被删掉。
+# 端到端延迟在内存充裕的机器上会被 page cache 抹平，命中率和每次扫描的 entry 条数
+# 才是 AVP 是否起作用的直接证据。
+AVP_LINE=$(grep "\[AVP-STATS\]" "$D/n.log" 2>/dev/null | tail -1)
+if [ -n "$AVP_LINE" ]; then
+    info "  $AVP_LINE"
+    avp_field(){ sed -n "s/.*$1=\([0-9.]*\).*/\1/p" <<<"$AVP_LINE"; }
+    AVP_HITRATE=$(avp_field hit_rate); AVP_EPS=$(avp_field entries_per_scan)
+    AVP_HITS=$(avp_field hits); AVP_MISSES=$(avp_field misses)
+else
+    # 旧二进制没有这些计数器；记 NA 而不是留空，免得看表的人以为是"没测"
+    AVP_HITRATE=NA; AVP_EPS=NA; AVP_HITS=NA; AVP_MISSES=NA
+    warn "  节点日志无 [AVP-STATS]（该二进制未带机理指标）"
+fi
+ROW="$LABEL,$COMMIT,$N,$VSIZE,$GC_RAN,$PEAK,$FINAL,$PUT_LAT,$PUT_THR,$GET_LAT,$GET_THR,$SCAN_LAT,$SCAN_THR,$GET_EMPTY/$GET_ROUNDS,$SCAN_EMPTY/$SCAN_ROUNDS,$NODE_ALIVE,$AVP_HITS,$AVP_MISSES,$AVP_HITRATE,$AVP_EPS"
 
 {
-  echo "label,commit,writes,vsize,gc_ran,peak_rss_mb,final_rss_mb,put_lat_ms,put_thr,get_lat_ms,get_thr,scan_lat_ms,scan_thr,get_empty_rounds,scan_empty_rounds,node_alive"
+  echo "label,commit,writes,vsize,gc_ran,peak_rss_mb,final_rss_mb,put_lat_ms,put_thr,get_lat_ms,get_thr,scan_lat_ms,scan_thr,get_empty_rounds,scan_empty_rounds,node_alive,avp_hits,avp_misses,avp_hit_rate,entries_per_scan"
   echo "$ROW"
 } > "$CSV"
 
