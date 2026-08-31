@@ -8,6 +8,9 @@ GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
 info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 fail() { echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 
+# shellcheck source=scripts/lib/bench-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/bench-common.sh"
+
 PROJECT_DIR="${PROJECT_DIR:-$HOME/Github/Nezha}"
 cd "$PROJECT_DIR" || fail "找不到项目目录 $PROJECT_DIR"
 
@@ -30,7 +33,7 @@ CSV=/tmp/curve_${LABEL}.csv
 info "构建 ($(git rev-parse --short HEAD))..."
 go build -o "$BIN" ./kvstore/FlexSync/ || fail "编译失败"
 
-echo "label,commit,vsize,writes,peak_rss_mb,final_rss_mb,latency_ms,throughput_mbs,goodput" > "$CSV"
+echo "label,commit,vsize,writes,peak_rss_mb,final_rss_mb,latency_ms,throughput_mbs,goodput,node_alive" > "$CSV"
 COMMIT=$(git rev-parse --short HEAD)
 
 for N in "${SIZES[@]}"; do
@@ -41,24 +44,33 @@ for N in "${SIZES[@]}"; do
     sleep 8
     kill -0 $PID 2>/dev/null || { cat "$DATA_DIR/node.log"; rm -rf "$DATA_DIR"; fail "节点未启动 (N=$N)"; }
 
-    ( while kill -0 $PID 2>/dev/null; do ps -o rss= -p $PID 2>/dev/null | tr -d ' '; sleep 3; done ) > "$DATA_DIR/rss.txt" &
-    SAMPLER=$!
+    SAMPLER=$(start_rss_sampler "$PID" "$DATA_DIR/rss.txt" 3)
 
     info "[$LABEL] 写入 $N 条 (value=${VSIZE}B)..."
-    OUT=$(go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
-        -cnums $CNUMS -dnums "$N" -vsize "$VSIZE" -servers 127.0.0.1:3088 2>&1 | grep "elapse:")
+    # 完整输出先落盘，再抓结果行：管道退出码取自 grep，直接判断 $? 抓不到 benchmark 崩溃。
+    go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
+        -cnums $CNUMS -dnums "$N" -vsize "$VSIZE" -servers 127.0.0.1:3088 > "$DATA_DIR/put.out" 2>&1
+    OUT=$(grep "elapse:" "$DATA_DIR/put.out" | tail -1)
 
     kill $SAMPLER 2>/dev/null
     sleep 15   # 等 compactLog 触发
 
-    PEAK=$(awk '{if($1>m)m=$1}END{print int(m/1024)}' "$DATA_DIR/rss.txt")
-    FINAL=$(( $(ps -o rss= -p $PID 2>/dev/null | tr -d ' ' || echo 0) / 1024 ))
+    # 节点若在写入途中被 OOM 杀掉，本轮仍要把已采到的峰值记下来——
+    # 那恰恰是最有价值的数据点（对照组撑不住的规模）。旧版在这里因为
+    # 空 RSS 进算术展开而整轮报错退出，反而把结论丢了。
+    ALIVE=DEAD; kill -0 $PID 2>/dev/null && ALIVE=ALIVE
+    PEAK=$(peak_mb "$DATA_DIR/rss.txt") || { PEAK=0; info "[$LABEL] N=$N RSS 采样为空"; }
+    FINAL=$(rss_mb "$PID")
     LAT=$(sed -n 's/.*avg latency:\([0-9.]*\)ms.*/\1/p' <<<"$OUT")
     THR=$(sed -n 's/.*throughput:\([0-9.]*\)MB\/S.*/\1/p' <<<"$OUT")
     GP=$(sed -n 's/.*goodPut \([0-9]*\).*/\1/p' <<<"$OUT")
 
-    echo "$LABEL,$COMMIT,$VSIZE,$N,$PEAK,$FINAL,$LAT,$THR,$GP" >> "$CSV"
-    info "[$LABEL] N=$N  峰值=${PEAK}MB  结束=${FINAL}MB  延迟=${LAT}ms  吞吐=${THR}MB/s"
+    echo "$LABEL,$COMMIT,$VSIZE,$N,$PEAK,$FINAL,${LAT:-NA},${THR:-NA},${GP:-NA},$ALIVE" >> "$CSV"
+    info "[$LABEL] N=$N  峰值=${PEAK}MB  结束=${FINAL}MB  延迟=${LAT:-NA}ms  吞吐=${THR:-NA}MB/s  节点=$ALIVE"
+    if [ "$ALIVE" = DEAD ]; then
+        info "[$LABEL] N=$N 节点已退出（很可能被 OOM 杀死），节点日志尾部："
+        tail -5 "$DATA_DIR/node.log"
+    fi
 
     kill $PID 2>/dev/null; wait $PID 2>/dev/null
     rm -rf "$DATA_DIR"

@@ -12,6 +12,9 @@ info(){ echo -e "${GREEN}[INFO]${NC} $1"; }
 warn(){ echo -e "${YEL}[WARN]${NC} $1"; }
 fail(){ echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 
+# shellcheck source=scripts/lib/bench-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/bench-common.sh"
+
 PROJECT_DIR="${PROJECT_DIR:-$HOME/Github/Nezha}"; cd "$PROJECT_DIR" || fail "无项目目录"
 export PATH=$PATH:/usr/local/go/bin
 for d in /usr/lib/x86_64-linux-gnu /usr/local/lib /usr/lib; do
@@ -46,8 +49,19 @@ info "构建..."
 go build -o "/tmp/nezha-cmp-$LABEL" ./kvstore/FlexSync/ || fail "编译失败"
 
 D=$(mktemp -d)
-cleanup(){ kill $PID 2>/dev/null; rm -rf "$D" "/tmp/nezha-cmp-$LABEL"; }
+# 失败时保留 $D：里面有节点日志和 RSS 采样，删掉就无从追查了。
+KEEP_DATA=0
+cleanup(){
+    kill ${PID:-} 2>/dev/null
+    rm -f "/tmp/nezha-cmp-$LABEL"
+    if [ "$KEEP_DATA" = 1 ]; then
+        echo -e "${YEL}[WARN]${NC} 已保留现场: $D"
+    else
+        rm -rf "$D"
+    fi
+}
 trap cleanup EXIT
+fail(){ KEEP_DATA=1; echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 
 # shellcheck disable=SC2086
 "/tmp/nezha-cmp-$LABEL" -address 127.0.0.1:3088 -internalAddress 127.0.0.1:30881 \
@@ -56,15 +70,24 @@ PID=$!
 sleep 10
 kill -0 $PID 2>/dev/null || { tail -20 "$D/n.log"; fail "节点未启动"; }
 
-rss(){ ps -o rss= -p $PID 2>/dev/null | tr -d ' ' || echo 0; }
-( while kill -0 $PID 2>/dev/null; do rss; sleep 3; done ) > "$D/rss.txt" &
-SAMPLER=$!
+SAMPLER=$(start_rss_sampler "$PID" "$D/rss.txt" 3)
+
+# 先落盘完整输出再抓结果行：写成 `X=$(cmd | grep ...) || fail` 是抓不到失败的，
+# 管道退出码取自最后一个命令，grep/tail 的成功会掩盖 benchmark 的崩溃。
+run_bench(){  # $1=名称 $2...=命令
+    local name="$1"; shift
+    local raw="$D/${name}.out"
+    "$@" > "$raw" 2>&1
+    grep -iE "elapse" "$raw" | tail -1
+}
 
 info "[$LABEL] PUT $N 条 (value=${VSIZE}B)..."
-PUT=$(go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
-    -cnums 50 -dnums "$N" -vsize "$VSIZE" -servers 127.0.0.1:3088 2>&1 | grep elapse:) \
-    || fail "PUT 失败"
-echo "  $PUT"
+PUT=$(run_bench put go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
+    -cnums 50 -dnums "$N" -vsize "$VSIZE" -servers 127.0.0.1:3088)
+echo "  ${PUT:-（无输出）}"
+if reason=$(bench_invalid_reason PUT "$PUT"); then
+    tail -20 "$D/put.out"; fail "$reason"
+fi
 
 info "等待 GC (40s)..."
 sleep 40
@@ -79,22 +102,22 @@ fi
 kill -0 $PID 2>/dev/null || { tail -30 "$D/n.log"; fail "节点在 GC 中崩溃"; }
 
 info "[$LABEL] GET (Zipf)..."
-GET=$(go run ./benchmark/zipf_read/zipf_read.go \
-    -cnums 20 -dnums 20000 -servers 127.0.0.1:3088 2>&1 | grep -i "elapse" | tail -1) || GET="(失败)"
-echo "  $GET"
+GET=$(run_bench get go run ./benchmark/zipf_read/zipf_read.go \
+    -cnums 20 -dnums 20000 -servers 127.0.0.1:3088)
+echo "  ${GET:-（无输出）}"
 
 # scan_pro 内部把轮数硬编码成 numTests=100，每轮跑 dnums 次范围扫描。
 # dnums=100 时在 50 万 key 上要跑 4 小时以上，用 README 文档化的 dnums=4 规模，快 25 倍。
 info "[$LABEL] SCAN..."
-SCAN=$(go run ./benchmark/scan_pro/scan_pro.go \
-    -cnums 1 -dnums 4 -servers 127.0.0.1:3088 2>&1 | grep -i "elapse" | tail -1) || SCAN="(失败)"
-echo "  $SCAN"
+SCAN=$(run_bench scan go run ./benchmark/scan_pro/scan_pro.go \
+    -cnums 1 -dnums 4 -servers 127.0.0.1:3088)
+echo "  ${SCAN:-（无输出）}"
 
 for pair in "GET:$GET" "SCAN:$SCAN"; do
     name=${pair%%:*}; text=${pair#*:}
-    if grep -qiE "goodput:? *0[,[:space:]]" <<<"$text"; then
+    if reason=$(bench_invalid_reason "$name" "$text"); then
         echo "--- 节点日志尾部 ---"; tail -40 "$D/n.log"
-        fail "$name 的 GoodPut 为 0 —— 一条都没读到，本轮数据无效"
+        fail "$reason"
     fi
 done
 
@@ -103,20 +126,27 @@ if ! kill -0 $PID 2>/dev/null; then
     echo "--- 节点日志尾部 ---"; tail -40 "$D/n.log"
     fail "节点在读取阶段退出（GET/SCAN 数据不可用）"
 fi
-PEAK=$(awk '{if($1>m)m=$1}END{print int(m/1024)}' "$D/rss.txt")
-FINAL=$(( $(rss) / 1024 ))
+PEAK=$(peak_mb "$D/rss.txt") || fail "RSS 采样为空，无法给出峰值内存"
+FINAL=$(rss_mb "$PID")
 
-# 三个 benchmark 的输出格式各不相同：
-#   randwrite : "elapse:..., throughput:0.1666MB/S, avg latency:14.32ms, ..."
-#   zipf_read : "... Elapse: 2.68s, Throughput: 0.3319 MB/S, ..., Average Latency: 3.81ms"
-#   scan_pro  : "Test N: elapse:..., throught:0.44MB/S, avg latency:..., ..."   (throught 是原文拼写)
-# 因此解析必须忽略大小写、容忍冒号后的空格，并同时匹配 throughput/throught。
-lat(){ grep -oiE "latency: *[0-9.]+(ms|s)" <<<"$1" | tail -1 | grep -oE "[0-9.]+"; }
-thr(){ grep -oiE "throughp?u?t?h?t?: *[0-9.]+ *MB/S" <<<"$1" | tail -1 | grep -oE "[0-9.]+"; }
+# 解析见 lib/bench-common.sh：三个 benchmark 的输出格式互不相同。
+# 解析结果为空说明格式又变了，宁可报错也不要往 CSV 里写空字段——
+# 空字段在汇总表里看起来只是"这一列没测"，很容易被当成正常结果读过去。
+# 校验必须在主 shell 里做：放进 $( ) 的话 fail 的 exit 只会结束那个子 shell，
+# 主脚本照常把空字段写进 CSV。
+CELLS=()
+for pair in "PUT:$PUT" "GET:$GET" "SCAN:$SCAN"; do
+    name=${pair%%:*}; text=${pair#*:}
+    l=$(bench_latency "$text"); t=$(bench_throughput "$text")
+    [ -n "$l" ] || fail "$name 延迟解析失败：输出格式与解析规则不符 -> $text"
+    [ -n "$t" ] || fail "$name 吞吐解析失败：输出格式与解析规则不符 -> $text"
+    CELLS+=("$l" "$t")
+done
+ROW="$LABEL,$COMMIT,$N,$VSIZE,$GC_RAN,$PEAK,$FINAL,$(IFS=,; echo "${CELLS[*]}")"
 
 {
   echo "label,commit,writes,vsize,gc_ran,peak_rss_mb,final_rss_mb,put_lat_ms,put_thr,get_lat_ms,get_thr,scan_lat_ms,scan_thr"
-  echo "$LABEL,$COMMIT,$N,$VSIZE,$GC_RAN,$PEAK,$FINAL,$(lat "$PUT"),$(thr "$PUT"),$(lat "$GET"),$(thr "$GET"),$(lat "$SCAN"),$(thr "$SCAN")"
+  echo "$ROW"
 } > "$CSV"
 
 echo ""; info "结果 -> $CSV"; column -s, -t "$CSV"
