@@ -108,8 +108,9 @@ GET=$(<"$D/get.out")
 # scan_pro 内部把轮数硬编码成 numTests=100，每轮跑 dnums 次范围扫描。
 # dnums=100 时在 50 万 key 上要跑 4 小时以上，用 README 文档化的 dnums=4 规模，快 25 倍。
 info "[$LABEL] SCAN..."
+# SCAN 每轮扫遍全库，耗时随数据量线性增长；轮数可调，默认沿用 benchmark 的 100
 run_bench scan go run ./benchmark/scan_pro/scan_pro.go \
-    -cnums 1 -dnums 4 -servers 127.0.0.1:3088
+    -cnums 1 -dnums 4 -tests "${SCAN_TESTS:-100}" -servers 127.0.0.1:3088
 SCAN=$(<"$D/scan.out")
 
 # 两个读 benchmark 各跑 100 轮并自己算平均，取那个平均而不是最后一轮。
