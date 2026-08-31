@@ -51,11 +51,12 @@ echo "== 输出解析：三个 benchmark 格式各异 =="
 PUT='  elapse:3m9.5s, throughput:0.1688MB/S, avg latency:15.22256ms, total 500000, goodPut 499983, value 64'
 GET='  测试 100 - Elapse: 1.41s, Throughput: 0.6839 MB/S, Total: 20000, GoodPut: 14856, Average Latency: 1.851807ms'
 SCAN='  Test 100: elapse:6.51s, throught:10.2112MB/S, avg latency:1.629651758s, total 4, goodPut 1040042'
-check "randwrite 延迟" "$(bench_latency "$PUT")"    "15.22256"
+check "randwrite 延迟（毫秒）" "$(bench_latency "$PUT")" "15.2226"
 check "randwrite 吞吐" "$(bench_throughput "$PUT")" "0.1688"
-check "zipf_read 延迟" "$(bench_latency "$GET")"    "1.851807"
+check "zipf_read 延迟（毫秒）" "$(bench_latency "$GET")" "1.8518"
 check "zipf_read 吞吐" "$(bench_throughput "$GET")" "0.6839"
-check "scan_pro 延迟"  "$(bench_latency "$SCAN")"   "1.629651758"
+# 1.629651758s，旧解析会写成 1.63 并当作毫秒——差三个数量级
+check "scan_pro 延迟（秒→毫秒）" "$(bench_latency "$SCAN")" "1629.6518"
 check "scan_pro 吞吐（注意上游拼写 throught）" "$(bench_throughput "$SCAN")" "10.2112"
 
 echo "== bench_invalid_reason：三种此前被静默放过的坏数据 =="
@@ -73,6 +74,37 @@ bench_invalid_reason SCAN "$BAD_SCAN" >/dev/null && ok "goodPut 0 判为无效�
 bench_invalid_reason SCAN 'throught:NaNMB/S, goodPut 5' >/dev/null && ok "NaN 吞吐判为无效" || no "NaN 吞吐判为无效" "被放过了"
 # goodPut 大数不能被 "0" 误伤
 bench_invalid_reason PUT 'goodPut 1040042, client 1' >/dev/null && no "goodPut 1040042 不该判无效" "被误判" || ok "goodPut 非零不误判"
+
+echo "== duration_ms：三个 benchmark 混用 µs/ms/s，必须归一到毫秒 =="
+check "毫秒原样"       "$(duration_ms 15.22256ms)"          "15.2226"
+check "秒换算成毫秒"   "$(duration_ms 1.629651758s)"        "1629.6518"
+check "微秒换算"       "$(duration_ms 219.187µs)"           "0.2192"
+check "零值"           "$(duration_ms 0s)"                  "0.0000"
+check "分秒复合"       "$(duration_ms 3m9.552304222s)"      "189552.3042"
+check "时分秒复合"     "$(duration_ms 1h15m48.837991792s)"  "4548837.9918"
+duration_ms "无数字" >/dev/null 2>&1 && no "无时长字符串应失败" "返回了成功" || ok "无时长字符串返回非零"
+# 这是旧解析最要命的一处：SCAN 延迟 1.63 秒被当成 1.63 毫秒写进 scan_lat_ms 列
+check "秒不再被当成毫秒" "$(bench_latency 'avg latency:1.629651758s')" "1629.6518"
+
+echo "== 多轮汇总：取 benchmark 自己算的 100 轮平均，而不是第 100 轮 =="
+SCAN_FULL='Test 99: elapse:2ms, throught:NaNMB/S, avg latency:0s, total 4, goodPut 0, client 1
+Test 100: elapse:6.51s, throught:10.2112MB/S, avg latency:1.629651758s, total 4, goodPut 1040042
+Average throughput over 100 tests: 8.4321MB/S
+Average latency over 100 tests: 47.800721ms'
+GET_FULL='测试 99 - Elapse: 1.51s, Throughput: 0.5331 MB/S, Total: 20000, GoodPut: 12467, Average Latency: 2.367014ms
+测试 100 - Elapse: 1.53s, Throughput: 0.5270 MB/S, Total: 20000, GoodPut: 12500, Average Latency: 2.402897ms
+100 次测试的平均吞吐量: 0.5286 MB/S
+100 次测试的总平均延迟: 2.395777ms'
+check "scan_pro 100 轮平均吞吐（非末轮 10.2112）" "$(bench_avg_throughput "$SCAN_FULL")" "8.4321"
+check "scan_pro 100 轮平均延迟"                   "$(bench_avg_latency "$SCAN_FULL")"    "47.8007"
+check "zipf_read 100 轮平均吞吐（非末轮 0.5270）" "$(bench_avg_throughput "$GET_FULL")"  "0.5286"
+check "zipf_read 100 轮平均延迟"                  "$(bench_avg_latency "$GET_FULL")"     "2.3958"
+bench_avg_throughput "没有汇总行" >/dev/null 2>&1 && no "无汇总行应失败" "返回了成功" || ok "无汇总行返回非零"
+
+echo "== bench_round_stats：统计空轮，判断这轮 SCAN 有没有意义 =="
+check "统计 scan 轮数与空轮" "$(bench_round_stats "$SCAN_FULL")" "2 1"
+check "统计 get 轮数与空轮"  "$(bench_round_stats "$GET_FULL")"  "2 0"
+check "无轮次行返回 0 0"     "$(bench_round_stats "随便一句话")"  "0 0"
 
 echo ""
 # 变量必须用 ${} 包起来：后面紧跟全角逗号时，裸写 $PASS 会被当成变量名的一部分。
