@@ -151,7 +151,12 @@ func (rf *Raft) openLogFile(filename string) error {
 	if rf.logFile != nil {
 		rf.logFile.Close()
 	}
-	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	// 不能用 O_APPEND：POSIX 规定该模式下每次写入前偏移量强制设为文件末尾，
+	// Seek 对写入位置完全无效。冲突覆盖（startPos != 0）依赖 Seek 回退，在
+	// O_APPEND 下会静默变成追加——文件末尾多出一条记录，而 rf.Offsets 里记的
+	// 是 startPos，照这个偏移读出来的是本该被覆盖掉的旧数据，且不报任何错。
+	// 写入位置由 rf.logOffset 自行维护，本就不需要 O_APPEND。
+	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
 		return err
 	}
