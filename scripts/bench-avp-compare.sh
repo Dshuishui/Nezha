@@ -74,16 +74,15 @@ SAMPLER=$(start_rss_sampler "$PID" "$D/rss.txt" 3)
 
 # 先落盘完整输出再抓结果行：写成 `X=$(cmd | grep ...) || fail` 是抓不到失败的，
 # 管道退出码取自最后一个命令，grep/tail 的成功会掩盖 benchmark 的崩溃。
-run_bench(){  # $1=名称 $2...=命令
+run_bench(){  # $1=名称 $2...=命令；完整输出留在 $D/<名称>.out
     local name="$1"; shift
-    local raw="$D/${name}.out"
-    "$@" > "$raw" 2>&1
-    grep -iE "elapse" "$raw" | tail -1
+    "$@" > "$D/${name}.out" 2>&1
 }
 
 info "[$LABEL] PUT $N 条 (value=${VSIZE}B)..."
-PUT=$(run_bench put go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
-    -cnums 50 -dnums "$N" -vsize "$VSIZE" -servers 127.0.0.1:3088)
+run_bench put go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
+    -cnums 50 -dnums "$N" -vsize "$VSIZE" -servers 127.0.0.1:3088
+PUT=$(grep -iE "elapse" "$D/put.out" | tail -1)   # randwrite 只跑一轮
 echo "  ${PUT:-（无输出）}"
 if reason=$(bench_invalid_reason PUT "$PUT"); then
     tail -20 "$D/put.out"; fail "$reason"
@@ -102,23 +101,31 @@ fi
 kill -0 $PID 2>/dev/null || { tail -30 "$D/n.log"; fail "节点在 GC 中崩溃"; }
 
 info "[$LABEL] GET (Zipf)..."
-GET=$(run_bench get go run ./benchmark/zipf_read/zipf_read.go \
-    -cnums 20 -dnums 20000 -servers 127.0.0.1:3088)
-echo "  ${GET:-（无输出）}"
+run_bench get go run ./benchmark/zipf_read/zipf_read.go \
+    -cnums 20 -dnums 20000 -servers 127.0.0.1:3088
+GET=$(<"$D/get.out")
 
 # scan_pro 内部把轮数硬编码成 numTests=100，每轮跑 dnums 次范围扫描。
 # dnums=100 时在 50 万 key 上要跑 4 小时以上，用 README 文档化的 dnums=4 规模，快 25 倍。
 info "[$LABEL] SCAN..."
-SCAN=$(run_bench scan go run ./benchmark/scan_pro/scan_pro.go \
-    -cnums 1 -dnums 4 -servers 127.0.0.1:3088)
-echo "  ${SCAN:-（无输出）}"
+run_bench scan go run ./benchmark/scan_pro/scan_pro.go \
+    -cnums 1 -dnums 4 -servers 127.0.0.1:3088
+SCAN=$(<"$D/scan.out")
 
-for pair in "GET:$GET" "SCAN:$SCAN"; do
-    name=${pair%%:*}; text=${pair#*:}
-    if reason=$(bench_invalid_reason "$name" "$text"); then
+# 两个读 benchmark 各跑 100 轮并自己算平均，取那个平均而不是最后一轮。
+# 空轮占比同时汇报出来：scan_pro 的扫描起点是 rand.Intn(370000) 写死的，
+# 数据量低于 37 万时大部分轮次会扫到空区间，SCAN 数字就没有意义了。
+for name in GET SCAN; do
+    text=$([ "$name" = GET ] && echo "$GET" || echo "$SCAN")
+    read -r rounds empty <<<"$(bench_round_stats "$text")"
+    if [ "$rounds" -gt 0 ] && [ "$empty" -ge "$rounds" ]; then
         echo "--- 节点日志尾部 ---"; tail -40 "$D/n.log"
-        fail "$reason"
+        fail "$name 的 $rounds 轮全部 GoodPut 为 0——一条都没读到，本轮数据无效"
     fi
+    if [ "$rounds" -gt 0 ] && [ "$empty" -gt $((rounds / 5)) ]; then
+        warn "$name: $rounds 轮中 $empty 轮扫到空区间（数据量 $N 相对扫描范围 370000 偏小），平均值失真"
+    fi
+    info "  $name: $rounds 轮，平均吞吐 $(bench_avg_throughput "$text" || echo NA) MB/S，平均延迟 $(bench_avg_latency "$text" || echo NA) ms"
 done
 
 kill $SAMPLER 2>/dev/null
@@ -134,18 +141,20 @@ FINAL=$(rss_mb "$PID")
 # 空字段在汇总表里看起来只是"这一列没测"，很容易被当成正常结果读过去。
 # 校验必须在主 shell 里做：放进 $( ) 的话 fail 的 exit 只会结束那个子 shell，
 # 主脚本照常把空字段写进 CSV。
-CELLS=()
-for pair in "PUT:$PUT" "GET:$GET" "SCAN:$SCAN"; do
-    name=${pair%%:*}; text=${pair#*:}
-    l=$(bench_latency "$text"); t=$(bench_throughput "$text")
-    [ -n "$l" ] || fail "$name 延迟解析失败：输出格式与解析规则不符 -> $text"
-    [ -n "$t" ] || fail "$name 吞吐解析失败：输出格式与解析规则不符 -> $text"
-    CELLS+=("$l" "$t")
-done
-ROW="$LABEL,$COMMIT,$N,$VSIZE,$GC_RAN,$PEAK,$FINAL,$(IFS=,; echo "${CELLS[*]}")"
+# PUT 是单轮，GET/SCAN 取各自的 100 轮平均。延迟一律换算成毫秒——
+# 三个 benchmark 混用 µs/ms/s，直接取数字会让秒被当成毫秒记进 *_lat_ms 列。
+PUT_LAT=$(bench_latency "$PUT")   || fail "PUT 延迟解析失败 -> $PUT"
+PUT_THR=$(bench_throughput "$PUT"); [ -n "$PUT_THR" ] || fail "PUT 吞吐解析失败 -> $PUT"
+GET_LAT=$(bench_avg_latency "$GET")     || fail "GET 100 轮平均延迟解析失败"
+GET_THR=$(bench_avg_throughput "$GET")  || fail "GET 100 轮平均吞吐解析失败"
+SCAN_LAT=$(bench_avg_latency "$SCAN")    || fail "SCAN 100 轮平均延迟解析失败"
+SCAN_THR=$(bench_avg_throughput "$SCAN") || fail "SCAN 100 轮平均吞吐解析失败"
+read -r GET_ROUNDS GET_EMPTY <<<"$(bench_round_stats "$GET")"
+read -r SCAN_ROUNDS SCAN_EMPTY <<<"$(bench_round_stats "$SCAN")"
+ROW="$LABEL,$COMMIT,$N,$VSIZE,$GC_RAN,$PEAK,$FINAL,$PUT_LAT,$PUT_THR,$GET_LAT,$GET_THR,$SCAN_LAT,$SCAN_THR,$GET_EMPTY/$GET_ROUNDS,$SCAN_EMPTY/$SCAN_ROUNDS"
 
 {
-  echo "label,commit,writes,vsize,gc_ran,peak_rss_mb,final_rss_mb,put_lat_ms,put_thr,get_lat_ms,get_thr,scan_lat_ms,scan_thr"
+  echo "label,commit,writes,vsize,gc_ran,peak_rss_mb,final_rss_mb,put_lat_ms,put_thr,get_lat_ms,get_thr,scan_lat_ms,scan_thr,get_empty_rounds,scan_empty_rounds"
   echo "$ROW"
 } > "$CSV"
 
