@@ -64,7 +64,7 @@ func (wt *WALTest) setupDBOptions() {
 	wt.Options.SetCreateIfMissing(true)
 	
 	// 调整写入缓冲区，避免过早flush到SST，让数据保留在WAL中
-	wt.Options.SetWriteBufferSize(int(wt.TargetSize * 2)) // 设置为目标WAL大小的2倍
+	wt.Options.SetWriteBufferSize(uint64(wt.TargetSize * 2)) // 设置为目标WAL大小的2倍
 	wt.Options.SetMaxWriteBufferNumber(3)
 	wt.Options.SetMinWriteBufferNumberToMerge(1)
 	
