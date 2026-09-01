@@ -171,14 +171,9 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 			defer key.Free()
 			defer value.Free()
 
-			index, err := raft.DecodeOffsetRecord(value.Data())
+			entry, err := kvs.entryFromRecord(string(key.Data()), value.Data(), oldFile)
 			if err != nil {
-				fmt.Printf("Error decoding offset record: %v\n", err)
-				continue
-			}
-			entry, _, err := kvs.ReadEntryAtIndex(oldFile, index)
-			if err != nil {
-				fmt.Printf("Error reading entry at index %d: %v\n", index, err)
+				fmt.Printf("Error building entry from record: %v\n", err)
 				continue
 			}
 			oldEntryChan <- entry
@@ -329,13 +324,9 @@ func (kvs *KVServer) verifyOldDatabaseOrder(file *os.File) error {
 		defer key.Free()
 		defer value.Free()
 
-		index, err := raft.DecodeOffsetRecord(value.Data())
+		entry, err := kvs.entryFromRecord(string(key.Data()), value.Data(), file)
 		if err != nil {
-			return fmt.Errorf("解析偏移记录失败: %v", err)
-		}
-		entry, _, err := kvs.ReadEntryAtIndex(file, index)
-		if err != nil {
-			return fmt.Errorf("读取索引 %d 失败: %v", index, err)
+			return fmt.Errorf("构造 entry 失败: %v", err)
 		}
 
 		if prevKey != "" && entry.Key <= prevKey {
