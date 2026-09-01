@@ -31,6 +31,31 @@ func InitGCPaths(dataDir string) {
 	firstNewRaftStateLogPath = filepath.Join(dataDir, "data", "valuelog", "newRaftState_1")
 	firstNewPersisterPath = filepath.Join(dataDir, "data", "dbfile", "newKeyIndex_1")
 }
+
+// entryFromRecord 把存储引擎里的一条记录还原成待搬运的 entry。
+//
+// GC 的职责是回收 valuelog，可 AVP 内联的小值压根不在 valuelog 里——它的 value
+// 就躺在这条记录内。此前 GC 一律拿记录去解偏移，遇到内联记录就报 ErrInlineValue，
+// 于是整轮 GC 失败：实测 -inlinePlacement 下 200 个 GET 全部返回 NOKEY。
+//
+// 内联记录直接用手上的 key/value 构造 entry，与从 valuelog 读出来的走同一条
+// 写入 sortedFile 的路径，读路径因此完全不用改；且下游那段"小值预热进
+// inlineCache"照常生效，内联的快路径在 GC 之后依然成立。
+func (kvs *KVServer) entryFromRecord(paddedKey string, raw []byte, logFile *os.File) (*raft.Entry, error) {
+	if len(raw) > 0 && raw[0] == raft.TagInline {
+		return &raft.Entry{Key: paddedKey, Value: string(raw[1:])}, nil
+	}
+	index, err := raft.DecodeOffsetRecord(raw)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode offset record: %v", err)
+	}
+	entry, _, err := kvs.ReadEntryAtIndex(logFile, index)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read entry at index %d: %v", index, err)
+	}
+	return entry, nil
+}
+
 func (kvs *KVServer) FirstGarbageCollection() error {
 	fmt.Println("Starting garbage collection...")
 	startTime := time.Now()
@@ -121,18 +146,11 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 		defer key.Free()
 		defer value.Free()
 
-		// Get the index from RocksDB
-		// 记录是 [Tag, offset8]，偏移在 [1:]。此处曾按 [0:8] 解析，把标记字节
-		// 当成偏移最低位，算出的假偏移 seek 过去即 EOF——第一轮 GC 因此失败。
-		index, err := raft.DecodeOffsetRecord(value.Data())
+		// 记录可能是 [TagOffset, offset8]（去 valuelog 取）也可能是
+		// [TagInline, value]（value 就在这条记录里）——由 entryFromRecord 分流。
+		entry, err := kvs.entryFromRecord(string(key.Data()), value.Data(), oldFile)
 		if err != nil {
-			return fmt.Errorf("failed to decode offset record: %v", err)
-		}
-
-		// Read the entry from RaftState.log
-		entry, _, err := kvs.ReadEntryAtIndex(oldFile, index)
-		if err != nil {
-			return fmt.Errorf("failed to read entry at index %d: %v", index, err)
+			return err
 		}
 
 		// 记录写入前的偏移量
