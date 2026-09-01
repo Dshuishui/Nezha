@@ -18,6 +18,7 @@ import (
 var avpStats struct {
 	inlineHits     atomic.Uint64 // 内联缓存命中：直接返回 value，零文件 I/O
 	inlineMisses   atomic.Uint64 // 未命中：需要走 sortedFile
+	notFound       atomic.Uint64 // 其中 key 根本不存在的部分
 	blockScans     atomic.Uint64 // 块扫描次数（每次未命中一次）
 	entriesScanned atomic.Uint64 // 块内顺序解析的 entry 总条数
 	bytesRead      atomic.Uint64 // 从 sortedFile 实际读取的字节数
@@ -25,6 +26,12 @@ var avpStats struct {
 
 func avpRecordHit()  { avpStats.inlineHits.Add(1) }
 func avpRecordMiss() { avpStats.inlineMisses.Add(1) }
+
+// avpRecordNotFound 标记一次未命中其实是"这个 key 从没写入过"。
+// 不把它从未命中里剥出来，命中率就会被负载配置系统性压低：读的键空间大于
+// 实际写入量时，多出来的请求注定 miss，而压低多少取决于两者的比例——
+// 换个数据规模，命中率就不可比了。
+func avpRecordNotFound() { avpStats.notFound.Add(1) }
 func avpRecordScan(entries int, bytes int64) {
 	avpStats.blockScans.Add(1)
 	avpStats.entriesScanned.Add(uint64(entries))
@@ -41,18 +48,27 @@ func AVPStatsLine() string {
 	ents := avpStats.entriesScanned.Load()
 	bytes := avpStats.bytesRead.Load()
 
+	nf := avpStats.notFound.Load()
+
 	total := h + m
 	var hitRate float64
 	if total > 0 {
 		hitRate = float64(h) / float64(total) * 100
+	}
+	// 有效命中率：只在"确实存在的 key"上算。这才是 AVP 的真实度量，
+	// 原始命中率会随键空间与写入量的比例漂移。
+	effective := total - nf
+	var effRate float64
+	if effective > 0 {
+		effRate = float64(h) / float64(effective) * 100
 	}
 	var entsPerScan float64
 	if scans > 0 {
 		entsPerScan = float64(ents) / float64(scans)
 	}
 	return fmt.Sprintf(
-		"[AVP-STATS] reads=%d hits=%d misses=%d hit_rate=%.2f%% block_scans=%d entries_scanned=%d entries_per_scan=%.1f bytes_read=%d",
-		total, h, m, hitRate, scans, ents, entsPerScan, bytes)
+		"[AVP-STATS] reads=%d hits=%d misses=%d not_found=%d hit_rate=%.2f%% eff_hit_rate=%.2f%% block_scans=%d entries_scanned=%d entries_per_scan=%.1f bytes_read=%d",
+		total, h, m, nf, hitRate, effRate, scans, ents, entsPerScan, bytes)
 }
 
 // StartAVPStatsReporter 周期性把指标打进节点日志。

@@ -101,8 +101,11 @@ fi
 kill -0 $PID 2>/dev/null || { tail -30 "$D/n.log"; fail "节点在 GC 中崩溃"; }
 
 info "[$LABEL] GET (Zipf)..."
+# keyspace 必须等于实际写入量。默认的 1 亿键空间下，读请求大部分落在从未写入
+# 的 key 上——测的是查不存在的 key 有多快，且覆盖率随写入量漂移，跨规模不可比。
+# YCSB 的 run 阶段从 [0, recordcount) 采样，db_bench 用同一个 --num 管两端。
 run_bench get go run ./benchmark/zipf_read/zipf_read.go \
-    -cnums 20 -dnums 20000 -servers 127.0.0.1:3088
+    -cnums 20 -dnums 20000 -keyspace "$N" -servers 127.0.0.1:3088
 GET=$(<"$D/get.out")
 
 # scan_pro 内部把轮数硬编码成 numTests=100，每轮跑 dnums 次范围扫描。
@@ -198,15 +201,18 @@ if [ -n "$AVP_LINE" ]; then
     avp_field(){ sed -n "s/.*$1=\([0-9.]*\).*/\1/p" <<<"$AVP_LINE"; }
     AVP_HITRATE=$(avp_field hit_rate); AVP_EPS=$(avp_field entries_per_scan)
     AVP_HITS=$(avp_field hits); AVP_MISSES=$(avp_field misses)
+    AVP_NOTFOUND=$(avp_field not_found); AVP_EFFRATE=$(avp_field eff_hit_rate)
+    : "${AVP_NOTFOUND:=NA}"; : "${AVP_EFFRATE:=NA}"
 else
     # 旧二进制没有这些计数器；记 NA 而不是留空，免得看表的人以为是"没测"
     AVP_HITRATE=NA; AVP_EPS=NA; AVP_HITS=NA; AVP_MISSES=NA
+    AVP_NOTFOUND=NA; AVP_EFFRATE=NA
     warn "  节点日志无 [AVP-STATS]（该二进制未带机理指标）"
 fi
-ROW="$LABEL,$COMMIT,$N,$VSIZE,$GC_RAN,$PEAK,$FINAL,$PUT_LAT,$PUT_THR,$GET_LAT,$GET_THR,$SCAN_LAT,$SCAN_THR,$GET_EMPTY/$GET_ROUNDS,$SCAN_EMPTY/$SCAN_ROUNDS,$NODE_ALIVE,$AVP_HITS,$AVP_MISSES,$AVP_HITRATE,$AVP_EPS"
+ROW="$LABEL,$COMMIT,$N,$VSIZE,$GC_RAN,$PEAK,$FINAL,$PUT_LAT,$PUT_THR,$GET_LAT,$GET_THR,$SCAN_LAT,$SCAN_THR,$GET_EMPTY/$GET_ROUNDS,$SCAN_EMPTY/$SCAN_ROUNDS,$NODE_ALIVE,$AVP_HITS,$AVP_MISSES,$AVP_NOTFOUND,$AVP_HITRATE,$AVP_EFFRATE,$AVP_EPS"
 
 {
-  echo "label,commit,writes,vsize,gc_ran,peak_rss_mb,final_rss_mb,put_lat_ms,put_thr,get_lat_ms,get_thr,scan_lat_ms,scan_thr,get_empty_rounds,scan_empty_rounds,node_alive,avp_hits,avp_misses,avp_hit_rate,entries_per_scan"
+  echo "label,commit,writes,vsize,gc_ran,peak_rss_mb,final_rss_mb,put_lat_ms,put_thr,get_lat_ms,get_thr,scan_lat_ms,scan_thr,get_empty_rounds,scan_empty_rounds,node_alive,avp_hits,avp_misses,avp_not_found,avp_hit_rate,avp_eff_hit_rate,entries_per_scan"
   echo "$ROW"
 } > "$CSV"
 
