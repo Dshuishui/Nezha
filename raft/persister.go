@@ -50,9 +50,23 @@ func (p *Persister) PadKey(key string) string {
 	return fmt.Sprintf("%0*s", KeyLength, key)
 }
 
-// UnpadKey 去除键的填充
+// UnpadKey 去除键的填充。
+//
+// 已知局限：PadKey 是有损的——"0"、"00"、"000" 补齐后是同一个串，原始长度在
+// 写入时就丢了，这里无从还原。因此本函数只对"不含前导零的 key"成立，另加
+// key=="0" 这一个能判定的特例（全零串只可能来自它）。
+//
+// 换句话说 "007" 存进去、取出来会变成 "7"。要根治得换掉填充方案（例如用 0x00
+// 填充，它不会与十进制 key 的字符集相撞，且左填充的排序性质不变），那会改动
+// 存储格式并波及 SCAN、GC、sortedFileCache 所有读路径，不在本次修复范围内。
 func (p *Persister) UnpadKey(paddedKey string) string {
-	return strings.TrimLeft(paddedKey, "0")
+	unpadded := strings.TrimLeft(paddedKey, "0")
+	if unpadded == "" && paddedKey != "" {
+		// 全零串：唯一可能的原始 key 就是 "0"。剥光后返回空串会让这个 key
+		// 在 SCAN 结果和 sortedFileCache 里彻底失踪。
+		return "0"
+	}
+	return unpadded
 }
 
 func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
@@ -122,6 +136,31 @@ const (
 	TagOffset = byte(0x00) // 其后 8 字节为 valuelog 偏移（KV 分离）
 	TagInline = byte(0x01) // 其后即 value 本身（小值内联）
 )
+
+// DecodeOffsetRecord 从存储引擎的一条记录里取出 valuelog 偏移。
+//
+// 记录格式是 [Tag, offset8] 共 9 字节，偏移在 [1:]。这件事此前散落在各处各写
+// 一遍，于是同一个错误犯了两次：SCAN 的 ReadValueFromNewFile 和 GC 的主循环
+// 都按 [0:8] 解析，把标记字节当成了偏移的最低位——算出来的是"真实偏移左移
+// 8 位再截断"，看着像个合法偏移，seek 过去却落在文件的任意位置。
+//
+// GC 因此读到 EOF 而失败，SCAN 因此返回空。所有需要偏移的地方都应当走这里，
+// 不要再各自解析。
+func DecodeOffsetRecord(raw []byte) (int64, error) {
+	if len(raw) == 0 {
+		return 0, errors.New("empty offset record")
+	}
+	switch raw[0] {
+	case TagOffset:
+		if len(raw) != 9 {
+			return 0, fmt.Errorf("invalid offset record size: %d", len(raw))
+		}
+		return int64(binary.LittleEndian.Uint64(raw[1:])), nil
+	case TagInline:
+		return 0, errors.New(ErrInlineValue)
+	}
+	return 0, fmt.Errorf("unknown record tag: 0x%02x", raw[0])
+}
 
 func (p *Persister) Put_opt(key string, value int64) {
 	// 不要创建新的 wo，使用对象中已经配置好的
@@ -219,21 +258,9 @@ func (p *Persister) Get_opt(key string) (int64, error) {
 	// 它恰好把要防的碰撞又放了回来：7 字节的内联 value 加上标记正好 8 字节，
 	// 于是被当成偏移解析。而且旧格式本身就有歧义——偏移量为 1 时，
 	// 小端编码的首字节就是 0x01，与内联标记无法区分。
-	if len(valueBytes) == 0 {
-		return 0, errors.New("invalid value size")
-	}
-	switch valueBytes[0] {
-	case TagOffset:
-		if len(valueBytes) != 9 {
-			return 0, errors.New("invalid offset record size")
-		}
-		return int64(binary.LittleEndian.Uint64(valueBytes[1:])), nil
-	case TagInline:
-		// 这个 key 的 value 内联在存储引擎里，没有偏移可言。
-		// 调用方应改走 GetInline，读到这里说明分流逻辑漏了一处。
-		return 0, errors.New(ErrInlineValue)
-	}
-	return 0, errors.New("unknown record tag")
+	// TagInline 表示这个 key 的 value 内联在存储引擎里，没有偏移可言；
+	// 调用方应改走 GetInline，拿到该错误说明分流逻辑漏了一处。
+	return DecodeOffsetRecord(valueBytes)
 	// var value int64
 	// for i := uint(0); i < 8; i++ {
 	// 	value |= int64(valueBytes[i]) << (i * 8)
@@ -325,12 +352,10 @@ func (p *Persister) ScanRange_opt(startKey, endKey string) (map[string]int64, er
 	return result, nil
 }
 
-// parseValueInt64 解析值为 int64
+// parseValueInt64 解析值为 int64。
+// 原先要求恰好 8 字节，加上标记字节后记录变成 9 字节，于是这个函数必然失败。
 func parseValueInt64(value []byte) (int64, error) {
-	if len(value) != 8 {
-		return 0, fmt.Errorf("invalid value length: expected 8, got %d", len(value))
-	}
-	return int64(binary.LittleEndian.Uint64(value)), nil
+	return DecodeOffsetRecord(value)
 }
 
 func (p *Persister) GetDb() (db *grocksdb.DB) {

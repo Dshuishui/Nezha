@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/binary"
 	"fmt"
 	"path/filepath"
 	// "strings"
@@ -172,8 +171,12 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 			defer key.Free()
 			defer value.Free()
 
-			index := binary.LittleEndian.Uint64(value.Data())
-			entry, _, err := kvs.ReadEntryAtIndex(oldFile, int64(index))
+			index, err := raft.DecodeOffsetRecord(value.Data())
+			if err != nil {
+				fmt.Printf("Error decoding offset record: %v\n", err)
+				continue
+			}
+			entry, _, err := kvs.ReadEntryAtIndex(oldFile, index)
 			if err != nil {
 				fmt.Printf("Error reading entry at index %d: %v\n", index, err)
 				continue
@@ -326,8 +329,11 @@ func (kvs *KVServer) verifyOldDatabaseOrder(file *os.File) error {
 		defer key.Free()
 		defer value.Free()
 
-		index := binary.LittleEndian.Uint64(value.Data())
-		entry, _, err := kvs.ReadEntryAtIndex(file, int64(index))
+		index, err := raft.DecodeOffsetRecord(value.Data())
+		if err != nil {
+			return fmt.Errorf("解析偏移记录失败: %v", err)
+		}
+		entry, _, err := kvs.ReadEntryAtIndex(file, index)
 		if err != nil {
 			return fmt.Errorf("读取索引 %d 失败: %v", index, err)
 		}
