@@ -22,9 +22,9 @@ import (
 // 后者是不是大头，直接决定后续该优化 Raft 侧还是存储侧。
 var putStats struct {
 	calls        atomic.Uint64
-	raftStartNs  atomic.Uint64 // raft.Start 的耗时（写日志 + 等锁）
-	commitWaitNs atomic.Uint64 // 等 apply 回调的耗时
-	rocksPutNs   atomic.Uint64 // apply 中 RocksDB 写入的耗时
+	raftStartNs  atomic.Uint64 // T1：构造日志条目 + 持久化到 currentLog（含等锁）
+	commitWaitNs atomic.Uint64 // T2+T3：分发与共识等待（单节点下几乎只剩调度延迟）
+	rocksPutNs   atomic.Uint64 // T4：ApplyStateMachine 写 RocksDB
 	rocksCalls   atomic.Uint64
 }
 
@@ -55,9 +55,17 @@ func PutStatsLine() string {
 	rs := ms(putStats.raftStartNs.Load(), n)
 	cw := ms(putStats.commitWaitNs.Load(), n)
 	rp := ms(putStats.rocksPutNs.Load(), putStats.rocksCalls.Load())
+	sum := rs + cw
+	share := func(v float64) float64 {
+		if sum <= 0 {
+			return 0
+		}
+		return v / sum * 100
+	}
+	// T1/T2+T3/T4 对应论文 HandleWrite 的两个 Phase；占比直接指出该优化哪一段。
 	return fmt.Sprintf(
-		"[PUT-STATS] puts=%d avg_raft_start=%.4fms avg_commit_wait=%.4fms avg_rocksdb_put=%.4fms total=%.4fms",
-		n, rs, cw, rp, rs+cw)
+		"[PUT-STATS] puts=%d T1_persist=%.4fms(%.1f%%) T2T3_consensus=%.4fms(%.1f%%) T4_rocksdb=%.4fms measured_total=%.4fms",
+		n, rs, share(rs), cw, share(cw), rp, sum)
 }
 
 // StartWriteStatsReporter 周期性把写入路径的分解打进节点日志。
