@@ -74,6 +74,11 @@ var (
 	// 攒批窗口，微秒。0 表示不攒批（逐条写入）。窗口越长批越大、单条延迟越高。
 	// 只有开启 syncWAL 时才有意义：不 fsync 时一次写入仅 6μs，攒批无从省起。
 	groupCommitUs_arg = flag.Int("groupCommitUs", 0, "group commit window in microseconds (0 = disabled)")
+	// KV 分离开关。默认开启 = Nezha：value 留在 Raft 日志里，RocksDB 只存 8 字节偏移。
+	// 关闭 = standard Raft + RocksDB 基线：value 随状态机写进 RocksDB，于是同一份
+	// value 被持久化两次（Raft 日志一次、LSM 一次），此后还要承受 compaction 反复重写。
+	// 论文把 460% 的写入优势归因于这个差异，做成开关才能量化"问题有多大"。
+	kvSeparation_arg  = flag.Bool("kvSeparation", true, "keep values in the Raft log and store only offsets (false = baseline: values into RocksDB)")
 	gcThresholdGB_arg = flag.Float64("gcThresholdGB", 4000, "Value log size in GB that triggers garbage collection; lower it to exercise GC in tests")
 	indexBlockKB_arg  = flag.Int("indexBlockKB", 4, "Sparse index block size in KB: one in-memory index entry per block. Larger uses less memory but scans more entries per lookup")
 )
@@ -230,6 +235,7 @@ type KVServer struct {
 	lastGCFinish           bool
 
 	// AVP: adaptive value placement
+	kvSeparation     bool    // false 时退化为 standard Raft+RocksDB 基线
 	inlineThreshold  int     // values smaller than this (bytes) are eligible for the inline cache
 	inlineCacheBytes int64   // memory budget for each SortedFileIndex's inline cache
 	gcThresholdGB    float64 // value log size in GB that triggers GC
@@ -1116,6 +1122,18 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	// for { // 证明了此服务器就是leader
 	// if kvs.raft.GetApplyIndex() >= commitindex {
 	key := args.GetKey()
+	if !kvs.kvSeparation {
+		// 基线：value 就在 RocksDB 里，一次点查即可，既不查偏移也不读日志文件。
+		// GC 那套多路查找在这条路径上没有意义——基线没有 valuelog 需要回收。
+		value, err := kvs.persister.Get(key)
+		if err != nil || value == raft.ErrNoKey {
+			reply.Err = raft.ErrNoKey
+			reply.Value = raft.NoKey
+			return reply
+		}
+		reply.Value = value
+		return reply
+	}
 	if kvs.FirstGC { // 未开始第二轮GC
 		reply = kvs.firstGCGet(key, reply)
 		return reply
@@ -2060,7 +2078,11 @@ func (kvs *KVServer) applyLoop() {
 						// fmt.Printf("转换后的offset：%v\n", positionBytes)
 
 						tRocks := time.Now()
-						if op.FileVersion == int64(kvs.numGC) { // 对于写入日志时，又进行了 GC ，需将偏移量存新文件
+						if !kvs.kvSeparation {
+							// 基线：value 本身写进 RocksDB。于是同一份 value 被持久化两次
+							// （Raft 日志 + LSM），而后还要被 compaction 反复搬运。
+							kvs.persister.Put(op.Key, op.Value)
+						} else if op.FileVersion == int64(kvs.numGC) { // 对于写入日志时，又进行了 GC ，需将偏移量存新文件
 							kvs.persister.Put_opt(op.Key, offset)
 						} else { // 否则存旧文件
 							kvs.oldPersister.Put_opt(op.Key, offset) //  Nezha
@@ -2182,6 +2204,7 @@ func main() {
 	kvs.anotherStartGC = false
 	kvs.anotherEndGC = false
 	kvs.FirstGC = true
+	kvs.kvSeparation = *kvSeparation_arg
 	kvs.inlineThreshold = *inlineThreshold_arg
 	kvs.inlineCacheBytes = int64(*inlineCacheMB_arg) * 1024 * 1024
 	// AVP 机理指标定期进日志，实验结束后从节点日志里抓最后一行
