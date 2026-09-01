@@ -133,6 +133,13 @@ type Raft struct {
 	// 上吞吐塌掉的原因。
 	// 句柄常驻后每条只剩 Write + Flush。持久化语义不变：仍是每批写完立刻 Flush，
 	// 且原本就没有 fsync，本改动不触碰崩溃一致性。
+	// group commit：攒批共用一次写入与一次 fsync，见 groupcommit.go
+	batchMu     sync.Mutex
+	curBatch    *flushBatch
+	flushSignal chan struct{}
+	groupCommit bool
+	batchWindow time.Duration
+
 	// syncOnWrite 决定日志写入后是否 fsync。
 	//
 	// 默认关闭，与改动前的行为一致：此前每批只 Flush 到 OS page cache，从不落盘。
@@ -941,18 +948,26 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	index = rf.lastIndex() + 1 // 加一是为了除去空指令
 	term = rf.currentTerm
 	// fmt.Printf("11111offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
+	var myBatch *flushBatch
+	var needSignal bool
 	if logEntry.Command.OpType != "TermLog" { // 除去上任leader后的空指令
-		entry_global = Entry{
+		// 必须是局部变量。原先用包级的 entry_global 取地址，在逐条立即写入、
+		// 全程持锁的前提下没问题；一旦攒批，同一批里所有指针都会指向它，
+		// 最后写出去的是同一条记录重复 N 次。
+		entry := &Entry{
 			Index:       uint32(index),
 			CurrentTerm: uint32(term),
 			VotedFor:    uint32(rf.leaderId),
 			Key:         command.(*raftrpc.DetailCod).Key,
 			Value:       command.(*raftrpc.DetailCod).Value,
 		}
-		arrEntry := []*Entry{&entry_global}
-		tw := time.Now()
-		rf.WriteEntryToFile(arrEntry, 0)
-		tWriteFile = time.Since(tw)
+		if rf.groupCommit {
+			myBatch, needSignal = rf.enqueueForFlush(entry)
+		} else {
+			tw := time.Now()
+			rf.WriteEntryToFile([]*Entry{entry}, 0)
+			tWriteFile = time.Since(tw)
+		}
 	}
 	// rf.batchLog = append(rf.batchLog, &entry)
 	// if err := enc.Encode(entry); err != nil {
@@ -973,6 +988,20 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// }
 	rf.log = append(rf.log, &logEntry) // 确保日志落盘之后，再更新log
 	rf.mu.Unlock()
+
+	// 攒批模式下在锁外等待本批落盘：Start 依旧在日志持久化之后才返回，
+	// 但等待磁盘的时间不再占着 rf.mu，其余请求可以继续进来凑同一批。
+	if myBatch != nil {
+		if needSignal {
+			select {
+			case rf.flushSignal <- struct{}{}:
+			default: // flusher 已被唤醒，无需重复投递
+			}
+		}
+		tw := time.Now()
+		<-myBatch.done
+		tWriteFile = time.Since(tw)
+	}
 	// fmt.Printf("22222offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
 	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
 	// if err != nil {

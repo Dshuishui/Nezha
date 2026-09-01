@@ -70,7 +70,10 @@ var (
 	// 默认 false，保持既有行为。开启后每批 Raft 日志写入都会 fsync，
 	// 这才是共识层要求的持久化语义——也是"把两次持久化合成一次"这一收益
 	// 能被测量出来的前提。
-	syncWAL_arg       = flag.Bool("syncWAL", false, "fsync the Raft log after each write batch (true durability)")
+	syncWAL_arg = flag.Bool("syncWAL", false, "fsync the Raft log after each write batch (true durability)")
+	// 攒批窗口，微秒。0 表示不攒批（逐条写入）。窗口越长批越大、单条延迟越高。
+	// 只有开启 syncWAL 时才有意义：不 fsync 时一次写入仅 6μs，攒批无从省起。
+	groupCommitUs_arg = flag.Int("groupCommitUs", 0, "group commit window in microseconds (0 = disabled)")
 	gcThresholdGB_arg = flag.Float64("gcThresholdGB", 4000, "Value log size in GB that triggers garbage collection; lower it to exercise GC in tests")
 	indexBlockKB_arg  = flag.Int("indexBlockKB", 4, "Sparse index block size in KB: one in-memory index entry per block. Larger uses less memory but scans more entries per lookup")
 )
@@ -2308,6 +2311,9 @@ func main() {
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
 	// 必须在 raft.Make 之后：此前放在 flag 解析处会对 nil 指针调用而 panic。
 	kvs.raft.SetSyncOnWrite(*syncWAL_arg)
+	if *groupCommitUs_arg > 0 {
+		kvs.raft.EnableGroupCommit(time.Duration(*groupCommitUs_arg) * time.Microsecond)
+	}
 	kvs.raft.SetCurrentLog(kvs.InitialRaftStateLog)
 	kvs.raft.Gap = gap
 	kvs.raft.SetNumGC(kvs.numGC)
