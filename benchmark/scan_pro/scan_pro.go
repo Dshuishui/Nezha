@@ -23,11 +23,16 @@ import (
 )
 
 var (
-	ser        = flag.String("servers", "", "the Server, Client Connects to")
-	cnums      = flag.Int("cnums", 1, "Client Threads Number")
-	dnums      = flag.Int("dnums", 1000000, "data num")
-	k1         = flag.Int("startkey", 0, "first key")
-	k2         = flag.Int("endkey", 20, "last key")
+	ser   = flag.String("servers", "", "the Server, Client Connects to")
+	cnums = flag.Int("cnums", 1, "Client Threads Number")
+	dnums = flag.Int("dnums", 1000000, "data num")
+	k1    = flag.Int("startkey", 0, "first key")
+	k2    = flag.Int("endkey", 20, "last key")
+	// 扫描长度。原先写死为 4000000——那比任何一次实验的数据量都大，于是每轮
+	// SCAN 都在扫全库，测的是"顺序读整个数据集有多快"，而不是 range query。
+	// 稀疏索引的价值（二分定位 + 块内顺序扫）在全库扫描下被完全稀释。
+	// 论文 Fig.7 用的是 10/100/1000/10000 四档，这里做成参数以便对齐。
+	gapkeyArg  = flag.Int("gapkey", 1000, "scan length: number of keys per range query")
 	outputFile = flag.String("output", "scan_benchmark_results.txt", "输出结果文件名")
 	// 每轮都要扫遍整个数据集，耗时随数据量线性增长：50 万 key 时一轮约 30s，
 	// 300 万 key 时一轮 3 分钟以上，跑满 100 轮就是 5 小时以上。
@@ -337,7 +342,7 @@ func saveSummaryToFile(filePath string, numTests int, avgThroughput float64, avg
 
 func main() {
 	flag.Parse()
-	gapkey := 4000000
+	gapkey := *gapkeyArg
 	servers := strings.Split(*ser, ",")
 	kvc := new(KVClient)
 	kvc.Kvservers = servers
