@@ -216,4 +216,33 @@ ROW="$LABEL,$COMMIT,$N,$VSIZE,$GC_RAN,$PEAK,$FINAL,$PUT_LAT,$PUT_THR,$GET_LAT,$G
   echo "$ROW"
 } > "$CSV"
 
+# ---- 归档 ----
+# 过程数据留着：节点日志里有 [AVP-STATS] 和 [PUT-STATS] 的逐次采样，benchmark
+# 原始输出里有每一轮的明细——事后想复核某个数字是怎么来的，全靠这些。
+# 数据目录（valuelog / sortedFile / RocksDB）不留：那是 GB 级的，且完全可以重建。
+ARCHIVE_ROOT="${ARCHIVE_ROOT:-$HOME/nezha-results}"
+RUN_DIR="$ARCHIVE_ROOT/$(date +%Y%m%d-%H%M%S)_${LABEL}"
+mkdir -p "$RUN_DIR"
+cp "$CSV" "$RUN_DIR/result.csv"
+gzip -c "$D/n.log" > "$RUN_DIR/node.log.gz" 2>/dev/null
+for f in put get scan; do
+    [ -f "$D/$f.out" ] && gzip -c "$D/$f.out" > "$RUN_DIR/$f.out.gz"
+done
+grep -h "\[AVP-STATS\]\|\[PUT-STATS\]\|\[RAFT-WRITE\]" "$D/n.log" 2>/dev/null | tail -20 > "$RUN_DIR/stats.txt"
+{
+    echo "label=$LABEL"
+    echo "commit=$COMMIT"
+    echo "writes=$N"
+    echo "value_size=$VSIZE"
+    echo "inline_cache_mb=$CACHE_MB"
+    echo "index_block_kb=$BLOCK_KB"
+    echo "gc_threshold_gb=$GC_GB"
+    echo "scan_tests=${SCAN_TESTS:-100}"
+    echo "peak_rss_mb=$PEAK"
+    echo "node_alive=$NODE_ALIVE"
+    echo "finished_at=$(date -Iseconds)"
+    echo "host=$(hostname)"
+} > "$RUN_DIR/meta.txt"
+info "过程数据已归档 -> $RUN_DIR"
+
 echo ""; info "结果 -> $CSV"; column -s, -t "$CSV"
