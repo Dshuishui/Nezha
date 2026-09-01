@@ -35,3 +35,6 @@ kvstore/FlexSync/other
 benchmark/scan_pro/results
 benchmark/zipf_read/results
 ycsb/results
+# 论文原稿：参考用，不进仓库
+*.pdf
+paper-*.pdf
