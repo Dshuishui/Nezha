@@ -4,9 +4,48 @@
 
 ## 正在跑（compact 后从这里接上）
 
-- **竞态修复验证** `/root/autodl-tmp/racefix.log`，3 轮约 35 分钟
-  完成标志 `RACEFIX_DONE`。判据三条须同时成立：失败数归零、`early_apply_rescued`
-  与修复前失败数同量级、`max` 从 60000ms 掉到正常尾延迟。
+- 无。下一步是论文主表的 baseline 三项对比（见「待补实验」第一条）。
+
+## ✅ 已修：标记字节的连带损伤（三处，全部静默失败）
+
+加 `TagOffset` 标记字节时只改了写入端和 `Get_opt`，读取端散落各处的手写解析
+全部漏改——按 `[0:8]` 取偏移，把标记字节当成最低位，算出"真实偏移左移 8 位
+再截断"：看着像合法偏移，seek 过去落在文件任意位置。
+
+    GC_opt.go:125          第一轮 GC 主循环   → 读到 EOF，GC 静默失败
+    AnotherGC_opt.go:175   第二轮 GC
+    AnotherGC_opt.go:329   第二轮 GC
+    FlexSync.go            SCAN 的 ReadValueFromNewFile → SCAN 静默返回空
+    persister.go           parseValueInt64 要求恰好 8 字节 → 必然失败
+
+更危险的是 GC 失败后的处置：错误只打印不返回，紧接着 `lastGCFinish = true`、
+`lastSortedFileIndex = nil`、**`os.Remove(kvs.oldLog)`**——数据没搬完就删源文件，
+且 nil 索引让第二轮 GC 空指针崩溃。实测确认过崩溃栈。
+
+治本：解码收敛到 `raft.DecodeOffsetRecord` 单一入口；`ReadValueFromNewFile`
+改名 `ReadValueFromOffset` 并改收 `int64`，让"忘记剥标记"无法从调用点溜进来；
+GC 失败即 continue，不推进状态也不删文件。
+
+验证：20000 条 × 64B，强制触发两轮 GC —— SCAN 1000/1000 正确，节点存活，
+两轮 GC 均建立索引并完成。修复前同一配置写到 13613 条即崩溃、SCAN 返回 0 条。
+
+**影响范围（已核实，不必作废任何历史数据）**：标记字节引入于 `62b6068`
+(09-01 21:10)，而 `2d39bea`(08-31)、`467763d`(08-31)、`51599d6`(09-01 13:16)
+三个实验 commit 全部早于它。其后跑的三组（三方对照、超时验证、group commit
+重测）只测 PUT/GET 且 `gcThresholdGB=4000` 不触发 GC，均未受影响。
+
+**但因此留下一个空白**：AVP placement 自引入起从未在 GC 场景下被正确测过。
+GET −1.7% 那个结论来自不触发 GC 的配置，走 sortedFile 的表现仍是未知。
+
+## ✅ 已修：UnpadKey 吃掉 key="0"
+
+`TrimLeft(paddedKey, "0")` 把全零串剥成空串，key "0" 于是从 SCAN 结果和
+sortedFileCache 里消失。已修全零边界。
+
+**未修的更广问题**：`PadKey` 有损——"0"、"00"、"000" 补齐后是同一个串，原始
+长度在写入时就丢了。因此 "007" 存进去取出来是 "7"。根治要换填充方案（如用
+0x00 填充：不与十进制字符集相撞，左填充排序性质不变），会改动存储格式并波及
+SCAN/GC/cache 所有读路径。已写成显式测试用例钉住，真修好时该用例会失败提醒。
 
 ## ✅ 已定案：PUT 吞吐指标不可用于性能对比 + 根因已修
 
@@ -45,7 +84,13 @@ goroutine，谁连吃两次超时谁就把墙钟拖长。那个分簇是九轮�
 ### 后果：需要重测的结论
 
 - 「baseline 写入快 53%」——**判定虚假**，撤下
-- 「group commit +140%」——**必须用 p50/p99 重测**
+- 「group commit +140%」——**已重测，真实值 +5.5%**（3 轮，方差 0.7%）
+  正确的叙事是「group commit 让 fsync 几乎免费」：fsync 使 p50 从 12.30 →
+  14.14ms（+15%），开启攒批后回到 12.08ms。50μs 窗口已足够，200μs 只是把
+  批大小从 8.6 撑到 14.7、性能不变。早先记录的 avg_batch=35.55 是超时污染
+  下请求堆积的产物。
+  附带观察：fsync 那档 `early_apply_rescued` 是 0~2，其余档 28~75——
+  raft.Start 变慢反而让 apply 竞态几乎不发生，命中率与其耗时成反比。
 - 「句柄复用无效果」——当时也看吞吐，可能被噪声淹没，需重新判定
 - GET 那组**不受影响**（无 commit 等待、无超时路径），三方对照 −7.6% → −1.7% 站得住
 
