@@ -4,10 +4,46 @@
 
 ## 正在跑（compact 后从这里接上）
 
-- **三方 GC 场景正确性验证** `/root/autodl-tmp/verify3.log`，约 15 分钟
-  完成标志 `VERIFY3_DONE`。在启动数小时主表实验前先确认 baseline/nezha/nezha_avp
-  三种模式的 GET/SCAN 值全对、GC 两轮都完成、节点存活。
-- **主表脚本已备好** `/root/maintable.sh`，验证一过即可 `nohup` 启动，约 3~4 小时。
+- **AVP 主实验** `/root/autodl-tmp/avpmain.log`，36 次运行约 3~4 小时
+  完成标志 `AVPMAIN_DONE`。脚本 `/root/avp-main.sh`。
+  2×2（AVP 开关 × GC 开关）× value 64/256/1024B × 3 轮。
+  **三条判据必须同时成立**：
+  1. 64B/256B 两档 AVP 组 GET 延迟更低且 `avp命中率 > 0`
+  2. `nogc_avp vs nogc` 与 `gc_avp vs gc` 同向（GC 前后都成立）
+  3. **1024B 阴性对照命中率必须为 0 且无显著差异**——它超过内联阈值 512B，
+     若那档也"变快"，说明测的是别的东西（缓存状态/运行顺序/机器波动），
+     前两档的正收益不可信，整组作废
+
+- 三方正确性验证已通过（baseline/nezha/nezha_avp 全部 VERIFY_OK）。
+
+## 📄 ICDE 论文的实验坐标系（读数据前必看）
+
+论文 PDF 在仓库根目录（已 gitignore）。实验章节的七个对比配置：
+
+    Original      Raft + RocksDB 传统架构        = 我们的 -kvSeparation=false
+    PASV [28]     去掉存储引擎 WAL 的 LSM 方案     未接入
+    TiKV [31]     企业级，架构类似 Original        未接入
+    Dwisckey      WiscKey 的分布式实现            未接入
+    LSM-Raft [30] 传输 compacted SSTable         未接入
+    Nezha-NoGC    只做 KV 分离的基础版            = 默认配置 + 不触发 GC
+    Nezha         完整版，GC 与 Raft 日志耦合      = 默认配置 + 触发 GC
+
+**实验条件与我们现在差好几个数量级**：
+
+    项目      论文                        我们
+    集群      3 节点 3 副本，10GbE         单节点无副本
+    value    1 KB ~ 256 KB               64 B ~ 1024 B
+    数据量    100 GB，GC 阈值 40 GB        50~100 MB
+    硬件      Xeon E5-2603v3/64GB/2TB SSD AutoDL 共享存储
+
+关键数字备核：Nezha vs Original PUT **+460.2%**（Nezha-NoGC +464.7%）、
+PASV vs Original +26.5%、Nezha vs Dwisckey scan **+208.9%**。
+
+**已定方向（B 路线）**：论文主战场是 1KB~256KB 大 value，AVP 优化的是 <512B
+小值——论文没覆盖这个区间，正是 TKDE 扩展的新地。先在小 value 坐标系证明
+AVP 有效（Nezha-NoGC vs Nezha × AVP 开关），外部系统随后按用户安排接入。
+代价：我们的数字接不到论文主表上，需另补一张论文坐标系的对照表说明大 value
+下没有回退。
 
 ## ✅ 已修：标记字节的连带损伤（三处，全部静默失败）
 
