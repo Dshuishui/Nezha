@@ -2318,6 +2318,15 @@ func main() {
 				continue
 			}
 
+			if !kvs.kvSeparation {
+				// 基线（standard Raft+RocksDB）没有 valuelog，也就没有垃圾要回收。
+				// 让它走 GC 会当场出错：RocksDB 里存的是裸 value，GC 却按偏移记录
+				// 解析（unknown record tag: 0x76 —— 那是 value 的首字符）。
+				// 更要命的是 GC 在搬运之前就把 persister 换成了新的空库，
+				// 于是失败之后所有 GET 都返回 NOKEY。
+				continue
+			}
+
 			fileSizeGB := float64(fileInfo.Size()) / (1024 * 1024 * 1024)
 			if fileSizeGB <= kvs.gcThresholdGB {
 				// fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.currentLog, fileSizeGB)
