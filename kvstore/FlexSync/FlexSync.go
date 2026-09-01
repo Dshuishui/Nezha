@@ -1198,6 +1198,7 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 }
 
 func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResponse {
+	tHandler := time.Now() // handler 全程，用于校验各阶段之和有没有漏测
 	// 判断数据应该写入的哪个文件
 	Newversion := kvs.numGC
 
@@ -1262,7 +1263,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 	select {
 	// 通道关闭或者有数据传入都会执行以下的分支
 	case <-opCtx.committed: // ApplyLoop函数执行完后，会关闭committed通道，再根据相关的值设置请求reply的结果
-		recordPut(raftStartDur, time.Since(tWait))
+		recordPut(time.Since(tHandler), raftStartDur, time.Since(tWait))
 		if opCtx.wrongLeader { // 同样index位置的term不一样了, 说明leader变了，需要client向新leader重新写入
 			reply.Err = raft.ErrWrongLeader
 			// fmt.Println("走了哪个操作1")
@@ -2054,7 +2055,7 @@ func (kvs *KVServer) applyLoop() {
 							kvs.oldPersister.Put_opt(op.Key, offset) //  Nezha
 							// kvs.oldPersister.Put(op.Key, op.Value)		//  original
 						}
-						recordRocksPut(time.Since(tRocks))
+						recordApplyStore(time.Since(tRocks))
 						// T4结束 - 存储操作完成
 						// t4End := time.Now()
 						// t4Duration := t4End.Sub(t4Start)

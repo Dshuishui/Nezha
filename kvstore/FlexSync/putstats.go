@@ -8,43 +8,56 @@ import (
 	"gitee.com/dong-shuishui/FlexSync/raft"
 )
 
-// 一条 Put 的端到端耗时分解。
+// 写入路径的耗时分解。
 //
-// 客户端量到的 PUT 延迟约 16.7ms，但这段时间花在哪一直是黑盒。去掉每条日志的
-// OpenFile/Seek/Close 之后吞吐没有变化，说明文件操作不是瓶颈——那就必须把
-// 剩下的路径拆开看，而不是继续猜。
+// 阶段是照着实际代码路径切的，不是照搬源码里那三处被注释掉的 T1/T2/T4 探针——
+// 那三个点只标了孤立的位置，既不覆盖整条路径，也无从判断有没有漏测。
 //
-// StartPut 的结构是两段：
+// PutInRaft 收到请求后的实际流程：
 //
-//	raft.Start()          写日志文件，全程持有 rf.mu
-//	<-opCtx.committed     等 apply 回调，其中含 RocksDB 写入与 goroutine 调度
+//	StartPut
+//	  ├─ raft.Start(op)                     ← S1+S2+S3，全程持 rf.mu
+//	  │    ├─ 等 rf.mu                        S1  并发争用
+//	  │    ├─ WriteEntryToFile                S2  编码 + write + flush
+//	  │    └─ 分配 index、append 内存日志      S3  持锁内的其余部分
+//	  ├─ 注册 opCtx 到 reqMap
+//	  └─ <-opCtx.committed                  ← S4 等 apply 完成
+//	                                             ApplyLoop 在另一个 goroutine 里
+//	                                             写 RocksDB 后 close 这个通道
 //
-// 后者是不是大头，直接决定后续该优化 Raft 侧还是存储侧。
+// 单节点下没有向 follower 分发这一步，所以 S4 里不含网络共识，只有调度延迟
+// 加 RocksDB 写入。
+//
+// 关键是 residual：handler 总时长减去各阶段之和。分解如果不完整，残差就会顶起来，
+// 而不是被悄悄摊进某个阶段里——没有这一项，任何"XX 占了 NN%"的结论都不可信。
 var putStats struct {
 	calls        atomic.Uint64
-	raftStartNs  atomic.Uint64 // T1：构造日志条目 + 持久化到 currentLog（含等锁）
-	commitWaitNs atomic.Uint64 // T2+T3：分发与共识等待（单节点下几乎只剩调度延迟）
-	rocksPutNs   atomic.Uint64 // T4：ApplyStateMachine 写 RocksDB
-	rocksCalls   atomic.Uint64
+	handlerNs    atomic.Uint64 // StartPut 全程（不含 gRPC 收发）
+	raftStartNs  atomic.Uint64 // S1+S2+S3：raft.Start 全程
+	commitWaitNs atomic.Uint64 // S4：等 apply 回调
+	applyStoreNs atomic.Uint64 // RocksDB 写入，嵌套在 S4 内部，不参与求和
+	applyCalls   atomic.Uint64
 }
 
-func recordPut(raftStart, commitWait time.Duration) {
+func recordPut(handler, raftStart, commitWait time.Duration) {
 	putStats.calls.Add(1)
+	putStats.handlerNs.Add(uint64(handler))
 	putStats.raftStartNs.Add(uint64(raftStart))
 	putStats.commitWaitNs.Add(uint64(commitWait))
 }
 
-func recordRocksPut(d time.Duration) {
-	putStats.rocksCalls.Add(1)
-	putStats.rocksPutNs.Add(uint64(d))
+func recordApplyStore(d time.Duration) {
+	putStats.applyCalls.Add(1)
+	putStats.applyStoreNs.Add(uint64(d))
 }
 
-// PutStatsLine 给出平均分解。三段之和应接近客户端量到的 PUT 延迟；
-// 差额即为 gRPC 与其余框架开销。
+// PutStatsLine 输出平均分解。
+// 第一行是 handler 级的划分，第二行是 raft.Start 内部的细分，
+// 第三行是嵌套在 S4 里的 RocksDB 写入——它与 S4 重叠，不能与其他项相加。
 func PutStatsLine() string {
 	n := putStats.calls.Load()
 	if n == 0 {
-		return "[PUT-STATS] 无数据"
+		return "[PUT-BREAKDOWN] 无数据"
 	}
 	ms := func(total, count uint64) float64 {
 		if count == 0 {
@@ -52,24 +65,29 @@ func PutStatsLine() string {
 		}
 		return float64(total) / float64(count) / 1e6
 	}
-	rs := ms(putStats.raftStartNs.Load(), n)
-	cw := ms(putStats.commitWaitNs.Load(), n)
-	rp := ms(putStats.rocksPutNs.Load(), putStats.rocksCalls.Load())
-	sum := rs + cw
-	share := func(v float64) float64 {
-		if sum <= 0 {
+	handler := ms(putStats.handlerNs.Load(), n)
+	raftStart := ms(putStats.raftStartNs.Load(), n)
+	commitWait := ms(putStats.commitWaitNs.Load(), n)
+	applyStore := ms(putStats.applyStoreNs.Load(), putStats.applyCalls.Load())
+	residual := handler - raftStart - commitWait
+
+	pct := func(v float64) float64 {
+		if handler <= 0 {
 			return 0
 		}
-		return v / sum * 100
+		return v / handler * 100
 	}
-	// T1/T2+T3/T4 对应论文 HandleWrite 的两个 Phase；占比直接指出该优化哪一段。
 	return fmt.Sprintf(
-		"[PUT-STATS] puts=%d T1_persist=%.4fms(%.1f%%) T2T3_consensus=%.4fms(%.1f%%) T4_rocksdb=%.4fms measured_total=%.4fms",
-		n, rs, share(rs), cw, share(cw), rp, sum)
+		"[PUT-BREAKDOWN] puts=%d handler=%.4fms | S1S2S3_raft_start=%.4fms(%.1f%%) S4_commit_wait=%.4fms(%.1f%%) residual=%.4fms(%.1f%%) | nested_apply_rocksdb=%.4fms",
+		n, handler,
+		raftStart, pct(raftStart),
+		commitWait, pct(commitWait),
+		residual, pct(residual),
+		applyStore)
 }
 
-// StartWriteStatsReporter 周期性把写入路径的分解打进节点日志。
-// 与 AVP 指标同样放在后台：在热路径上做格式化会污染要测的延迟本身。
+// StartWriteStatsReporter 周期性把分解打进节点日志。
+// 与 AVP 指标一样放在后台：在热路径上做格式化会污染要测的延迟本身。
 func StartWriteStatsReporter(interval time.Duration) {
 	if interval <= 0 {
 		interval = 15 * time.Second
