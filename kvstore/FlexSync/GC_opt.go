@@ -122,10 +122,15 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 		defer value.Free()
 
 		// Get the index from RocksDB
-		index := binary.LittleEndian.Uint64(value.Data())
+		// 记录是 [Tag, offset8]，偏移在 [1:]。此处曾按 [0:8] 解析，把标记字节
+		// 当成偏移最低位，算出的假偏移 seek 过去即 EOF——第一轮 GC 因此失败。
+		index, err := raft.DecodeOffsetRecord(value.Data())
+		if err != nil {
+			return fmt.Errorf("failed to decode offset record: %v", err)
+		}
 
 		// Read the entry from RaftState.log
-		entry, _, err := kvs.ReadEntryAtIndex(oldFile, int64(index))
+		entry, _, err := kvs.ReadEntryAtIndex(oldFile, index)
 		if err != nil {
 			return fmt.Errorf("failed to read entry at index %d: %v", index, err)
 		}
@@ -503,7 +508,10 @@ func (kvs *KVServer) checkLogDBConsistency() error {
 		value := iter.Value()
 
 		keyStr := string(key.Data())
-		dbOffset := int64(binary.LittleEndian.Uint64(value.Data()))
+		dbOffset, err := raft.DecodeOffsetRecord(value.Data())
+		if err != nil {
+			return fmt.Errorf("failed to decode offset record for key %s: %v", keyStr, err)
+		}
 
 		// 读取日志文件中的对应条目
 		entry, entryOffset, err := ReadEntry(reader, currentOffset)

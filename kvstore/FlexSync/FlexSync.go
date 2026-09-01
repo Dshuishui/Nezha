@@ -695,22 +695,21 @@ func (kvs *KVServer) decodeScanValue(raw []byte, logLocation string) (string, er
 	if len(raw) == 0 {
 		return "", errors.New("empty record in scan")
 	}
-	switch raw[0] {
-	case raft.TagInline:
+	if raw[0] == raft.TagInline {
 		return string(raw[1:]), nil
-	case raft.TagOffset:
-		if len(raw) != 9 {
-			return "", errors.New("invalid offset record size in scan")
-		}
-		return ReadValueFromNewFile(raw[1:], logLocation)
 	}
-	return "", errors.New("unknown record tag in scan")
+	off, err := raft.DecodeOffsetRecord(raw)
+	if err != nil {
+		return "", err
+	}
+	return ReadValueFromOffset(off, logLocation)
 }
 
 // ==================================================
-// positionBytes 是纯 8 字节偏移，不含标记字节——调用方负责剥掉。
-func ReadValueFromNewFile(positionBytes []byte, logLocation string) (string, error) {
-	position := int64(binary.LittleEndian.Uint64(positionBytes))
+// ReadValueFromOffset 按偏移读出 value。
+// 接口收的是解码好的 int64 而不是原始字节，这样"忘记剥标记字节"这类错误
+// 没法再从调用点溜进来——解码只有 raft.DecodeOffsetRecord 一个入口。
+func ReadValueFromOffset(position int64, logLocation string) (string, error) {
 
 	// Open the file
 	file, err := os.Open(logLocation)
@@ -2338,10 +2337,21 @@ func main() {
 				err = kvs.FirstGarbageCollection()
 				// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
 				if err != nil {
-					fmt.Println("垃圾回收出现了错误: ", err)
-				} else {
-					fmt.Printf("垃圾回收完成，共花费了%v\n", time.Since(startTime))
+					// 失败时绝不能往下走。下面那几行会把状态推进成"第一轮已完成"
+					// 并且 os.Remove(kvs.oldLog)——可数据还没完整搬进排序文件，
+					// 删掉源文件就是真丢数据。而且 firstSortedFileIndex 此时是 nil，
+					// 推进状态后第二轮 GC 会拿它解引用，直接空指针崩溃。
+					// 下个周期会重试；重试不成也好过删数据。
+					fmt.Println("垃圾回收出现了错误，本轮不推进状态、不删除旧文件: ", err)
+					continue
 				}
+				if kvs.firstSortedFileIndex == nil {
+					// GC 报告成功却没建出索引，说明中途走了某条提前返回的分支。
+					// 同样不能推进——这正是第二轮空指针崩溃的来源。
+					fmt.Println("垃圾回收返回成功但未建立排序文件索引，本轮不推进状态")
+					continue
+				}
+				fmt.Printf("垃圾回收完成，共花费了%v\n", time.Since(startTime))
 
 				// err = kvs.CheckDatabaseContent()
 				// if err != nil {
@@ -2365,6 +2375,12 @@ func main() {
 			} else {
 				// 迭代GC
 				if kvs.lastGCFinish {
+					if kvs.lastSortedFileIndex == nil {
+						// 没有上一轮的排序文件索引就没法做合并——
+						// MergedGarbageCollection 第一件事就是解引用它。
+						fmt.Println("缺少上一轮排序文件索引，跳过本轮迭代 GC")
+						continue
+					}
 					// kvs.numGC++
 					// kvs.raft.SetNumGC(kvs.numGC)
 					kvs.lastGCFinish = false // make sure last gc process is finished
