@@ -27,7 +27,12 @@ var avpStats struct {
 func avpRecordHit()  { avpStats.inlineHits.Add(1) }
 func avpRecordMiss() { avpStats.inlineMisses.Add(1) }
 
-// avpRecordNotFound 标记一次未命中其实是"这个 key 从没写入过"。
+// avpRecordNotFound 标记一次读最终没有找到这个 key。
+//
+// 必须在 GetInRaft 这个唯一的汇合点调用，不能在各条查找分支里调用：
+// GC 后数据分散在多个 sortedFile 与新旧 valuelog 中，一次读并发查这几处，
+// 单条路径查不到是常态。早先埋在分支里时，这个数虚高到 37%——测的是分片
+// 未命中，不是键缺失。
 // 不把它从未命中里剥出来，命中率就会被负载配置系统性压低：读的键空间大于
 // 实际写入量时，多出来的请求注定 miss，而压低多少取决于两者的比例——
 // 换个数据规模，命中率就不可比了。
