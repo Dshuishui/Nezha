@@ -1,8 +1,10 @@
 package raft
 
 const (
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
+	OK       = "OK"
+	ErrNoKey = "ErrNoKey"
+	// ErrInlineValue 表示这个 key 的 value 内联在存储引擎里，没有 valuelog 偏移。
+	ErrInlineValue = "ErrInlineValue"
 	ErrWrongLeader = "ErrWrongLeader"
 	NoKey          = "NOKEY"
 )
@@ -18,23 +20,23 @@ type PutAppendArgs struct {
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 	ClientId int64
-	SeqId int64
+	SeqId    int64
 }
 
 type PutAppendReply struct {
-	Err Err
-	leaderId int		// 如果请求发送的不是leader，咋需要返回leader的id
+	Err      Err
+	leaderId int // 如果请求发送的不是leader，咋需要返回leader的id
 }
 
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
 	ClientId int64
-	SeqId int64
+	SeqId    int64
 }
 
 type GetReply struct {
-	Err   Err
-	Value string
-	leaderId int		// 如果请求发送的不是leader，咋需要返回leader的id
+	Err      Err
+	Value    string
+	leaderId int // 如果请求发送的不是leader，咋需要返回leader的id
 }
