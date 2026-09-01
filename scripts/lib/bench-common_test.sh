@@ -101,6 +101,17 @@ check "zipf_read 100 轮平均吞吐（非末轮 0.5270）" "$(bench_avg_through
 check "zipf_read 100 轮平均延迟"                  "$(bench_avg_latency "$GET_FULL")"     "2.3958"
 bench_avg_throughput "没有汇总行" >/dev/null 2>&1 && no "无汇总行应失败" "返回了成功" || ok "无汇总行返回非零"
 
+# zipf_read 的汇总行数字与单位之间有空格，与单轮行的写法不同。
+# 早先的用例只取了单轮行的格式，于是这个分支一直没被覆盖——实测时
+# GET 延迟整列都是 NA，而吞吐正常，正是因为只有延迟依赖单位。
+GET_REAL='100 次测试的平均吞吐量: 10.6257 MB/S
+100 次测试的总平均延迟: 2.40 ms'
+check "汇总行带空格时仍解析出延迟" "$(bench_avg_latency "$GET_REAL")" "2.4000"
+check "汇总行带空格时吞吐正常"     "$(bench_avg_throughput "$GET_REAL")" "10.6257"
+SCAN_REAL='Average throughput over 100 tests: 8.4321MB/S
+Average latency over 100 tests: 47.8 ms'
+check "英文汇总行带空格也能解析"   "$(bench_avg_latency "$SCAN_REAL")" "47.8000"
+
 echo "== bench_round_stats：统计空轮，判断这轮 SCAN 有没有意义 =="
 check "统计 scan 轮数与空轮" "$(bench_round_stats "$SCAN_FULL")" "2 1"
 check "统计 get 轮数与空轮"  "$(bench_round_stats "$GET_FULL")"  "2 0"
