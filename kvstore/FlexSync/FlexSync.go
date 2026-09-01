@@ -1215,7 +1215,9 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 	var isLeader bool
 	// T1开始 - Raft日志持久化阶段
 	// t1Start := time.Now()
+	tStart := time.Now()
 	op.Index, op.Term, isLeader = kvs.raft.Start(&op)
+	raftStartDur := time.Since(tStart)
 	// t1End := time.Now()
 	// t1Duration := t1End.Sub(t1Start)
 	// fmt.Printf("T1 (Raft日志持久化) duration: %v\n", t1Duration)
@@ -1256,9 +1258,11 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 	}()
 	timer := time.NewTimer(60 * time.Second)
 	defer timer.Stop()
+	tWait := time.Now()
 	select {
 	// 通道关闭或者有数据传入都会执行以下的分支
 	case <-opCtx.committed: // ApplyLoop函数执行完后，会关闭committed通道，再根据相关的值设置请求reply的结果
+		recordPut(raftStartDur, time.Since(tWait))
 		if opCtx.wrongLeader { // 同样index位置的term不一样了, 说明leader变了，需要client向新leader重新写入
 			reply.Err = raft.ErrWrongLeader
 			// fmt.Println("走了哪个操作1")
@@ -2043,12 +2047,14 @@ func (kvs *KVServer) applyLoop() {
 						// fmt.Printf("此时put进去的offsetL%v\n", offset)
 						// fmt.Printf("转换后的offset：%v\n", positionBytes)
 
+						tRocks := time.Now()
 						if op.FileVersion == int64(kvs.numGC) { // 对于写入日志时，又进行了 GC ，需将偏移量存新文件
 							kvs.persister.Put_opt(op.Key, offset)
 						} else { // 否则存旧文件
 							kvs.oldPersister.Put_opt(op.Key, offset) //  Nezha
 							// kvs.oldPersister.Put(op.Key, op.Value)		//  original
 						}
+						recordRocksPut(time.Since(tRocks))
 						// T4结束 - 存储操作完成
 						// t4End := time.Now()
 						// t4Duration := t4End.Sub(t4Start)
@@ -2168,6 +2174,7 @@ func main() {
 	kvs.inlineCacheBytes = int64(*inlineCacheMB_arg) * 1024 * 1024
 	// AVP 机理指标定期进日志，实验结束后从节点日志里抓最后一行
 	StartAVPStatsReporter(15 * time.Second)
+	StartWriteStatsReporter(15 * time.Second)
 	kvs.gcThresholdGB = *gcThresholdGB_arg
 	kvs.indexBlockBytes = int64(*indexBlockKB_arg) * 1024
 

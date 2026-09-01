@@ -875,7 +875,14 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// var buffer bytes.Buffer
 	// enc := gob.NewEncoder(&buffer)
 	// var fileSizeLimit int64 = 10 * 1024 * 1024 // 6MB
+	tBeforeLock := time.Now()
 	rf.mu.Lock()
+	tAfterLock := time.Now()
+	var tWriteFile time.Duration
+	defer func() {
+		// 分三段记账：等锁、写文件、持锁总时长。
+		recordWrite(tAfterLock.Sub(tBeforeLock), tWriteFile, time.Since(tAfterLock))
+	}()
 
 	// 只有leader才能写入
 	if rf.role != ROLE_LEADER {
@@ -904,7 +911,9 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 			Value:       command.(*raftrpc.DetailCod).Value,
 		}
 		arrEntry := []*Entry{&entry_global}
+		tw := time.Now()
 		rf.WriteEntryToFile(arrEntry, rf.currentLog, 0)
+		tWriteFile = time.Since(tw)
 	}
 	// rf.batchLog = append(rf.batchLog, &entry)
 	// if err := enc.Encode(entry); err != nil {
