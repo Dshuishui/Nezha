@@ -67,8 +67,12 @@ var (
 	data_arg            = flag.String("data", ".", "Input Your data storage directory")
 	inlineThreshold_arg = flag.Int("inlineThreshold", 512, "Value size threshold in bytes: values smaller than this are cached inline in the sorted file index")
 	inlineCacheMB_arg   = flag.Int("inlineCacheMB", 256, "Memory budget in MB for the inline small-value cache (0 disables it)")
-	gcThresholdGB_arg   = flag.Float64("gcThresholdGB", 4000, "Value log size in GB that triggers garbage collection; lower it to exercise GC in tests")
-	indexBlockKB_arg    = flag.Int("indexBlockKB", 4, "Sparse index block size in KB: one in-memory index entry per block. Larger uses less memory but scans more entries per lookup")
+	// 默认 false，保持既有行为。开启后每批 Raft 日志写入都会 fsync，
+	// 这才是共识层要求的持久化语义——也是"把两次持久化合成一次"这一收益
+	// 能被测量出来的前提。
+	syncWAL_arg       = flag.Bool("syncWAL", false, "fsync the Raft log after each write batch (true durability)")
+	gcThresholdGB_arg = flag.Float64("gcThresholdGB", 4000, "Value log size in GB that triggers garbage collection; lower it to exercise GC in tests")
+	indexBlockKB_arg  = flag.Int("indexBlockKB", 4, "Sparse index block size in KB: one in-memory index entry per block. Larger uses less memory but scans more entries per lookup")
 )
 
 const (
@@ -2175,6 +2179,7 @@ func main() {
 	kvs.anotherStartGC = false
 	kvs.anotherEndGC = false
 	kvs.FirstGC = true
+	kvs.raft.SetSyncOnWrite(*syncWAL_arg)
 	kvs.inlineThreshold = *inlineThreshold_arg
 	kvs.inlineCacheBytes = int64(*inlineCacheMB_arg) * 1024 * 1024
 	// AVP 机理指标定期进日志，实验结束后从节点日志里抓最后一行
