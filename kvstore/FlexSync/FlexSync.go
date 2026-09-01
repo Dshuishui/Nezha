@@ -2179,7 +2179,6 @@ func main() {
 	kvs.anotherStartGC = false
 	kvs.anotherEndGC = false
 	kvs.FirstGC = true
-	kvs.raft.SetSyncOnWrite(*syncWAL_arg)
 	kvs.inlineThreshold = *inlineThreshold_arg
 	kvs.inlineCacheBytes = int64(*inlineCacheMB_arg) * 1024 * 1024
 	// AVP 机理指标定期进日志，实验结束后从节点日志里抓最后一行
@@ -2307,6 +2306,8 @@ func main() {
 
 	wg.Add(1 + 1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
+	// 必须在 raft.Make 之后：此前放在 flag 解析处会对 nil 指针调用而 panic。
+	kvs.raft.SetSyncOnWrite(*syncWAL_arg)
 	kvs.raft.SetCurrentLog(kvs.InitialRaftStateLog)
 	kvs.raft.Gap = gap
 	kvs.raft.SetNumGC(kvs.numGC)
