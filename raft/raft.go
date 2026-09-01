@@ -133,6 +133,12 @@ type Raft struct {
 	// 上吞吐塌掉的原因。
 	// 句柄常驻后每条只剩 Write + Flush。持久化语义不变：仍是每批写完立刻 Flush，
 	// 且原本就没有 fsync，本改动不触碰崩溃一致性。
+	// logMu 单独保护下面三个字段，不复用 rf.mu：GC 在自己的 goroutine 里调用
+	// SetCurrentLog 切换日志文件，而那条路径上并不持有 rf.mu。句柄常驻之后，
+	// 换文件要关掉旧句柄，若不加锁就会与正在写入的 goroutine 撞车，报
+	// "file already closed" 并让节点在 GC 中途崩溃。
+	// 这是一把叶子锁：持有它时绝不去取 rf.mu，因此与 rf.mu -> logMu 的既有顺序无冲突。
+	logMu     sync.Mutex
 	logFile   *os.File
 	logWriter *bufio.Writer
 	logOffset int64 // 下一条记录的写入位置；自行维护以省掉每次的 Seek
@@ -142,8 +148,7 @@ func (rf *Raft) GetOffsets() []int64 {
 	return rf.Offsets
 }
 
-// openLogFile 打开（或重开）日志文件并接管写入位置。
-// 调用方必须持有 rf.mu：它改写 rf.logFile / rf.logWriter / rf.logOffset。
+// openLogFile 打开（或重开）日志文件并接管写入位置。调用方必须持有 rf.logMu。
 func (rf *Raft) openLogFile(filename string) error {
 	if rf.logWriter != nil {
 		rf.logWriter.Flush()
@@ -173,8 +178,8 @@ func (rf *Raft) openLogFile(filename string) error {
 
 // CloseLogFile 刷净缓冲并释放句柄。
 func (rf *Raft) CloseLogFile() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.logMu.Lock()
+	defer rf.logMu.Unlock()
 	if rf.logWriter != nil {
 		rf.logWriter.Flush()
 		rf.logWriter = nil
@@ -188,8 +193,10 @@ func (rf *Raft) CloseLogFile() {
 func (rf *Raft) SetCurrentLog(currentLog string) {
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
-	rf.currentLog = currentLog
 	// GC 会切到新文件，句柄要跟着换，否则后续写入还落在旧文件上。
+	rf.logMu.Lock()
+	defer rf.logMu.Unlock()
+	rf.currentLog = currentLog
 	if err := rf.openLogFile(currentLog); err != nil {
 		log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
 	}
@@ -241,15 +248,22 @@ func (rf *Raft) SetNumGC(numGC int) {
 // 	rf.Offsets = append(rf.Offsets, offsets...)
 // }
 
-// WriteEntryToFile 将条目写入指定的文件，并返回写入的起始偏移量。
-// 调用方需持有 rf.mu：本函数改写 rf.logWriter / rf.logOffset / rf.Offsets。
-func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
-	// 句柄常驻，不再每条 OpenFile/Close。首次调用或换文件时才打开。
-	if rf.logWriter == nil || filename != rf.currentLog {
-		if err := rf.openLogFile(filename); err != nil {
+// WriteEntryToFile 将条目追加到当前日志文件。
+//
+// 不接受文件名参数：目标文件由 rf.currentLog 决定，而它归 logMu 管。让调用方
+// 传 rf.currentLog 意味着在锁外读这个字段——GC 正好会在自己的 goroutine 里改它，
+// 那是一个 -race 能抓到的真实数据竞争（调用方读，SetCurrentLog 写，两把不同的锁）。
+//
+// 调用方需持有 rf.mu：本函数改写 rf.Offsets。
+func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
+	// 与 SetCurrentLog 互斥：GC 换文件时会关掉当前句柄。
+	rf.logMu.Lock()
+	defer rf.logMu.Unlock()
+	// 句柄常驻，不再每条 OpenFile/Close。首次调用时打开。
+	if rf.logWriter == nil {
+		if err := rf.openLogFile(rf.currentLog); err != nil {
 			log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
 		}
-		rf.currentLog = filename
 	}
 	writer := rf.logWriter
 
@@ -774,7 +788,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			if index == rf.lastIndex() && logEntry.Command.OpType != "TermLog" { // 已经将日志补足后，开始批量写入，同时为了与leader在偏移量上的统一，对于空指令，也不写入
 				// offsets1, err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
 				// rf.mu.Unlock()
-				rf.WriteEntryToFile(rf.batchLog, rf.currentLog, 0)
+				rf.WriteEntryToFile(rf.batchLog, 0)
 				rf.batchLog = rf.batchLog[:0] // 清空暂存日志的数组
 				// go func() {
 				// 	err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
@@ -806,7 +820,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				arrEntry := []*Entry{&entry}                    // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
 				// offsets2, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
 				// rf.mu.Unlock()
-				rf.WriteEntryToFile(arrEntry, rf.currentLog, offset)
+				rf.WriteEntryToFile(arrEntry, offset)
 				// go func() {
 				// 	err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
 				// 	if err != nil {
@@ -912,7 +926,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		}
 		arrEntry := []*Entry{&entry_global}
 		tw := time.Now()
-		rf.WriteEntryToFile(arrEntry, rf.currentLog, 0)
+		rf.WriteEntryToFile(arrEntry, 0)
 		tWriteFile = time.Since(tw)
 	}
 	// rf.batchLog = append(rf.batchLog, &entry)
