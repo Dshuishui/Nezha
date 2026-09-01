@@ -97,6 +97,7 @@ func StartWriteStatsReporter(interval time.Duration) {
 			if putStats.calls.Load() > 0 {
 				fmt.Println(PutStatsLine())
 				fmt.Println(raft.RaftWriteStatsLine())
+				fmt.Println(raft.GroupCommitStatsLine())
 			}
 		}
 	}()
