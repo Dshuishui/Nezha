@@ -119,10 +119,13 @@ bench_avg_throughput() {
 }
 bench_avg_latency() {
     local raw
-    raw=$(sed -n 's/.*[Ll]atency over [0-9]* tests: *\([0-9.a-zµ]*\).*/\1/p' <<<"$1" | tail -1)
-    [ -n "$raw" ] || raw=$(sed -n 's/.*总平均延迟: *\([0-9.a-zµ]*\).*/\1/p' <<<"$1" | tail -1)
+    # 单位与数字之间可能隔着空格：zipf_read 的汇总行是 "总平均延迟: 2.40 ms"，
+    # 而单轮行是 "Average Latency: 2.402897ms"。只捕获数字会把单位丢掉，
+    # duration_ms 拿到一个无单位的数就返回失败，整列静默变成 NA。
+    raw=$(sed -n 's/.*[Ll]atency over [0-9]* tests: *\([0-9.]* *[a-zµ]*\).*/\1/p' <<<"$1" | tail -1)
+    [ -n "$raw" ] || raw=$(sed -n 's/.*总平均延迟: *\([0-9.]* *[a-zµ]*\).*/\1/p' <<<"$1" | tail -1)
     [ -n "$raw" ] || return 1
-    duration_ms "$raw"
+    duration_ms "${raw// /}"
 }
 
 # bench_round_stats <完整输出> —— 打印 "总轮数 空轮数"。
