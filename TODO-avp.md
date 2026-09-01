@@ -217,9 +217,33 @@ goroutine，谁连吃两次超时谁就把墙钟拖长。那个分簇是九轮�
   128MB 数据全在 page cache，测出的是收益下限。用 cgroup 压到 2~4GB 再测。
 - [ ] **重复测量**：历史数据多为单点。GET 噪声较小（100 轮 × 20000 请求），
   但 SCAN 噪声实测可达 20%，个位数差异不可用。关键结论需 3 次取中位数。
-- [ ] **接入 go-ycsb**：现有 benchmark 是自制的，键空间脱节那个问题就是典型症状。
-  实现 `Read/Insert/Update/Scan/Delete` 五个方法即可（约 150 行）。
-  **保留原 benchmark**用于与 ICDE 版对照，YCSB 用于新的主表。
+- [ ] **接入 go-ycsb**（用户已确认：PUT/GET/SCAN 三项测完后做，并与自制 benchmark 对比效果）
+  论文 Fig.8 本身就是 YCSB 结果，扩展版要更新那张图绕不开。论文 Table II 的配置：
+
+      Load  Insert           Insert Only
+      A     Update  Point    50%write 50%read
+      B     Update  Point     5%write 95%read
+      C       /     Point    Read Only
+      D     Insert  Point     5%write 95%read
+      E     Insert  Range     5%write 95%scan
+      F     RMW     Point    50%write 50%read
+
+  100GB 预载、每 workload 100 万请求、value **16KB**。
+  现有 `ycsb/` 只有 A/D/E/F（**缺 B/C**）且为自制。
+
+  **今天暴露的 benchmark 问题里，YCSB 能挡掉四个**：keyspace 写死 1 亿（读打在
+  不存在的 key 上）、gapkey 写死 400 万（每轮扫全库）、zipf_read 没有 -vsize
+  却被传入（秒退产生空列）、各 benchmark 输出格式与单位不统一。共性都是"自制
+  工具的隐含约定散落各处、无人统一"。
+
+  **但 YCSB 挡不住正确性问题**：今天最严重的三个 bug（apply 竞态、标记字节漏剥、
+  GC 失败删源文件）全是 `benchmark/scanverify`（逐条校验值）抓出来的，YCSB 默认
+  不校验返回值。两者不可互相替代——YCSB 管口径，scanverify 管有没有意义。
+  **每组实验前先跑 scanverify 作正确性闸门**，这条要固化进流程。
+
+  做法：实现 `Read/Insert/Update/Scan/Delete` 五个接口（约 150 行）接 go-ycsb，
+  与自制 benchmark 跑同一配置对比，确认两者口径一致后再用 YCSB 出新主表。
+  **保留原 benchmark**用于与 ICDE 版对照。
 - [ ] **句柄复用重新判定**：当时判"无效果"是基于 PUT 吞吐，而该指标已证实被
   超时污染。需用 p50/p99 重测。
 
