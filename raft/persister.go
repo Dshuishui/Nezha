@@ -215,17 +215,25 @@ func (p *Persister) Get_opt(key string) (int64, error) {
 		// return -1, ErrKeyNotFound
 		return -1, nil
 	}
-	switch {
-	case len(valueBytes) == 9 && valueBytes[0] == TagOffset:
+	// 只认标记，不做长度兼容。曾经写过一个"len==8 视为旧格式偏移"的分支，
+	// 它恰好把要防的碰撞又放了回来：7 字节的内联 value 加上标记正好 8 字节，
+	// 于是被当成偏移解析。而且旧格式本身就有歧义——偏移量为 1 时，
+	// 小端编码的首字节就是 0x01，与内联标记无法区分。
+	if len(valueBytes) == 0 {
+		return 0, errors.New("invalid value size")
+	}
+	switch valueBytes[0] {
+	case TagOffset:
+		if len(valueBytes) != 9 {
+			return 0, errors.New("invalid offset record size")
+		}
 		return int64(binary.LittleEndian.Uint64(valueBytes[1:])), nil
-	case len(valueBytes) == 8: // 兼容标记引入之前写下的数据
-		return int64(binary.LittleEndian.Uint64(valueBytes)), nil
-	case len(valueBytes) > 0 && valueBytes[0] == TagInline:
+	case TagInline:
 		// 这个 key 的 value 内联在存储引擎里，没有偏移可言。
 		// 调用方应改走 GetInline，读到这里说明分流逻辑漏了一处。
 		return 0, errors.New(ErrInlineValue)
 	}
-	return 0, errors.New("invalid value size")
+	return 0, errors.New("unknown record tag")
 	// var value int64
 	// for i := uint(0); i < 8; i++ {
 	// 	value |= int64(valueBytes[i]) << (i * 8)
