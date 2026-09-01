@@ -61,10 +61,20 @@ type TestResult struct {
 }
 
 const (
-	KEY_SPACE = 100000000 // 键空间大小
-	ZIPF_S    = 1.01   // Zipf 分布的偏度参数
-	ZIPF_V    = 1      // 最小值
+	// 默认键空间。保留 1 亿这个原值，已有实验的口径才不会变。
+	DEFAULT_KEY_SPACE = 100000000
+	ZIPF_S            = 1.01 // Zipf 分布的偏度参数
+	ZIPF_V            = 1    // 最小值
 )
+
+// keyspace 应当等于实际写入的记录数。这是 YCSB 与 RocksDB db_bench 的通行口径：
+// YCSB 的 run 阶段从 [0, recordcount) 采样，db_bench 用同一个 --num 同时决定
+// 写入和读取的范围。
+//
+// 键空间大于写入量时，多出来的那部分请求全部落在从未写入的 key 上，测的是
+// "查不存在的 key 有多快"。更麻烦的是覆盖率随写入量变化——1 亿键空间下写
+// 100 万条与写 500 万条的命中率没有可比性，每次实验的口径都在漂。
+var keyspace = flag.Int("keyspace", DEFAULT_KEY_SPACE, "读取采样的键空间；应设为实际写入的记录数")
 
 func (kvc *KVClient) randRead() (float64, time.Duration) {
 	wg := sync.WaitGroup{}
@@ -84,17 +94,21 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 			rnd := rand.New(source)
 
 			// 创建 Zipf 分布，使用更保守的参数
-			zipf := rand.NewZipf(rnd, ZIPF_S, ZIPF_V, uint64(KEY_SPACE-1))
+			ks := *keyspace
+			if ks <= 1 {
+				ks = DEFAULT_KEY_SPACE
+			}
+			zipf := rand.NewZipf(rnd, ZIPF_S, ZIPF_V, uint64(ks-1))
 			if zipf == nil {
 				fmt.Printf("Failed to create Zipf distribution with parameters: s=%.2f, v=%d, imax=%d\n",
-					ZIPF_S, ZIPF_V, KEY_SPACE-1)
+					ZIPF_S, ZIPF_V, ks-1)
 				return
 			}
 
 			startTime := time.Now()
 			for j := 0; j < base; j++ {
 				// 使用 Zipf 分布生成键
-				keyNum := zipf.Uint64()%uint64(KEY_SPACE) + 1 // 确保键在有效范围内
+				keyNum := zipf.Uint64()%uint64(ks) + 1 // 确保键在有效范围内
 				targetKey := strconv.FormatUint(keyNum, 10)
 
 				value, keyExist, err := kvc.Get(targetKey)

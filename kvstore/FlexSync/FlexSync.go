@@ -1351,6 +1351,9 @@ func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (stri
 	// 未命中：经稀疏索引二分定位到块，块内顺序扫描
 	entry, err := kvs.lookupInSortedFile(index, key)
 	if err != nil {
+		if err.Error() == raft.ErrNoKey {
+			avpRecordNotFound() // 这个 key 从没写入过，不该算进缓存的账
+		}
 		return "", err
 	}
 
