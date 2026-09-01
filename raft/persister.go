@@ -11,19 +11,20 @@ import (
 
 	"github.com/linxGnu/grocksdb"
 
-	"sync"
 	"strings"
+	"sync"
 	// "strconv"
 )
 
 const KeyLength = 10
 
 var ErrKeyNotFound = errors.New("key not found")
+
 // var ErrNoKey = "NOKEY"
 
 type Persister struct {
 	// db *leveldb.DB
-	db *grocksdb.DB
+	db   *grocksdb.DB
 	ro   *grocksdb.ReadOptions
 	wo   *grocksdb.WriteOptions
 	muRO sync.Mutex
@@ -55,42 +56,42 @@ func (p *Persister) UnpadKey(paddedKey string) string {
 }
 
 func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
-    var err error
-    bbto := grocksdb.NewDefaultBlockBasedTableOptions()
-    opts := grocksdb.NewDefaultOptions()
-    
-    if disableCache {
-        // 完全禁用所有缓存
-        bbto.SetNoBlockCache(true)               // 禁用块缓存
-        bbto.SetCacheIndexAndFilterBlocks(false) // 禁用索引和过滤器块的缓存
-        // bbto.SetFilterPolicy(nil)                // 禁用 Bloom Filter
-        opts.SetAllowMmapReads(false)            // 关闭预读/内存映射读取
-    } else {
-        // 启用缓存
-        bbto.SetBlockCache(grocksdb.NewLRUCache(3 << 30))
-        bbto.SetCacheIndexAndFilterBlocks(true)
-    }
-    
-    opts.SetBlockBasedTableFactory(bbto)
-    opts.SetCreateIfMissing(true)
-    
-    p.db, err = grocksdb.OpenDb(opts, path)
-    if err != nil {
-        return nil, fmt.Errorf("open db failed: %w", err)
-    }
-    
-    p.wo = grocksdb.NewDefaultWriteOptions()
+	var err error
+	bbto := grocksdb.NewDefaultBlockBasedTableOptions()
+	opts := grocksdb.NewDefaultOptions()
+
+	if disableCache {
+		// 完全禁用所有缓存
+		bbto.SetNoBlockCache(true)               // 禁用块缓存
+		bbto.SetCacheIndexAndFilterBlocks(false) // 禁用索引和过滤器块的缓存
+		// bbto.SetFilterPolicy(nil)                // 禁用 Bloom Filter
+		opts.SetAllowMmapReads(false) // 关闭预读/内存映射读取
+	} else {
+		// 启用缓存
+		bbto.SetBlockCache(grocksdb.NewLRUCache(3 << 30))
+		bbto.SetCacheIndexAndFilterBlocks(true)
+	}
+
+	opts.SetBlockBasedTableFactory(bbto)
+	opts.SetCreateIfMissing(true)
+
+	p.db, err = grocksdb.OpenDb(opts, path)
+	if err != nil {
+		return nil, fmt.Errorf("open db failed: %w", err)
+	}
+
+	p.wo = grocksdb.NewDefaultWriteOptions()
 	// p.wo.DisableWAL(true)  // pasv 这里添加，关闭 WAL
-    p.ro = grocksdb.NewDefaultReadOptions()
-    
-    if disableCache {
-        p.ro.SetFillCache(false)  // 防止读取操作填充缓存
-    }
-    
-    p.muRO = sync.Mutex{}
-    p.muWO = sync.Mutex{}
-    
-    return p, nil
+	p.ro = grocksdb.NewDefaultReadOptions()
+
+	if disableCache {
+		p.ro.SetFillCache(false) // 防止读取操作填充缓存
+	}
+
+	p.muRO = sync.Mutex{}
+	p.muWO = sync.Mutex{}
+
+	return p, nil
 }
 
 func (p *Persister) Close() {
@@ -112,36 +113,84 @@ func (p *Persister) Close() {
 	}
 }
 
+// RocksDB 里存的东西现在有两种，靠首字节区分。
+//
+// 原先靠长度判断（Get_opt 检查 len != 8 即报错），那在只存偏移时够用，
+// 一旦开始内联 value 就会撞车：一个 7 字节的 value 加上标记正好也是 8 字节。
+// 标记字节让两者无论长度如何都能分开。
+const (
+	TagOffset = byte(0x00) // 其后 8 字节为 valuelog 偏移（KV 分离）
+	TagInline = byte(0x01) // 其后即 value 本身（小值内联）
+)
+
 func (p *Persister) Put_opt(key string, value int64) {
-    // 不要创建新的 wo，使用对象中已经配置好的
-    // wo := grocksdb.NewDefaultWriteOptions()
-    // defer wo.Destroy()
-    
-    valueBytes := make([]byte, 8)
-    binary.LittleEndian.PutUint64(valueBytes, uint64(value))
-    paddedKey := p.PadKey(key)
-    
-    p.muWO.Lock()
-    defer p.muWO.Unlock()
-    err := p.db.Put(p.wo, []byte(paddedKey), valueBytes)
-    if err != nil {
-        util.EPrintf("Put key %v value ** failed, err: %v", key, err)
-    }
+	// 不要创建新的 wo，使用对象中已经配置好的
+	// wo := grocksdb.NewDefaultWriteOptions()
+	// defer wo.Destroy()
+
+	valueBytes := make([]byte, 9)
+	valueBytes[0] = TagOffset
+	binary.LittleEndian.PutUint64(valueBytes[1:], uint64(value))
+	paddedKey := p.PadKey(key)
+
+	p.muWO.Lock()
+	defer p.muWO.Unlock()
+	err := p.db.Put(p.wo, []byte(paddedKey), valueBytes)
+	if err != nil {
+		util.EPrintf("Put key %v value ** failed, err: %v", key, err)
+	}
 }
 
 func (p *Persister) Put(key string, value string) {
-    // 不要创建新的 wo，使用对象中已经配置好的
-    // wo := grocksdb.NewDefaultWriteOptions()
-    // defer wo.Destroy()
-    
-    paddedKey := p.PadKey(key)
-    
-    p.muWO.Lock()
-    defer p.muWO.Unlock()
-    err := p.db.Put(p.wo, []byte(paddedKey), []byte(value))
-    if err != nil {
-        util.EPrintf("Put key %v value ** failed, err: %v", key, err)
-    }
+	// 不要创建新的 wo，使用对象中已经配置好的
+	// wo := grocksdb.NewDefaultWriteOptions()
+	// defer wo.Destroy()
+
+	paddedKey := p.PadKey(key)
+
+	p.muWO.Lock()
+	defer p.muWO.Unlock()
+	err := p.db.Put(p.wo, []byte(paddedKey), []byte(value))
+	if err != nil {
+		util.EPrintf("Put key %v value ** failed, err: %v", key, err)
+	}
+}
+
+// PutInline 把小 value 直接存进存储引擎，不经 valuelog。
+// 读取时一次点查即可拿到 value，省去"查偏移再读日志文件"的第二次 I/O；
+// 且它随存储引擎持久化，重启后依然有效，不像内存缓存要等 GC 重建。
+func (p *Persister) PutInline(key string, value string) {
+	buf := make([]byte, 1+len(value))
+	buf[0] = TagInline
+	copy(buf[1:], value)
+	paddedKey := p.PadKey(key)
+
+	p.muWO.Lock()
+	defer p.muWO.Unlock()
+	if err := p.db.Put(p.wo, []byte(paddedKey), buf); err != nil {
+		util.EPrintf("PutInline key %v failed, err: %v", key, err)
+	}
+}
+
+// GetInline 取内联 value。第二个返回值为 false 表示这个 key 不是内联存储的
+// （或不存在），调用方应回落到偏移查找路径。
+func (p *Persister) GetInline(key string) (string, bool) {
+	ro := grocksdb.NewDefaultReadOptions()
+	defer ro.Destroy()
+
+	slice, err := p.db.Get(ro, []byte(p.PadKey(key)))
+	if err != nil {
+		return "", false
+	}
+	defer slice.Free()
+	if !slice.Exists() {
+		return "", false
+	}
+	b := slice.Data()
+	if len(b) == 0 || b[0] != TagInline {
+		return "", false
+	}
+	return string(b[1:]), true
 }
 
 func (p *Persister) Get_opt(key string) (int64, error) {
@@ -166,9 +215,17 @@ func (p *Persister) Get_opt(key string) (int64, error) {
 		// return -1, ErrKeyNotFound
 		return -1, nil
 	}
-	if len(valueBytes) != 8 {
-		return 0, errors.New("invalid value size")
+	switch {
+	case len(valueBytes) == 9 && valueBytes[0] == TagOffset:
+		return int64(binary.LittleEndian.Uint64(valueBytes[1:])), nil
+	case len(valueBytes) == 8: // 兼容标记引入之前写下的数据
+		return int64(binary.LittleEndian.Uint64(valueBytes)), nil
+	case len(valueBytes) > 0 && valueBytes[0] == TagInline:
+		// 这个 key 的 value 内联在存储引擎里，没有偏移可言。
+		// 调用方应改走 GetInline，读到这里说明分流逻辑漏了一处。
+		return 0, errors.New(ErrInlineValue)
 	}
+	return 0, errors.New("invalid value size")
 	// var value int64
 	// for i := uint(0); i < 8; i++ {
 	// 	value |= int64(valueBytes[i]) << (i * 8)

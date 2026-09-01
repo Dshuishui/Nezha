@@ -78,9 +78,15 @@ var (
 	// 关闭 = standard Raft + RocksDB 基线：value 随状态机写进 RocksDB，于是同一份
 	// value 被持久化两次（Raft 日志一次、LSM 一次），此后还要承受 compaction 反复重写。
 	// 论文把 460% 的写入优势归因于这个差异，做成开关才能量化"问题有多大"。
-	kvSeparation_arg  = flag.Bool("kvSeparation", true, "keep values in the Raft log and store only offsets (false = baseline: values into RocksDB)")
-	gcThresholdGB_arg = flag.Float64("gcThresholdGB", 4000, "Value log size in GB that triggers garbage collection; lower it to exercise GC in tests")
-	indexBlockKB_arg  = flag.Int("indexBlockKB", 4, "Sparse index block size in KB: one in-memory index entry per block. Larger uses less memory but scans more entries per lookup")
+	kvSeparation_arg = flag.Bool("kvSeparation", true, "keep values in the Raft log and store only offsets (false = baseline: values into RocksDB)")
+	// 真正的 Adaptive Value Placement：写入时按 value 大小决定放在哪里。
+	// 关闭时（默认）小值只是被额外缓存一份到内存，放置位置并未改变——
+	// 那是缓存不是 placement，重启即失效、要等下次 GC 重建。
+	// 开启后 value < inlineThreshold 直接存进存储引擎：读一次点查即可，
+	// 与基线同路径且持久有效；GC 时这些小值也不必再搬进 sortedFile。
+	inlinePlacement_arg = flag.Bool("inlinePlacement", false, "store values smaller than inlineThreshold directly in the store (true AVP)")
+	gcThresholdGB_arg   = flag.Float64("gcThresholdGB", 4000, "Value log size in GB that triggers garbage collection; lower it to exercise GC in tests")
+	indexBlockKB_arg    = flag.Int("indexBlockKB", 4, "Sparse index block size in KB: one in-memory index entry per block. Larger uses less memory but scans more entries per lookup")
 )
 
 const (
@@ -236,6 +242,7 @@ type KVServer struct {
 
 	// AVP: adaptive value placement
 	kvSeparation     bool    // false 时退化为 standard Raft+RocksDB 基线
+	inlinePlacement  bool    // 写入时按大小分流放置，而非仅做读缓存
 	inlineThreshold  int     // values smaller than this (bytes) are eligible for the inline cache
 	inlineCacheBytes int64   // memory budget for each SortedFileIndex's inline cache
 	gcThresholdGB    float64 // value log size in GB that triggers GC
@@ -1133,6 +1140,14 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 		}
 		reply.Value = value
 		return reply
+	}
+	if kvs.inlinePlacement {
+		// 小值内联时一次点查就拿到 value，省去"查偏移 + 读日志文件"的第二次 I/O。
+		// 不是内联的 key 会落回下面的多路查找，大 value 的路径完全不变。
+		if v, ok := kvs.persister.GetInline(key); ok {
+			reply.Value = v
+			return reply
+		}
 	}
 	if kvs.FirstGC { // 未开始第二轮GC
 		reply = kvs.firstGCGet(key, reply)
@@ -2078,7 +2093,11 @@ func (kvs *KVServer) applyLoop() {
 						// fmt.Printf("转换后的offset：%v\n", positionBytes)
 
 						tRocks := time.Now()
-						if !kvs.kvSeparation {
+						if kvs.inlinePlacement && len(op.Value) < kvs.inlineThreshold {
+							// 小值直接落在存储引擎里，不进 valuelog：读路径因此缩短为一次点查，
+							// 且 GC 无需再为它们做一次搬运。
+							kvs.persister.PutInline(op.Key, op.Value)
+						} else if !kvs.kvSeparation {
 							// 基线：value 本身写进 RocksDB。于是同一份 value 被持久化两次
 							// （Raft 日志 + LSM），而后还要被 compaction 反复搬运。
 							kvs.persister.Put(op.Key, op.Value)
@@ -2205,6 +2224,7 @@ func main() {
 	kvs.anotherEndGC = false
 	kvs.FirstGC = true
 	kvs.kvSeparation = *kvSeparation_arg
+	kvs.inlinePlacement = *inlinePlacement_arg
 	kvs.inlineThreshold = *inlineThreshold_arg
 	kvs.inlineCacheBytes = int64(*inlineCacheMB_arg) * 1024 * 1024
 	// AVP 机理指标定期进日志，实验结束后从节点日志里抓最后一行
