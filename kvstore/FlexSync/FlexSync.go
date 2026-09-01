@@ -85,8 +85,14 @@ var (
 	// 开启后 value < inlineThreshold 直接存进存储引擎：读一次点查即可，
 	// 与基线同路径且持久有效；GC 时这些小值也不必再搬进 sortedFile。
 	inlinePlacement_arg = flag.Bool("inlinePlacement", false, "store values smaller than inlineThreshold directly in the store (true AVP)")
-	gcThresholdGB_arg   = flag.Float64("gcThresholdGB", 4000, "Value log size in GB that triggers garbage collection; lower it to exercise GC in tests")
-	indexBlockKB_arg    = flag.Int("indexBlockKB", 4, "Sparse index block size in KB: one in-memory index entry per block. Larger uses less memory but scans more entries per lookup")
+	// 等待 apply 回调的超时。默认 60 秒是原值。
+	// 这个值直接决定吞吐指标的稳定性：一个请求撞上超时，它所在的客户端
+	// goroutine 就白等这么久，而吞吐用总耗时做分母、由最慢的 goroutine 决定。
+	// 实测九轮里失败 ≤23 条的全部落在 0.119 MB/S，≥24 条的全部落在 0.076，
+	// 与被测模式无关——吞吐测的是"这轮撞上几次超时"，不是系统快慢。
+	commitTimeoutS_arg = flag.Int("commitTimeoutS", 60, "seconds to wait for the apply callback before giving up")
+	gcThresholdGB_arg  = flag.Float64("gcThresholdGB", 4000, "Value log size in GB that triggers garbage collection; lower it to exercise GC in tests")
+	indexBlockKB_arg   = flag.Int("indexBlockKB", 4, "Sparse index block size in KB: one in-memory index entry per block. Larger uses less memory but scans more entries per lookup")
 )
 
 const (
@@ -1300,7 +1306,7 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 			}
 		}
 	}()
-	timer := time.NewTimer(60 * time.Second)
+	timer := time.NewTimer(time.Duration(*commitTimeoutS_arg) * time.Second)
 	defer timer.Stop()
 	tWait := time.Now()
 	select {
