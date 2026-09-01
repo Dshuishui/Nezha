@@ -96,9 +96,28 @@ func StartWriteStatsReporter(interval time.Duration) {
 		for range time.Tick(interval) {
 			if putStats.calls.Load() > 0 {
 				fmt.Println(PutStatsLine())
+				fmt.Println(ApplyRaceStatsLine())
 				fmt.Println(raft.RaftWriteStatsLine())
 				fmt.Println(raft.GroupCommitStatsLine())
 			}
 		}
 	}()
+}
+
+// applyRaceStats 记录一个竞态窗口的命中次数。
+//
+// StartPut 里 raft.Start 先分配 index 并把日志写下去，之后才把 opCtx 注册进
+// reqMap。这两步之间 applyLoop 完全可能已经把这条 index 处理掉了——它查 reqMap
+// 查不到，于是不会 close(opCtx.committed)。Put 本身照常写进存储引擎，只有唤醒
+// 客户端的那一步丢了，请求于是一直挂到 commitTimeout。
+//
+// earlyApply 统计注册时发现 index 已被 apply 的次数，也就是这条路径救回来的请求数。
+var applyRaceStats struct {
+	earlyApply atomic.Uint64
+}
+
+func recordEarlyApply() { applyRaceStats.earlyApply.Add(1) }
+
+func ApplyRaceStatsLine() string {
+	return fmt.Sprintf("[APPLY-RACE] early_apply_rescued=%d", applyRaceStats.earlyApply.Load())
 }
