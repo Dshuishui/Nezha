@@ -133,6 +133,17 @@ type Raft struct {
 	// 上吞吐塌掉的原因。
 	// 句柄常驻后每条只剩 Write + Flush。持久化语义不变：仍是每批写完立刻 Flush，
 	// 且原本就没有 fsync，本改动不触碰崩溃一致性。
+	// syncOnWrite 决定日志写入后是否 fsync。
+	//
+	// 默认关闭，与改动前的行为一致：此前每批只 Flush 到 OS page cache，从不落盘。
+	// 那样一次"持久化写入"只值约 6 微秒（实测），在 11.45ms 的端到端延迟里占 0.05%，
+	// 于是"少写一次"这个架构收益完全测不出来——开关本身是关着的。
+	//
+	// 打开后每批 Flush 之后再 Sync，这才是 Raft 要求的语义：日志落盘后才能响应客户端。
+	// 单次 fsync 在 NVMe 上 50~200μs、SATA SSD 或机械盘 0.5~10ms，届时持久化成本
+	// 成为主导项，"把两次持久化合成一次"的价值才显现出来。
+	syncOnWrite bool
+
 	// logMu 单独保护下面三个字段，不复用 rf.mu：GC 在自己的 goroutine 里调用
 	// SetCurrentLog 切换日志文件，而那条路径上并不持有 rf.mu。句柄常驻之后，
 	// 换文件要关掉旧句柄，若不加锁就会与正在写入的 goroutine 撞车，报
@@ -188,6 +199,13 @@ func (rf *Raft) CloseLogFile() {
 		rf.logFile.Close()
 		rf.logFile = nil
 	}
+}
+
+// SetSyncOnWrite 开关日志写入的 fsync。需在节点开始服务前调用。
+func (rf *Raft) SetSyncOnWrite(v bool) {
+	rf.logMu.Lock()
+	defer rf.logMu.Unlock()
+	rf.syncOnWrite = v
 }
 
 func (rf *Raft) SetCurrentLog(currentLog string) {
@@ -319,9 +337,16 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 		offsets[i] = offset
 		offset += int64(len(data))
 	}
-	// 刷新缓冲区以确保数据被写入文件。持久化语义与改造前一致：每批写完立刻 Flush。
+	// Flush 只把数据交给操作系统（write 系统调用），数据落在 page cache 里，
+	// 进程崩溃不丢但机器断电会丢。Raft 要求日志在响应客户端前真正落盘，
+	// 那需要 Sync。
 	if err = writer.Flush(); err != nil {
 		log.Fatalf("刷新缓冲区失败：%v", err)
+	}
+	if rf.syncOnWrite {
+		if err = rf.logFile.Sync(); err != nil {
+			log.Fatalf("日志落盘（fsync）失败：%v", err)
+		}
 	}
 	if startPos == 0 {
 		rf.logOffset = offset
