@@ -663,8 +663,9 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persis
 			break
 		}
 
-		// 从新的日志文件中读取实际的value
-		value, err := ReadValueFromNewFile(iter.Value().Data(), logLocation) // 读取与rocksdb对应的log
+		// 存储引擎里存的是什么，取决于当前配置——不能一律当成偏移解析。
+		// 三种形态由首字节的标记区分，baseline 则根本没有标记。
+		value, err := kvs.decodeScanValue(iter.Value().Data(), logLocation)
 		if err != nil {
 			return nil, err
 		}
@@ -675,7 +676,39 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persis
 	return result, nil
 }
 
+// decodeScanValue 把存储引擎里的一条记录还原成 value。
+//
+// SCAN 迭代拿到的字节串有三种可能，此前这里无条件当作偏移解析，于是另外两种
+// 都会读出垃圾——baseline 对照组和 AVP placement 的 SCAN 因此都跑不出正确结果。
+//
+//	baseline (-kvSeparation=false)  裸 value，没有标记字节
+//	[TagOffset, offset8]            KV 分离，去 valuelog 取
+//	[TagInline, value...]           AVP 小值内联，就地取出
+//
+// 注意 TagOffset 记录共 9 字节，偏移在 [1:]。原先按 [0:8] 解析，把标记字节
+// 当成了偏移的最低位——算出来的是"真实偏移左移 8 位再截断"，看似合法却指向
+// 文件里的任意位置。
+func (kvs *KVServer) decodeScanValue(raw []byte, logLocation string) (string, error) {
+	if !kvs.kvSeparation {
+		return string(raw), nil
+	}
+	if len(raw) == 0 {
+		return "", errors.New("empty record in scan")
+	}
+	switch raw[0] {
+	case raft.TagInline:
+		return string(raw[1:]), nil
+	case raft.TagOffset:
+		if len(raw) != 9 {
+			return "", errors.New("invalid offset record size in scan")
+		}
+		return ReadValueFromNewFile(raw[1:], logLocation)
+	}
+	return "", errors.New("unknown record tag in scan")
+}
+
 // ==================================================
+// positionBytes 是纯 8 字节偏移，不含标记字节——调用方负责剥掉。
 func ReadValueFromNewFile(positionBytes []byte, logLocation string) (string, error) {
 	position := int64(binary.LittleEndian.Uint64(positionBytes))
 
