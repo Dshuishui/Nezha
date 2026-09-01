@@ -1277,12 +1277,30 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 		return reply // 如果收到客户端put请求的不是leader，需要将leader的id返回给客户端的reply中
 	}
 	opCtx := newOpContext(&op)
+	// alreadyApplied：raft.Start 已经把这条 index 写下去了，而注册 opCtx 是之后的事。
+	// 这中间 applyLoop 完全可能已经处理完这条 index——它查 reqMap 查不到，就不会
+	// close(opCtx.committed)，于是下面的 select 永远等不到通知，一直挂到超时。
+	// 写入本身不受影响（applyLoop 的存储分支与 existOp 无关），丢的只是那次唤醒。
+	//
+	// lastAppliedIndex 和这里的注册都在 kvs.mu 下，天然串行：要么注册先到、apply 时
+	// 查得到 opCtx，要么 apply 先到、此处就能看见 lastAppliedIndex 已经越过 op.Index。
+	var alreadyApplied bool
 	func() {
 		kvs.mu.Lock()
 		defer kvs.mu.Unlock()
+		if int(op.Index) <= kvs.lastAppliedIndex {
+			alreadyApplied = true
+			recordEarlyApply()
+			return
+		}
 		// 保存RPC上下文，等待提交回调，可能会因为Leader变更覆盖同样Index，不过前一个RPC会超时退出并令客户端重试
 		kvs.reqMap[int(op.Index)] = opCtx
 	}()
+	if alreadyApplied {
+		// 已经落盘，没有需要等待的回调
+		recordPut(time.Since(tHandler), raftStartDur, 0)
+		return reply
+	}
 	// _,exist:=kvs.reqMap[int(op.Index)]
 	// fmt.Println("大撒上的",exist)
 	// fmt.Printf("index%v\n",op.Index)
