@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"sort"
 
 	"context"
 	"strconv"
@@ -50,6 +51,11 @@ type putResult struct {
 	avgLatency    time.Duration
 	totalLatency  time.Duration
 	localDataSize float64 // MB
+	// 逐请求延迟。平均值会把尾部藏起来：实测一轮里几个 60 秒超时能把总耗时
+	// 拉长 300 多秒（吞吐从 0.119 掉到 0.074），而平均延迟只动了 11%。
+	// 吞吐由最慢的 goroutine 决定，因此它反映的是撞上几次超时，而非系统快慢。
+	// 要看清这件事，必须保留分布。
+	latencies []time.Duration
 }
 
 // func (kvc *KVClient) batchRawPut(value string) {
@@ -123,7 +129,10 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 			startTime := time.Now()
 			for j := 0; j < len(keys); j++ {
 				key := strconv.Itoa(keys[j])
+				reqStart := time.Now()
 				reply, err := kvc.PutInRaft(key, value)
+				// 失败的请求也要记：它们正是尾部
+				localResult.latencies = append(localResult.latencies, time.Since(reqStart))
 				if err == nil && reply != nil && reply.Err != "defeat" {
 					localResult.goodPut++
 				}
@@ -144,6 +153,7 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 		close(results)
 	}()
 
+	var allLatencies []time.Duration
 	var totalGoodPut int
 	var totalDataSize float64
 	var totalAvgLatency time.Duration
@@ -155,6 +165,7 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 	for result := range results {
 		totalGoodPut += result.goodPut
 		totalDataSize += result.localDataSize
+		allLatencies = append(allLatencies, result.latencies...)
 		totalAvgLatency += result.avgLatency
 		if result.totalLatency > maxTotalLatency {
 			maxTotalLatency = result.totalLatency
@@ -176,6 +187,19 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 		util.DPrintf("The raft pool has been closed")
 	}
 
+	// 百分位。平均值掩盖尾部：几个 60 秒超时能把总耗时拉长数百秒、吞吐腰斩，
+	// 而平均延迟几乎不动——它们被摊进二十万个请求里。吞吐由最慢的 goroutine
+	// 决定，所以它测的是本轮撞上几次超时，不是系统快慢。
+	if len(allLatencies) > 0 {
+		sort.Slice(allLatencies, func(i, j int) bool { return allLatencies[i] < allLatencies[j] })
+		pct := func(p float64) time.Duration {
+			return allLatencies[int(float64(len(allLatencies)-1)*p)]
+		}
+		ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
+		fmt.Printf("latency percentiles: p50=%.3fms p90=%.3fms p99=%.3fms p999=%.3fms max=%.3fms samples=%d\n",
+			ms(pct(0.50)), ms(pct(0.90)), ms(pct(0.99)), ms(pct(0.999)),
+			ms(allLatencies[len(allLatencies)-1]), len(allLatencies))
+	}
 	return avgThroughput, avgLatency
 }
 
