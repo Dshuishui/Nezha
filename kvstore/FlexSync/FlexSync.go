@@ -1161,8 +1161,11 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
 	} else if reply.Err == raft.ErrNoKey {
+		// 全部查找路径都没找到，这才是真正的"键不存在"。
+		// 读的键空间大于实际写入量时，这类请求注定 miss，必须从缓存命中率里剔除，
+		// 否则命中率反映的是负载怎么配的，而不是 AVP 好不好。
+		avpRecordNotFound()
 		// 返回客户端没有该key即可，这里先不做操作
-		// fmt.Println("执行成功，但是server端没有client查询的key")
 	}
 	return reply, nil
 }
@@ -1356,9 +1359,10 @@ func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (stri
 	// 未命中：经稀疏索引二分定位到块，块内顺序扫描
 	entry, err := kvs.lookupInSortedFile(index, key)
 	if err != nil {
-		if err.Error() == raft.ErrNoKey {
-			avpRecordNotFound() // 这个 key 从没写入过，不该算进缓存的账
-		}
+		// 这里不能记 not_found。GC 之后数据分散在多个 sortedFile 与新旧 valuelog 中，
+		// 一次读会并发查这几处，"这个分片里没有"是常态而非键缺失——照此计数会把
+		// 分片未命中当成键不存在（实测虚高到 37%）。真正的判定在 GetInRaft，
+		// 那里是所有查找路径唯一的汇合点。
 		return "", err
 	}
 
