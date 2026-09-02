@@ -16,6 +16,28 @@
 
 - 三方正确性验证已通过（baseline/nezha/nezha_avp 全部 VERIFY_OK）。
 
+## 🖥 两台实验机器
+
+| | AutoDL | winbox-wsl（自有） |
+|---|---|---|
+| 连接 | `ssh -p 57200 root@connect.bjb1.seetacloud.com` | `ssh winbox-wsl` |
+| 规格 | 377GB / 32核 / 50GB | 24GB / 12核 / **953GB** |
+| 磁盘 | **共享存储** —— 写入绝对值不可写进论文 | **独占 ext4** |
+| 环境 | `/root/env.sh`，RocksDB 8.x，代码在 `/root/autodl-tmp/work/Nezha` | `~/env.sh`，RocksDB **8.9.1-2**(apt)，Go **1.24.4**(apt golang-1.24-go)，代码在 `~/work/Nezha` |
+| 长任务 | `setsid nohup ... < /dev/null &` | **`~/bin/winjob run <名字> '<命令>'`**（Mac 侧命令，README 要求 >30s 任务必须用） |
+
+**winbox-wsl 的出站网络几乎全被 reset**：go.dev、阿里、中科大、goproxy.cn、
+github.com、gitee.com 全不通，**只有 apt 源可达**。因此：
+- Go 用 apt 装（`golang-1.24-go`），不能下 tarball
+- 依赖用本地 Mac 的 `~/go/pkg/mod` **rsync** 到 `~/work/gomod`
+- 代码同步只能 rsync（含 `.git`，否则结果里的 commit hash 为空），不能 clone/pull
+
+机器手册：`~/Documents/MyWin10/README.md`（macOS TCC 可能挡住读取，需在
+系统设置→隐私与安全性→文件和文件夹里给终端授权）。
+
+**未做但必须做**：新旧机器同配置对照。现有 36 格数据全部产自 AutoDL，
+换机器后绝对值必变（尤其写入），不做对照就无法判断差异来自机器还是来自改动。
+
 ## 📄 ICDE 论文的实验坐标系（读数据前必看）
 
 论文 PDF 在仓库根目录（已 gitignore）。实验章节的七个对比配置：
@@ -145,16 +167,19 @@ goroutine，谁连吃两次超时谁就把墙钟拖长。那个分簇是九轮�
 
 ## 待清理
 
-- [ ] **Dependabot 的两条告警（均非真实风险，但可清掉）**
-  - `golang.org/x/net`：要求升到 0.36.0，实际已是 **v0.49.0**，CVE-2025-22870/22872
-    对当前代码不适用。
-  - `gopkg.in/yaml.v2 v2.2.1`：`go mod why` 明确报 *(main module does not need
-    package)*，且 go.sum 里只有 `/go.mod` 那一行、没有源码包哈希——说明构建时
-    从未下载过它的代码，**编译产物里不含这个包，CVE 无法触发**。Dependabot 扫的是
-    go.sum 文本，不区分"真的编译进去了"和"只在版本图里出现过"。
-  - 处理：跑一次 `go mod tidy` 清掉陈旧记录，告警即消失。**必须等实验全部跑完**——
-    go.sum 一变，下一轮 go build 可能触发依赖重新解析，污染实验。
-    或者在 GitHub 上直接 Dismiss，理由填 "vulnerable code is not actually used"。
+- [x] **Dependabot 告警已全部 dismiss**（5 条，2026-09-02）
+  实为两个包共 5 条 CVE，均已核实不适用，理由记在每条告警上（`not_used`）：
+  - `golang.org/x/net`（2 条 medium）：advisory 要求升到 0.36.0，`go.mod` 里
+    **实际已是 v0.49.0**。工作分支与 default branch(`multiGC`) 均已核实。
+  - `gopkg.in/yaml.v2`（1 high + 2 medium）：`go.sum` 里**只有 `/go.mod` 那一行、
+    没有 `h1:` 源码哈希**——构建时从未下载过它的代码，编译产物里不含这个包。
+    Dependabot 扫的是 go.sum 文本，不区分"真的编译进去了"和"只在版本图里出现过"。
+
+- [ ] **实验全部跑完后执行 `go mod tidy`**
+  清掉 go.sum 里的陈旧条目，让告警不再复现。**必须等新旧机器对照实验做完**——
+  该对照要求两台机器跑完全相同的代码，依赖一变对照就失去意义。
+  另注意 winbox-wsl 出站网络几乎全被 reset（见下），tidy 若需下载会当场失败，
+  应在本地 Mac 上执行后再 rsync 过去。
 
 ## 待建设
 
