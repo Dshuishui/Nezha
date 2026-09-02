@@ -97,6 +97,10 @@ var (
 	//
 	// AVP 是正交的一维，用 -inlinePlacement 叠加在上面任一系统上。
 	// 留空则回落到下面几个开关各自的取值，已有脚本不受影响。
+	// -vizAddr 给出监听地址才启动 AVP placement 可视化，默认不启动。
+	// 热路径上因此只多一次 atomic 加法，不影响实验测量。
+	vizAddr_arg = flag.String("vizAddr", "", "listen address for the AVP placement visualiser, e.g. :8080 (empty = disabled)")
+
 	system_arg = flag.String("system", "", "system under test: original | pasv | dwisckey | lsm-raft | nezha-nogc | nezha (empty = use the individual flags below)")
 
 	kvSeparation_arg = flag.Bool("kvSeparation", true, "keep values in the Raft log and store only offsets (false = baseline: values into RocksDB)")
@@ -2202,12 +2206,14 @@ func (kvs *KVServer) applyLoop() {
 						if kvs.inlinePlacement && len(op.Value) < kvs.inlineThreshold {
 							// 小值直接落在存储引擎里，不进 valuelog：读路径因此缩短为一次点查，
 							// 且 GC 无需再为它们做一次搬运。
+							recordPlacement(len(op.Value), true)
 							kvs.persister.PutInline(op.Key, op.Value)
 						} else if !kvs.kvSeparation {
 							// 基线：value 本身写进 RocksDB。于是同一份 value 被持久化两次
 							// （Raft 日志 + LSM），而后还要被 compaction 反复搬运。
 							kvs.persister.Put(op.Key, op.Value)
 						} else if op.FileVersion == int64(kvs.numGC) { // 对于写入日志时，又进行了 GC ，需将偏移量存新文件
+							recordPlacement(len(op.Value), false)
 							kvs.persister.Put_opt(op.Key, offset)
 						} else { // 否则存旧文件
 							kvs.oldPersister.Put_opt(op.Key, offset) //  Nezha
@@ -2319,16 +2325,6 @@ func main() {
 
 	// 使用用户指定的数据目录构建完整路径
 	InitialPersister := filepath.Join(dataDir, "data", "dbfile", "keyIndex")
-	_, err := kvs.persister.Init(InitialPersister, true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
-	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
-	}
-	kvs.startGC = false
-	kvs.endGC = false // 测试效果
-	kvs.numGC = 0
-	kvs.anotherStartGC = false
-	kvs.anotherEndGC = false
-	kvs.FirstGC = true
 	kvs.kvSeparation = *kvSeparation_arg
 	kvs.gcEnabled = true
 	// -system 覆盖 kvSeparation 与 gcEnabled；-inlinePlacement 不受影响，
@@ -2358,6 +2354,20 @@ func main() {
 	default:
 		log.Fatalf("unknown -system %q: want original, pasv, dwisckey, lsm-raft, nezha-nogc or nezha", *system_arg)
 	}
+	// 必须在 persister.Init 之前解析：PASV 靠 raft.SetDisableWAL 关掉存储引擎的
+	// 预写日志，而那个设置只在建库时读取一次。放在 Init 之后设置，库已经带着
+	// WAL 建好了，PASV 与 Original 会写出字节数完全相同的 WAL——实测两者
+	// 1920391 字节分毫不差，开关形同虚设。
+	_, err := kvs.persister.Init(InitialPersister, true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
+	if err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	kvs.startGC = false
+	kvs.endGC = false // 测试效果
+	kvs.numGC = 0
+	kvs.anotherStartGC = false
+	kvs.anotherEndGC = false
+	kvs.FirstGC = true
 	kvs.inlinePlacement = *inlinePlacement_arg
 	kvs.inlineThreshold = *inlineThreshold_arg
 	kvs.inlineCacheBytes = int64(*inlineCacheMB_arg) * 1024 * 1024
@@ -2380,6 +2390,8 @@ func main() {
 			systemName = "nezha-nogc(inferred)"
 		}
 	}
+	StartAVPViz(*vizAddr_arg, systemName, kvs.inlineThreshold)
+
 	fmt.Printf("[SYSTEM] %s | kvSeparation=%v gcEnabled=%v gcThresholdGB=%g extraPersistence=%v syncWAL=%v | inlinePlacement=%v inlineThreshold=%dB inlineCacheMB=%d\n",
 		systemName, kvs.kvSeparation, kvs.gcEnabled, kvs.gcThresholdGB,
 		kvs.extraPersistence, *syncWAL_arg,
