@@ -78,6 +78,27 @@ var (
 	// 关闭 = standard Raft + RocksDB 基线：value 随状态机写进 RocksDB，于是同一份
 	// value 被持久化两次（Raft 日志一次、LSM 一次），此后还要承受 compaction 反复重写。
 	// 论文把 460% 的写入优势归因于这个差异，做成开关才能量化"问题有多大"。
+	// -system 按论文的系统名选配置，免去手工拼开关。
+	//
+	// 三个系统此前只能靠参数组合区分，其中"跑不跑 GC"还是靠把 gcThresholdGB 设成
+	// 4000 这个高到永不触发的魔数来实现的。阈值一旦算错，测出来的就悄悄变成了另一
+	// 个系统，而结果里看不出任何异常。
+	//
+	//	original    Raft 日志 + RocksDB 存完整 value，value 落盘 3 次
+	//	            （Raft 日志、存储引擎 WAL、SSTable）
+	//	pasv        Original 去掉存储引擎的 WAL，消除双重日志；
+	//	            Raft 日志与 SSTable 的冗余仍在
+	//	dwisckey    KV 分离，但 value 在 Raft 日志之外还要再落一次盘，
+	//	            读路径与 nezha-nogc 相同；不做 GC
+	//	lsm-raft    差异全在 follower 侧（传输 compacted SSTable 而非日志条目），
+	//	            单节点下等价于 original，启动时会给出提示
+	//	nezha-nogc  KV 分离，Raft 日志兼任 valuelog，value 只落盘 1 次；不跑 GC
+	//	nezha       在此之上加与 Raft 日志耦合的 GC，把数据重组进排序文件
+	//
+	// AVP 是正交的一维，用 -inlinePlacement 叠加在上面任一系统上。
+	// 留空则回落到下面几个开关各自的取值，已有脚本不受影响。
+	system_arg = flag.String("system", "", "system under test: original | pasv | dwisckey | lsm-raft | nezha-nogc | nezha (empty = use the individual flags below)")
+
 	kvSeparation_arg = flag.Bool("kvSeparation", true, "keep values in the Raft log and store only offsets (false = baseline: values into RocksDB)")
 	// 真正的 Adaptive Value Placement：写入时按 value 大小决定放在哪里。
 	// 关闭时（默认）小值只是被额外缓存一份到内存，放置位置并未改变——
@@ -257,7 +278,14 @@ type KVServer struct {
 	lastGCFinish           bool
 
 	// AVP: adaptive value placement
-	kvSeparation     bool    // false 时退化为 standard Raft+RocksDB 基线
+	kvSeparation bool // false 时退化为 standard Raft+RocksDB 基线
+	// gcEnabled 把"要不要跑 GC"从阈值大小里分离出来。
+	// 原先只能靠调大 gcThresholdGB 让 GC 永不触发来模拟 Nezha-NoGC，
+	// 阈值算错就会静默变成另一个被测系统。
+	gcEnabled bool
+	// extraPersistence：每条写入在 Raft 日志之外再落一次盘，用于 dwisckey。
+	// 只写不读，读路径仍与 nezha-nogc 相同——两者的差别因此只剩那一次持久化。
+	extraPersistence bool
 	inlinePlacement  bool    // 写入时按大小分流放置，而非仅做读缓存
 	inlineThreshold  int     // values smaller than this (bytes) are eligible for the inline cache
 	inlineCacheBytes int64   // memory budget for each SortedFileIndex's inline cache
@@ -2302,6 +2330,34 @@ func main() {
 	kvs.anotherEndGC = false
 	kvs.FirstGC = true
 	kvs.kvSeparation = *kvSeparation_arg
+	kvs.gcEnabled = true
+	// -system 覆盖 kvSeparation 与 gcEnabled；-inlinePlacement 不受影响，
+	// 它是正交的一维，可叠加在任一系统上。
+	switch *system_arg {
+	case "":
+		// 未指定，沿用各开关自身的取值（含 gcThresholdGB 的原有语义）
+	case "original":
+		kvs.kvSeparation, kvs.gcEnabled = false, false
+	case "pasv":
+		kvs.kvSeparation, kvs.gcEnabled = false, false
+		raft.SetDisableWAL(true)
+	case "dwisckey":
+		kvs.kvSeparation, kvs.gcEnabled = true, false
+		kvs.extraPersistence = true
+	case "lsm-raft":
+		// follower 侧才有差异，单节点跑不出与 original 的区别。
+		kvs.kvSeparation, kvs.gcEnabled = false, false
+		if len(peers) <= 1 {
+			fmt.Println("[SYSTEM] 提示：lsm-raft 的差异全在 follower 侧，" +
+				"单节点下等价于 original，需多节点才有意义")
+		}
+	case "nezha-nogc":
+		kvs.kvSeparation, kvs.gcEnabled = true, false
+	case "nezha":
+		kvs.kvSeparation, kvs.gcEnabled = true, true
+	default:
+		log.Fatalf("unknown -system %q: want original, pasv, dwisckey, lsm-raft, nezha-nogc or nezha", *system_arg)
+	}
 	kvs.inlinePlacement = *inlinePlacement_arg
 	kvs.inlineThreshold = *inlineThreshold_arg
 	kvs.inlineCacheBytes = int64(*inlineCacheMB_arg) * 1024 * 1024
@@ -2309,6 +2365,25 @@ func main() {
 	StartAVPStatsReporter(15 * time.Second)
 	StartWriteStatsReporter(15 * time.Second)
 	kvs.gcThresholdGB = *gcThresholdGB_arg
+
+	// 把生效的配置打进日志开头。三个系统的差别全在这几个开关上，而开关又可以
+	// 来自 -system 或来自单独指定，日志里留下这一行，事后就能确认某份结果到底
+	// 测的是哪个系统，不必去比对当时的脚本。
+	systemName := *system_arg
+	if systemName == "" {
+		switch {
+		case !kvs.kvSeparation:
+			systemName = "original(inferred)"
+		case kvs.gcEnabled:
+			systemName = "nezha(inferred)"
+		default:
+			systemName = "nezha-nogc(inferred)"
+		}
+	}
+	fmt.Printf("[SYSTEM] %s | kvSeparation=%v gcEnabled=%v gcThresholdGB=%g extraPersistence=%v syncWAL=%v | inlinePlacement=%v inlineThreshold=%dB inlineCacheMB=%d\n",
+		systemName, kvs.kvSeparation, kvs.gcEnabled, kvs.gcThresholdGB,
+		kvs.extraPersistence, *syncWAL_arg,
+		kvs.inlinePlacement, kvs.inlineThreshold, *inlineCacheMB_arg)
 	kvs.indexBlockBytes = int64(*indexBlockKB_arg) * 1024
 
 	// 初始化存储value的文件，使用用户指定的数据目录
@@ -2340,6 +2415,10 @@ func main() {
 				continue
 			}
 
+			if !kvs.gcEnabled {
+				// Nezha-NoGC：只做 KV 分离，不回收 valuelog。
+				continue
+			}
 			if !kvs.kvSeparation {
 				// 基线（standard Raft+RocksDB）没有 valuelog，也就没有垃圾要回收。
 				// 让它走 GC 会当场出错：RocksDB 里存的是裸 value，GC 却按偏移记录
@@ -2456,6 +2535,14 @@ func main() {
 
 	wg.Add(1 + 1)
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
+	if kvs.extraPersistence {
+		// Dwisckey：value 在 Raft 日志之外再落一次盘。文件与 valuelog 同目录，
+		// 只写不读，纯粹为了把那一次持久化的代价计入测量。
+		extraPath := filepath.Join(dataDir, "data", "valuelog", "dwisckey_extra.log")
+		if err := kvs.raft.EnableExtraPersistence(extraPath); err != nil {
+			log.Fatalf("启用 dwisckey 的第二份持久化失败：%v", err)
+		}
+	}
 	// 必须在 raft.Make 之后：此前放在 flag 解析处会对 nil 指针调用而 panic。
 	kvs.raft.SetSyncOnWrite(*syncWAL_arg)
 	if *groupCommitUs_arg > 0 {
