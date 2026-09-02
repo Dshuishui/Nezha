@@ -32,8 +32,14 @@ var (
 	// SCAN 都在扫全库，测的是"顺序读整个数据集有多快"，而不是 range query。
 	// 稀疏索引的价值（二分定位 + 块内顺序扫）在全库扫描下被完全稀释。
 	// 论文 Fig.7 用的是 10/100/1000/10000 四档，这里做成参数以便对齐。
-	gapkeyArg  = flag.Int("gapkey", 1000, "scan length: number of keys per range query")
-	outputFile = flag.String("output", "scan_benchmark_results.txt", "输出结果文件名")
+	gapkeyArg = flag.Int("gapkey", 1000, "scan length: number of keys per range query")
+	// 扫描起点的采样上界，应设为实际写入的记录数。
+	// 原先写死为 370000 且与实际写入量无关，两头都出错：写入多于该值时高位数据
+	// 永远扫不到；写入少于该值时起点会落在没有数据的区间，range query 返回空，
+	// 于是 goodPut 归零、吞吐算出 NaN。这与 zipf_read 早先 keyspace 默认 1 亿
+	// 是同一类错误——读的键空间必须等于实际写入量。
+	keyspaceArg = flag.Int("keyspace", 370000, "扫描起点的采样上界；应设为实际写入的记录数")
+	outputFile  = flag.String("output", "scan_benchmark_results.txt", "输出结果文件名")
 	// 每轮都要扫遍整个数据集，耗时随数据量线性增长：50 万 key 时一轮约 30s，
 	// 300 万 key 时一轮 3 分钟以上，跑满 100 轮就是 5 小时以上。
 	// 默认值保持 100 不变，已有实验数据的口径不受影响；
@@ -101,7 +107,13 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 			// var totalActualLatency time.Duration
 
 			for j := 0; j < base; j++ {
-				k1 := rand.Intn(370000) // 略小于目标范围
+				// 起点上界要留出一个 gapkey，否则区间尾部越过数据末端，
+				// 扫回来的条数比 gapkey 少，吞吐被系统性低估。
+				upper := *keyspaceArg - gapkey
+				if upper < 1 {
+					upper = 1
+				}
+				k1 := rand.Intn(upper)
 				// k1 := (i*base + j) * gapkey
 				k2 := k1 + gapkey - 1
 				startKey := strconv.Itoa(k1)
@@ -191,7 +203,13 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 	kvc.valuesize = valueSize
 
 	avgLatency := totalAvgLatency / time.Duration(*cnums)
-	throughput := totalData / maxDuration.Seconds()
+	// maxDuration 为零意味着这一轮没有任何一次 range query 返回数据——除下去得到
+	// NaN，再被后续的平均值传染，整份汇总就都成了 NaN。把这种轮次记为 0 吞吐，
+	// 汇总里才看得出"有几轮扫空了"，而不是整列不可用。
+	var throughput float64
+	if maxDuration.Seconds() > 0 {
+		throughput = totalData / maxDuration.Seconds()
+	}
 
 	// 计算ops
 	// throughput = (float64(totalScanCount)*float64(valueSize) / 1000000) / maxDuration.Seconds()
