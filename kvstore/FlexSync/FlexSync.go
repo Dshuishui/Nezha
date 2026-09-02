@@ -357,14 +357,31 @@ func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeReq
 	// return reply, nil
 }
 
+// scanResult carries one branch's partial scan output together with its error.
+type scanResult struct {
+	data map[string]string
+	err  error
+}
+
+// scanResultOf converts a StartScan_opt reply into a scanResult.
+//
+// Every caller used to hard-code `err: nil` and drop reply.Err on the floor, so a
+// failed scan was indistinguishable from a scan that legitimately matched nothing:
+// the caller merged an empty map and reported success. That is how the broken
+// scanNewFile decoding stayed hidden for so long — it returned no rows and no error.
+func scanResultOf(reply *kvrpc.ScanRangeResponse) scanResult {
+	if reply == nil {
+		return scanResult{err: errors.New("scan returned no reply")}
+	}
+	if reply.Err != raft.OK {
+		return scanResult{err: fmt.Errorf("scan failed: %s", reply.Err)}
+	}
+	return scanResult{data: reply.KeyValuePairs}
+}
+
 func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, error) {
 	var wg sync.WaitGroup
 	wg.Add(2)
-
-	type scanResult struct {
-		data map[string]string
-		err  error
-	}
 
 	oldChan := make(chan scanResult, 1)
 	sortedChan := make(chan scanResult, 1)
@@ -385,7 +402,7 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 				StartKey: startKey,
 				EndKey:   endKey,
 			}, kvs.persister, kvs.currentLog)
-			oldChan <- scanResult{data: result.KeyValuePairs, err: nil}
+			oldChan <- scanResultOf(result)
 		}()
 
 		wg.Wait()
@@ -422,7 +439,7 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 				StartKey: startKey,
 				EndKey:   endKey,
 			}, kvs.oldPersister, kvs.oldLog)
-			oldChan <- scanResult{data: result.KeyValuePairs, err: nil}
+			oldChan <- scanResultOf(result)
 		}()
 
 		// 查询已排序文件
@@ -439,7 +456,7 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 				StartKey: startKey,
 				EndKey:   endKey,
 			}, kvs.persister, kvs.currentLog)
-			newChan <- scanResult{data: result.KeyValuePairs, err: nil}
+			newChan <- scanResultOf(result)
 		}()
 
 		wg.Wait()
@@ -493,7 +510,7 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 				StartKey: startKey,
 				EndKey:   endKey,
 			}, kvs.persister, kvs.currentLog)
-			newChan <- scanResult{data: result.KeyValuePairs, err: nil}
+			newChan <- scanResultOf(result)
 		}()
 
 		wg.Wait()
@@ -526,11 +543,6 @@ func (kvs *KVServer) firstGCScan(startKey, endKey string) (map[string]string, er
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	type scanResult struct {
-		data map[string]string
-		err  error
-	}
-
 	sortedChan := make(chan scanResult, 1)
 	newChan := make(chan scanResult, 1)
 
@@ -539,7 +551,7 @@ func (kvs *KVServer) firstGCScan(startKey, endKey string) (map[string]string, er
 		go func() {
 			defer wg.Done()
 			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.oldPersister, kvs.oldLog)
-			sortedChan <- scanResult{data: result.KeyValuePairs, err: nil}
+			sortedChan <- scanResultOf(result)
 		}()
 
 		// 并发查询新文件
@@ -550,7 +562,7 @@ func (kvs *KVServer) firstGCScan(startKey, endKey string) (map[string]string, er
 			//     newChan <- scanResult{data: nil, err: err}
 			//     return
 			// }
-			newChan <- scanResult{data: result.KeyValuePairs, err: nil}
+			newChan <- scanResultOf(result)
 		}()
 	}
 	if kvs.startGC && kvs.endGC {
@@ -569,7 +581,7 @@ func (kvs *KVServer) firstGCScan(startKey, endKey string) (map[string]string, er
 			//     newChan <- scanResult{data: nil, err: err}
 			//     return
 			// }
-			newChan <- scanResult{data: result.KeyValuePairs, err: nil}
+			newChan <- scanResultOf(result)
 		}()
 	}
 	if !kvs.startGC {
@@ -577,7 +589,7 @@ func (kvs *KVServer) firstGCScan(startKey, endKey string) (map[string]string, er
 		go func() {
 			defer wg.Done()
 			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister, kvs.currentLog)
-			sortedChan <- scanResult{data: result.KeyValuePairs, err: nil}
+			sortedChan <- scanResultOf(result)
 		}()
 		wg.Done()
 		wg.Wait()
