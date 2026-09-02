@@ -39,6 +39,8 @@ var (
 	// 默认值保持 100 不变，已有实验数据的口径不受影响；
 	// 大数据集下用这个 flag 把轮数降到能在合理时间内跑完。
 	numTestsFlag = flag.Int("tests", 100, "测试轮数（结果取各轮平均）")
+	// 轮间静置。原先固定 5 秒，100 轮即 500 秒纯等待，而每轮扫描往往只要几毫秒。
+	restSecFlag = flag.Int("rest", 5, "轮间静置秒数，让系统状态回稳")
 )
 
 type KVClient struct {
@@ -406,7 +408,9 @@ func main() {
 			i+1, elapsedTime, throughput, avgLatency, *dnums, kvc.goodPut, *cnums, kvc.valuesize, sum_Size_MB)
 
 		if i < numTests-1 {
-			time.Sleep(5 * time.Second)
+			if *restSecFlag > 0 {
+				time.Sleep(time.Duration(*restSecFlag) * time.Second)
+			}
 		}
 	}
 
