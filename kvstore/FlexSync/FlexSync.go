@@ -236,10 +236,20 @@ type KVServer struct {
 	sortedFileCache *lru.Cache // 用于缓存key到offset的映射
 
 	// multiGC
-	numGC                  int
-	FirstGC                bool
-	anotherStartGC         bool
-	anotherEndGC           bool
+	numGC          int
+	FirstGC        bool
+	anotherStartGC bool
+	anotherEndGC   bool
+	// switchedPersister 记住已经切换上去的存储引擎实例。
+	//
+	// 一轮 GC 由"切换"和"搬运"两步组成，切换会把 numGC 推进一格并按新的序号建库。
+	// 搬运若失败，这两个副作用已经发生：下一周期重试时又走一遍建库，路径名却基于
+	// 已经增过的 numGC，于是撞上上次留下的那个库，报 lock hold by current process
+	// —— GC 一旦失败，之后每次重试都必然失败。
+	//
+	// 记住这个实例，重试时便可跳过切换直接重做搬运。之所以不回滚，是因为切换之后
+	// 落到新库的写入不能丢。
+	switchedPersister      *raft.Persister
 	anotherSortedFilePath  string // 用于存储已排序文件的位置
 	anothersortedFileIndex *SortedFileIndex
 	lastSortedFileIndex    *SortedFileIndex
