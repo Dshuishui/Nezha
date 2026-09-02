@@ -88,6 +88,13 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	fmt.Printf("Starting garbage collection... -- another %v\n", kvs.numGC+1)
 	startTime := time.Now()
 
+	// 切换只做一次。上一轮搬运若失败，切换的副作用（numGC 已推进、新库已挂上）
+	// 仍然留着；此时重做切换会按已增过的序号再建一次库，撞上上次那个还开着的实例。
+	if kvs.anotherStartGC && !kvs.anotherEndGC && kvs.switchedPersister != nil {
+		fmt.Println("检测到上一轮切换已完成但搬运未结束，跳过切换直接重做搬运")
+		return kvs.mergeIntoSortedFile(startTime)
+	}
+
 	// 创建新的RocksDB实例===========
 	persister_new, err := kvs.NewPersister() // 创建一个新的用于保存key和index的persister
 	if err != nil {
@@ -117,7 +124,15 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 
 	// 切换到新的文件和RocksDB
 	kvs.AnotherSwitchToNewFiles(anotherNewRaftStateLogPath, newPersister)
+	kvs.switchedPersister = newPersister
 
+	return kvs.mergeIntoSortedFile(startTime)
+}
+
+// mergeIntoSortedFile 把旧库里的记录合并进新的排序文件。
+// 从 MergedGarbageCollection 拆出来，好让搬运失败后的重试能直接重入这一步，
+// 而不必再走一遍已经生效的切换。
+func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 	// Create a temporary file for the merged sorted entries  1
 	mergedSortedFilePath := fmt.Sprintf("%s_merged_%d", kvs.lastSortedFileIndex.FilePath, kvs.numGC)
 	kvs.anotherSortedFilePath = mergedSortedFilePath
@@ -303,6 +318,7 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	fmt.Println("创建文件描述符池成功")
 
 	kvs.anotherEndGC = true
+	kvs.switchedPersister = nil // 本轮已完整结束，重入标记随之作废
 
 	fmt.Printf("Merged garbage collection completed in %v - round %v, processed %d entries\n",
 		time.Since(startTime), kvs.numGC, writeCount)
