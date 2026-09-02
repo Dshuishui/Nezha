@@ -134,6 +134,23 @@ type Raft struct {
 	// 句柄常驻后每条只剩 Write + Flush。持久化语义不变：仍是每批写完立刻 Flush，
 	// 且原本就没有 fsync，本改动不触碰崩溃一致性。
 	// group commit：攒批共用一次写入与一次 fsync，见 groupcommit.go
+	// commitSignal 唤醒 commitIndexUpdateLoop。
+	//
+	// 该循环原先只靠每 10ms 一次的轮询推进 commitIndex。单节点下没有 follower、
+	// 不走日志复制，commitIndex 便完全由这个定时器驱动：一条日志写完后要等它
+	// 醒来才可能被提交，之后才轮到 apply。这是写入延迟里最大的一段固定开销，
+	// 实测单客户端 p50 恰好贴在 10ms 上。
+	commitSignal chan struct{}
+
+	// applySignal 唤醒 applyLogLoop。
+	//
+	// 那个循环原先空转时睡 10ms 再查一遍 commitIndex，于是一条已经提交的日志
+	// 最多干等 10ms 才被应用——实测单客户端下写日志只要 1.05ms 而等 apply
+	// 达 14.48ms，这段固定延迟就是它。
+	//
+	// 容量 1 且非阻塞发送：信号只表示"有活干"，多次提交合并成一次唤醒即可。
+	applySignal chan struct{}
+
 	batchMu     sync.Mutex
 	curBatch    *flushBatch
 	flushSignal chan struct{}
@@ -806,6 +823,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			if rf.lastIndex() < rf.commitIndex { // 感觉，不存在这种情况，走到这里基本都是日志与leader一样了，怎么还会索引比commitindex小
 				rf.commitIndex = rf.lastIndex()
 			}
+			rf.signalApply()
 		}
 		return reply, nil
 	}
@@ -922,6 +940,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		if rf.lastIndex() < rf.commitIndex { // 感觉，不存在这种情况，走到这里基本都是日志与leader一样了，怎么还会索引比commitindex小
 			rf.commitIndex = rf.lastIndex()
 		}
+		rf.signalApply()
 	}
 	reply.Success = true
 	return reply, nil
@@ -1034,6 +1053,10 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// }
 	rf.log = append(rf.log, &logEntry) // 确保日志落盘之后，再更新log
 	rf.mu.Unlock()
+
+	// 立刻叫醒提交检查，不必等它下一次轮询。单节点下 commitIndex 只由那个
+	// 循环推进，纯轮询意味着每条日志平均要多等 5ms 才可能被提交。
+	rf.signalCommit()
 
 	// 攒批模式下在锁外等待本批落盘：Start 依旧在日志持久化之后才返回，
 	// 但等待磁盘的时间不再占着 rf.mu，其余请求可以继续进来凑同一批。
@@ -1395,6 +1418,7 @@ func (rf *Raft) updateCommitIndex() {
 	// fmt.Printf("此时log的长度：%v以及newcommitindex的值：%v\n",len(rf.log),newCommitIndex)
 	if newCommitIndex > rf.commitIndex && rf.termAt(newCommitIndex) == int32(rf.currentTerm) {
 		rf.commitIndex = newCommitIndex // 保证是当前的Term才能根据同步到server的副本数量判断是否可以提交
+		rf.signalApply()
 		// fmt.Println("上任空包被提交了")	// 提交了的，因为虽然是空包，但是也赋予了当前任期，满足提交条件
 	}
 	// util.DPrintf("RaftNode[%d] updateCommitIndex, newCommitIndex[%d] matchIndex[%v]", rf.me, rf.commitIndex, sortedMatchIndex)
@@ -1913,19 +1937,42 @@ func (rf *Raft) appendEntriesLoop() {
 // 	}
 // }
 
+// maxApplyBatch 限制一次持锁期间取走多少条待应用的日志。
+// 取太小则锁开销摊不薄，取太大则一次持锁时间过长、反过来挡住写入路径。
+const maxApplyBatch = 64
+
+// signalApply 通知 applyLogLoop 有新提交。调用方须持有 rf.mu。
+// 非阻塞：信号只表示"有活干"，多次提交合并成一次唤醒即可。
+func (rf *Raft) signalApply() {
+	select {
+	case rf.applySignal <- struct{}{}:
+	default:
+	}
+}
+
+// applyLogLoop 把已提交的日志送往上层状态机。
+//
+// 此前的写法有三处会直接压住写入延迟：
+//
+//  1. 没有待应用日志时 time.Sleep(10ms) 再重新检查。一条刚提交的日志因此最多
+//     干等 10ms——实测单客户端下写日志 1.05ms、等 apply 14.48ms，就是它。
+//  2. 一次循环只应用一条，每条都完整 Lock/Unlock 一次 rf.mu，而那正是
+//     raft.Start 写日志时持有的锁。
+//  3. 往 applyCh 发送是在持锁状态下做的，而该通道容量仅为 3。上层稍慢，
+//     这里就持锁阻塞，所有 raft.Start 一并卡住。
+//
+// 改为：等信号而非轮询；一次持锁取走一批；发送在锁外进行。
+// 应用顺序仍严格按 index 递增——批内保持取出顺序，批间由 lastApplied 串联。
 func (rf *Raft) applyLogLoop() {
-	noMore := false
+	batch := make([]ApplyMsg, 0, maxApplyBatch)
 	for !rf.killed() {
-		if noMore {
-			time.Sleep(10 * time.Millisecond)
-			// fmt.Println("commitindex不够")
-		}
+		batch = batch[:0]
+
 		func() {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
 
-			noMore = true
-			if rf.commitIndex > rf.lastApplied {
+			for len(batch) < maxApplyBatch && rf.commitIndex > rf.lastApplied {
 				nextApplied := rf.lastApplied + 1
 				appliedIndex := rf.index2LogPos(nextApplied)
 				if appliedIndex < 0 || appliedIndex >= len(rf.log) {
@@ -1937,48 +1984,56 @@ func (rf *Raft) applyLogLoop() {
 				cmd := rf.log[appliedIndex].Command
 
 				if cmd.OpType == "TermLog" {
-					// TermLog has no valuelog entry, so don't consume an Offset slot.
-					// Advance shotOffset to keep the realIndex formula correct for subsequent entries.
+					// TermLog 在 valuelog 里没有对应条目，不消费 Offset 槽位。
+					// 仍要推进 shotOffset，后续条目的 realIndex 才算得对。
 					rf.lastApplied = nextApplied
 					rf.shotOffset++
-					rf.applyCh <- ApplyMsg{
+					batch = append(batch, ApplyMsg{
 						CommandValid: true,
 						Command:      cmd,
 						CommandIndex: nextApplied,
 						CommandTerm:  int(rf.log[appliedIndex].Term),
 						Offset:       0,
-					}
-					noMore = false
-				} else if (rf.lastApplied - rf.shotOffset) < len(rf.Offsets) {
-					rf.lastApplied = nextApplied
-					realIndex := rf.lastApplied - rf.shotOffset
-					appliedMsg := ApplyMsg{
-						CommandValid: true,
-						Command:      cmd,
-						CommandIndex: rf.lastApplied,
-						CommandTerm:  int(rf.log[appliedIndex].Term),
-						Offset:       rf.Offsets[realIndex-1],
-					}
-					rf.applyCh <- appliedMsg
-					rf.Offsets = rf.Offsets[1:]
-					rf.shotOffset++
-					if rf.Gap > 0 && rf.lastApplied%rf.Gap == 0 {
-						util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, len(rf.Offsets))
-					}
-					noMore = false
+					})
+					continue
+				}
+
+				if (rf.lastApplied - rf.shotOffset) >= len(rf.Offsets) {
+					// 偏移还没写进来，等下一轮
+					return
+				}
+				rf.lastApplied = nextApplied
+				realIndex := rf.lastApplied - rf.shotOffset
+				batch = append(batch, ApplyMsg{
+					CommandValid: true,
+					Command:      cmd,
+					CommandIndex: rf.lastApplied,
+					CommandTerm:  int(rf.log[appliedIndex].Term),
+					Offset:       rf.Offsets[realIndex-1],
+				})
+				rf.Offsets = rf.Offsets[1:]
+				rf.shotOffset++
+				if rf.Gap > 0 && rf.lastApplied%rf.Gap == 0 {
+					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, len(rf.Offsets))
 				}
 			}
 		}()
-		//		设置一个定时器，每十秒检查一次条件
-		// ticker := time.NewTicker(3 * time.Second)
-		// // defer ticker.Stop()
-		// go func() {
-		// 	for range ticker.C {
-		// 		if !noMore{
-		// 			fmt.Println("Raft层还在传输数据给上层server")
-		// 		}
-		// 	}
-		// }()
+
+		if len(batch) == 0 {
+			// 没有待应用的日志，等提交端唤醒。
+			// 仍留一个兜底超时：信号在极端时序下可能与这里的检查错开，
+			// 有它就不会永久睡死，代价只是空转一次。
+			select {
+			case <-rf.applySignal:
+			case <-time.After(10 * time.Millisecond):
+			}
+			continue
+		}
+
+		// 锁外发送：applyCh 容量很小，持锁发送会把写入路径一起堵住。
+		for i := range batch {
+			rf.applyCh <- batch[i]
+		}
 	}
 }
 
@@ -2123,9 +2178,29 @@ func (rf *Raft) termAt(index int) int32 {
 	return rf.log[pos].Term
 }
 
+// signalCommit 通知 commitIndexUpdateLoop 有新日志待提交。
+// 非阻塞，多次追加合并成一次唤醒。
+func (rf *Raft) signalCommit() {
+	select {
+	case rf.commitSignal <- struct{}{}:
+	default:
+	}
+}
+
+// commitIndexUpdateLoop 推进 commitIndex。
+//
+// 原先纯靠每 10ms 一次的轮询。单节点下没有 follower、不走日志复制，
+// commitIndex 完全由这个定时器驱动，于是一条刚写完的日志平均要等 5ms、
+// 最多 10ms 才被提交——写入延迟里最大的一段固定开销。
+//
+// 改为等 raft.Start 的信号。保留 10ms 兜底：follower 的 matchIndex 是由
+// 复制流程在别处推进的，那条路径不发信号，靠轮询兜住。
 func (rf *Raft) commitIndexUpdateLoop() {
 	for !rf.killed() {
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-rf.commitSignal:
+		case <-time.After(10 * time.Millisecond):
+		}
 
 		rf.mu.Lock()
 		if rf.role == ROLE_LEADER {
@@ -2151,6 +2226,8 @@ func Make(peers []string, me int,
 	rf.votedFor = -1
 	rf.lastActiveTime = time.Now()
 	rf.applyCh = applyCh
+	rf.applySignal = make(chan struct{}, 1)
+	rf.commitSignal = make(chan struct{}, 1)
 	// rf.SetOriginalLog("originalKvs.log")
 	// 这里曾经 append 过一个哨兵 0，靠 index=1 的 TermLog 把它消费掉来对齐偏移量。
 	// 该方案只对第一个 TermLog 成立：每次重新选主都会产生新的 TermLog，第二个就会吃掉一个
