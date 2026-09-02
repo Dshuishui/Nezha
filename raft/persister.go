@@ -69,6 +69,15 @@ func (p *Persister) UnpadKey(paddedKey string) string {
 	return unpadded
 }
 
+// disableWAL 关掉存储引擎自己的预写日志，供 PASV 使用。
+//
+// 设成包级而非 Init 的参数，是因为 GC 期间还会新建存储引擎实例——那些实例必须
+// 继承同样的设置，否则一轮 GC 之后 PASV 会悄悄变回 Original。
+var disableWAL bool
+
+// SetDisableWAL 必须在任何 Init 之前调用。
+func SetDisableWAL(v bool) { disableWAL = v }
+
 func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
 	var err error
 	bbto := grocksdb.NewDefaultBlockBasedTableOptions()
@@ -95,7 +104,12 @@ func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
 	}
 
 	p.wo = grocksdb.NewDefaultWriteOptions()
-	// p.wo.DisableWAL(true)  // pasv 这里添加，关闭 WAL
+	// PASV 的做法：去掉存储引擎自己的 WAL，消除"Raft 日志 + 存储引擎 WAL"这层
+	// 双重日志。Raft 日志与 SSTable 的冗余仍在，所以它相对 Original 只有有限的
+	// 改善（论文实测 +26.5%）。
+	if disableWAL {
+		p.wo.DisableWAL(true)
+	}
 	p.ro = grocksdb.NewDefaultReadOptions()
 
 	if disableCache {
