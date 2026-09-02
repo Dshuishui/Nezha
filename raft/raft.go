@@ -150,6 +150,16 @@ type Raft struct {
 	// 单次 fsync 在 NVMe 上 50~200μs、SATA SSD 或机械盘 0.5~10ms，届时持久化成本
 	// 成为主导项，"把两次持久化合成一次"的价值才显现出来。
 	syncOnWrite bool
+	// extraLog 是 Dwisckey 的第二份持久化副本。
+	//
+	// Nezha 让 Raft 日志兼任 valuelog，value 只落盘一次；Dwisckey 那类系统在
+	// Raft 日志之外还要把 value 再写进自己的 valuelog，于是每条写入多一次落盘。
+	// 论文里 Nezha 相对它的优势正是这一次。
+	//
+	// 这份副本只制造持久化开销，不参与读路径——读仍按 Raft 日志的偏移取值，
+	// 与 nezha-nogc 完全一致。这样两者的差别就只剩那一次写，对比不掺别的因素。
+	extraLogFile   *os.File
+	extraLogWriter *bufio.Writer
 
 	// logMu 单独保护下面三个字段，不复用 rf.mu：GC 在自己的 goroutine 里调用
 	// SetCurrentLog 切换日志文件，而那条路径上并不持有 rf.mu。句柄常驻之后，
@@ -195,6 +205,22 @@ func (rf *Raft) openLogFile(filename string) error {
 }
 
 // CloseLogFile 刷净缓冲并释放句柄。
+// EnableExtraPersistence 打开第二份持久化副本，用于模拟 Dwisckey。
+//
+// 只写不读：它存在的意义是把"每条写入多落一次盘"这个代价计入测量，
+// 读路径不受影响，仍走 Raft 日志的偏移。
+func (rf *Raft) EnableExtraPersistence(path string) error {
+	rf.logMu.Lock()
+	defer rf.logMu.Unlock()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		return err
+	}
+	rf.extraLogFile = f
+	rf.extraLogWriter = bufio.NewWriterSize(f, 1<<20)
+	return nil
+}
+
 func (rf *Raft) CloseLogFile() {
 	rf.logMu.Lock()
 	defer rf.logMu.Unlock()
@@ -335,6 +361,14 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 			log.Fatalf("写入存储Raft日志的磁盘文件失败：%v", err)
 		}
 
+		// 同一份编码结果再落一次盘，供 Dwisckey 使用。写入相同的字节数，
+		// 落盘代价才与真实的第二份 valuelog 相当。
+		if rf.extraLogWriter != nil {
+			if _, werr := rf.extraLogWriter.Write(data); werr != nil {
+				log.Fatalf("写入第二份日志失败：%v", werr)
+			}
+		}
+
 		// _, err = file.Write(data)
 		// if err != nil {
 		// 	fmt.Println("写入存储Raft日志的磁盘文件有问题")
@@ -353,6 +387,18 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 	if rf.syncOnWrite {
 		if err = rf.logFile.Sync(); err != nil {
 			log.Fatalf("日志落盘（fsync）失败：%v", err)
+		}
+	}
+	// Dwisckey 的第二次落盘。与主日志同在 logMu 之内、用同样的 fsync 语义，
+	// 否则"多一次持久化"的代价就测不准。
+	if rf.extraLogWriter != nil {
+		if err = rf.extraLogWriter.Flush(); err != nil {
+			log.Fatalf("刷新第二份日志缓冲区失败：%v", err)
+		}
+		if rf.syncOnWrite {
+			if err = rf.extraLogFile.Sync(); err != nil {
+				log.Fatalf("第二份日志落盘（fsync）失败：%v", err)
+			}
 		}
 	}
 	if startPos == 0 {
