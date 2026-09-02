@@ -76,6 +76,13 @@ const (
 // 100 万条与写 500 万条的命中率没有可比性，每次实验的口径都在漂。
 var keyspace = flag.Int("keyspace", DEFAULT_KEY_SPACE, "读取采样的键空间；应设为实际写入的记录数")
 
+// 测试轮数与轮间静置时长。原先轮数写死 100、轮间固定 sleep 5 秒，于是一次
+// GET 测量至少要 500 秒纯等待——而每轮实际只跑 100 毫秒左右。批量扫参数时
+// 这项开销会主导整个实验的耗时。
+// 默认值保持原样（100 轮 / 5 秒），已有实验数据的口径不受影响。
+var numTestsFlag = flag.Int("tests", 100, "测试轮数（结果取各轮平均）")
+var restSecFlag = flag.Int("rest", 5, "轮间静置秒数，让系统状态回稳")
+
 func (kvc *KVClient) randRead() (float64, time.Duration) {
 	wg := sync.WaitGroup{}
 	base := *dnums / *cnums
@@ -424,7 +431,7 @@ func runTest(testNumber int, filePath string) (float64, time.Duration) {
 
 func main() {
 	flag.Parse()
-	numTests := 100
+	numTests := *numTestsFlag
 	var totalThroughput float64
 	var totalAverageLatency time.Duration
 
@@ -450,8 +457,10 @@ func main() {
 		totalAverageLatency += averageLatency
 
 		if i < numTests-1 {
-			fmt.Println("等待5秒后进行下一次测试...")
-			time.Sleep(5 * time.Second)
+			if *restSecFlag > 0 {
+				fmt.Printf("等待%d秒后进行下一次测试...\n", *restSecFlag)
+				time.Sleep(time.Duration(*restSecFlag) * time.Second)
+			}
 		}
 	}
 
