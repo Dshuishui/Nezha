@@ -2300,7 +2300,10 @@ func main() {
 	kvs := MakeKVServer(address, internalAddress, peers)
 
 	// Raft层
-	kvs.applyCh = make(chan raft.ApplyMsg, 3) // 至少1个容量，启动后初始化snapshot用
+	// 容量要能容下 applyLogLoop 一次取走的一批（maxApplyBatch=64），再留些余量。
+	// 原先是 3：applyLogLoop 持锁往里发，通道一满就持锁阻塞，把所有 raft.Start
+	// 一起堵住——发送已改到锁外，但容量太小仍会让两端频繁互等。
+	kvs.applyCh = make(chan raft.ApplyMsg, 256)
 	kvs.me = FindIndexInPeers(peers, internalAddress)
 	// persisterRaft := &raft.Persister{} // 初始化对Raft进行持久化操作的指针
 	kvs.reqMap = make(map[int]*OpContext)
