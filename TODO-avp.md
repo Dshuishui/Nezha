@@ -214,6 +214,45 @@ goroutine，谁连吃两次超时谁就把墙钟拖长。那个分簇是九轮�
     主流场景"，AVP 优化的不是假想问题。这比任何合成负载都有说服力，但必须核实，
     不能凭印象写进论文。
 
+## 🎛 被测系统的选择（`-system`）
+
+论文比较的六个配置现在各由一个参数选中，节点启动时打印生效配置，
+结果文件因此能追溯到系统，不必回查当时的脚本：
+
+    -system=original     value 完整写 RocksDB；value 落盘 3 次
+                         （Raft 日志、存储引擎 WAL、SSTable）
+    -system=pasv         original 去掉存储引擎的 WAL
+    -system=dwisckey     KV 分离，但每条 value 在 Raft 日志之外再落一次盘；
+                         读路径与 nezha-nogc 完全相同；不做 GC
+    -system=lsm-raft     差异全在 follower 侧，单节点等价 original（启动时提示）
+    -system=nezha-nogc   Raft 日志兼任 valuelog，value 只落盘 1 次；不跑 GC
+    -system=nezha        在此之上加与 Raft 日志耦合的 GC
+
+AVP 正交叠加：`-system=nezha -inlinePlacement`。
+
+**必须开 `-syncWAL`**：不 fsync 时两次写入都只是 memcpy 到 page cache，
+"Nezha 比 Dwisckey 少一次持久化"这个核心论点根本测不出来。
+实测 20000 条 × 64B：dwisckey 20.4ms → 37.4ms（+83%），差异全部来自那次多余的 fsync。
+
+**此前的隐患**：GC 跑不跑是靠把 gcThresholdGB 设成 4000（高到永不触发）来控制的，
+阈值按数据量算错就会静默变成另一个被测系统，而结果里看不出任何异常。
+现已分离为独立的 gcEnabled 字段。
+
+### 尚未实现
+
+- **TiKV**：外部系统，需单独部署。测试时记录副本数、`sync-log`、RocksDB 参数，
+  否则与我们的数字不可比。
+- **lsm-raft 的真实实现**：现在只是占位（等价 original + 提示）。它要传输
+  compacted SSTable 而非细粒度日志条目、并在 follower 侧做 KV 分离，
+  必须多节点才有意义。
+
+### 待查
+
+- **PASV 与 original 几乎无差异**（0.0615 vs 0.0623 MB/S）。论文实测 PASV 比
+  Original 快 26.5%，我们测不出来。可能是写入瓶颈不在 RocksDB——实测 PUT 的
+  98% 时间花在等 apply，RocksDB 写入只占 0.03ms，关掉 WAL 省下的那点被淹没了。
+  需要确认 DisableWAL 是否真的生效（比如对比 RocksDB 目录里有无 .log 文件）。
+
 ## 待补实验
 
 ### 优先级 1：论文主表（进行中）
