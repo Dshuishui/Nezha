@@ -240,16 +240,19 @@ func (kvs *KVServer) ReadEntryAtIndex(file *os.File, index int64) (*raft.Entry, 
 	}
 	reader := bufio.NewReader(file)
 
-	// 既然有一个规律，follower的偏移量统一比leader的偏移量小一个vsize的距离，那就手动补充这个差值
-	// 具体问题有时间再去解决，问题的位置应该就是发生在raft层面向服务器层传输偏移量的那里
-	if kvs.raft.GetLeaderId() == int32(kvs.me) {
-		return ReadEntry(reader, index)
-	}
-	// indexCorrct := index+int64(kvs.valueSize)
-	// return ReadEntry(reader, indexCorrct) // 暂时给64000
-	return ReadEntry(reader, index+64000) // 暂时给64000
-
-	// 如果GC成功证明是这个问题，那就改为拿到客户端的值后，判断value的大小，自动计算value大小并且补上差值
+	// 偏移在 leader 与 follower 上是同一套语义，不需要按角色区分。
+	//
+	// 此前这里对 follower 额外加了 64000 字节，注释说"follower 的偏移量统一比
+	// leader 小一个 vsize"。真正的原因是日志文件当时用 O_APPEND 打开：POSIX 规定
+	// 该模式下每次写入前偏移强制设为文件末尾，Seek 对写入位置完全无效，而 follower
+	// 处理冲突日志走的正是"Seek 回退再覆盖"这条路——覆盖于是静默变成追加，文件
+	// 末尾多出一条记录，后续偏移全部错位。O_APPEND 已改掉（O_CREATE|O_WRONLY，
+	// 写入位置由 logOffset 自行维护），这个补偿也就没有意义了。
+	//
+	// 补偿本身还是个 bug：64000 是当年那次实验的 value 大小，写死在这里。两节点
+	// 实测 value=1024 时，follower 的 GC 报 "failed to read entry at index
+	// 10985842: EOF"，正是真实偏移加上 64000 越过了文件末尾；同一时刻 leader 无错。
+	return ReadEntry(reader, index)
 }
 
 func (kvs *KVServer) WriteEntryToSortedFile(writer *bufio.Writer, entry *raft.Entry) error {
