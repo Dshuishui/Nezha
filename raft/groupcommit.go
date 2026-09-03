@@ -57,6 +57,12 @@ func (rf *Raft) runFlusher() {
 		}
 		rf.mu.Lock()
 		rf.WriteEntryToFile(b.entries, 0) // 一次写入 + 一次 fsync 覆盖整批
+
+		// 唤醒 apply。offset 是在上面这次写入里才追加进 rf.Offsets 的，在此之前
+		// applyLogLoop 即使被 commitIndex 的推进叫醒，也会因为拿不到 offset 而
+		// 空转返回。少了这一次唤醒，它只能等 10ms 兜底超时——实测单客户端下
+		// 攒批模式的延迟因此从 1.12ms 退回 10.8ms。
+		rf.signalApply()
 		rf.mu.Unlock()
 		recordBatch(len(b.entries))
 		close(b.done)
