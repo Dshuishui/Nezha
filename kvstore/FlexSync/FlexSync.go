@@ -2415,8 +2415,9 @@ func main() {
 	InitAnotherGCPaths(dataDir)
 
 	go kvs.applyLoop()
-	// ctx, cancel := context.WithCancel(context.Background())	// 用于控制goroutine的生命周期
-	ctx, _ := context.WithCancel(context.Background())
+	// 服务端随进程存活，没有任何地方会取消它；之前 WithCancel 丢掉 cancel 与此等价，
+	// 只是让 go vet 报"context 泄漏"。
+	ctx := context.Background()
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	go func() {
 		// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符

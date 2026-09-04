@@ -275,11 +275,6 @@ func (p *Persister) Get_opt(key string) (int64, error) {
 	// TagInline 表示这个 key 的 value 内联在存储引擎里，没有偏移可言；
 	// 调用方应改走 GetInline，拿到该错误说明分流逻辑漏了一处。
 	return DecodeOffsetRecord(valueBytes)
-	// var value int64
-	// for i := uint(0); i < 8; i++ {
-	// 	value |= int64(valueBytes[i]) << (i * 8)
-	// }
-	return int64(binary.LittleEndian.Uint64(valueBytes)), nil
 }
 
 func (p *Persister) Get(key string) (string, error) {
