@@ -31,8 +31,6 @@ var (
 	anotherNewPersisterPath    string
 )
 
-const sortedFileCacheNums = 1000
-
 // 在main函数中或者适当的地方初始化这些路径（添加到之前的InitGCPaths函数中）
 func InitAnotherGCPaths(dataDir string) {
 	anotherNewRaftStateLogPath = filepath.Join(dataDir, "data", "valuelog", "newRaftState_1")
@@ -354,82 +352,6 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 
 	fmt.Printf("Merged garbage collection completed in %v - round %v, processed %d entries\n",
 		time.Since(startTime), kvs.numGC, writeCount)
-	return nil
-}
-
-// 分别验证两个数据源的有序性
-func (kvs *KVServer) verifyOldDatabaseOrder(file *os.File) error {
-	fmt.Println("开始验证旧数据库的有序性...")
-	var prevKey string
-	count := 0
-
-	it := kvs.oldPersister.GetDb().NewIterator(grocksdb.NewDefaultReadOptions())
-	defer it.Close()
-
-	for it.SeekToFirst(); it.Valid(); it.Next() {
-		key := it.Key()
-		value := it.Value()
-		defer key.Free()
-		defer value.Free()
-		if raft.IsMetaKey(key.Data()) {
-			continue
-		}
-
-		entry, err := kvs.entryFromRecord(string(key.Data()), value.Data(), file)
-		if err != nil {
-			return fmt.Errorf("构造 entry 失败: %v", err)
-		}
-
-		if prevKey != "" && entry.Key <= prevKey {
-			return fmt.Errorf("旧数据库无序: 键值 %s 出现在 %s 之后，在第 %d 个条目",
-				entry.Key, prevKey, count)
-		}
-		prevKey = entry.Key
-		count++
-
-		if count%100000 == 0 {
-			fmt.Printf("已验证 %d 个条目\n", count)
-		}
-	}
-
-	fmt.Printf("旧数据库验证完成: 共 %d 个条目，确认有序\n", count)
-	return nil
-}
-
-func (kvs *KVServer) verifySortedFileOrder() error {
-	fmt.Println("开始验证已排序文件的有序性...")
-	var prevKey string
-	count := 0
-
-	file, err := os.Open(kvs.lastSortedFileIndex.FilePath)
-	if err != nil {
-		return fmt.Errorf("打开排序文件失败: %v", err)
-	}
-	defer file.Close()
-
-	reader := bufio.NewReader(file)
-	for {
-		entry, _, err := ReadEntry(reader, 0)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return fmt.Errorf("读取排序文件失败: %v", err)
-		}
-
-		if prevKey != "" && entry.Key <= prevKey {
-			return fmt.Errorf("排序文件无序: 键值 %s 出现在 %s 之后，在第 %d 个条目",
-				entry.Key, prevKey, count)
-		}
-		prevKey = entry.Key
-		count++
-
-		if count%100000 == 0 {
-			fmt.Printf("已验证 %d 个条目\n", count)
-		}
-	}
-
-	fmt.Printf("排序文件验证完成: 共 %d 个条目，确认有序\n", count)
 	return nil
 }
 

@@ -89,7 +89,6 @@ const ROLE_FOLLOWER = "Follower"
 const ROLE_CANDIDATES = "Candidates"
 
 var threshold int64 = 30 * 1024 * 1024
-var entry_global Entry
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
@@ -132,11 +131,8 @@ type Raft struct {
 	SyncTime       int
 	SyncChans      []chan string
 	batchLog       []*Entry
-	batchLogSize   int64
-	currentLog     string            // 存储value的磁盘文件的描述符
-	originalLog    string            // dwisckey
-	nullLogEntry   *raftrpc.LogEntry // 用于替换已应用的日志
-	lastNulled     int
+	currentLog     string // 存储value的磁盘文件的描述符
+	originalLog    string // dwisckey
 
 	// 日志压缩基址：rf.log[0] 对应的日志 index 为 lastIncludedIndex+1。
 	// 已压缩的条目从内存中物理删除，其内容仍保留在 rf.currentLog 磁盘文件中。
@@ -502,81 +498,6 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 	for range offsets {
 		rf.offsetVersions = append(rf.offsetVersions, rf.logVersion)
 	}
-}
-
-func (rf *Raft) WriteEntryToFile_originalKvs(e []*Entry, filename string, startPos int64) {
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
-	// 打开文件，如果文件不存在则创建
-	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-	if err != nil {
-		log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
-	}
-	defer file.Close()
-
-	// 包装文件对象以进行缓冲写入
-	writer := bufio.NewWriter(file)
-
-	// 获取当前写入位置，即为返回的偏移量
-	var offset int64
-	var offsets []int64
-	// var err error
-
-	// 预分配足够大的偏移量切片，避免了在循环中动态扩容偏移量切片的操作
-	offsets = make([]int64, len(e))
-
-	if startPos == 0 { // 0是直接追加
-		offset, err = file.Seek(0, os.SEEK_END)
-		if err != nil {
-			log.Fatalf("定位存储Raft日志的磁盘文件失败：%v", err)
-		}
-	} else { // 同步日志时，需要已有的日志与leader的冲突，需要覆盖之前的错误的
-		offset, err = file.Seek(startPos, os.SEEK_SET)
-		if err != nil {
-			log.Fatalf("定位存储Raft日志的磁盘文件的起始位置失败：%v", err)
-		}
-	}
-
-	for i, entry := range e {
-
-		valueSize := uint32(len(entry.Value))
-
-		paddedKey := rf.persister.PadKey(entry.Key) // 存入valuelog里面也用
-		keySize := uint32(len(paddedKey))
-		data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value
-
-		// 将数据编码到byte slice中
-		binary.LittleEndian.PutUint32(data[0:4], entry.Index)
-		binary.LittleEndian.PutUint32(data[4:8], entry.CurrentTerm)
-		binary.LittleEndian.PutUint32(data[8:12], entry.VotedFor)
-		binary.LittleEndian.PutUint32(data[12:16], keySize)
-		binary.LittleEndian.PutUint32(data[16:20], valueSize)
-
-		copy(data[20:20+keySize], paddedKey)
-		copy(data[20+keySize:], entry.Value)
-
-		// 写入文件
-		u, err := writer.Write(data)
-		if err != nil || u < len(data) {
-			log.Fatalf("写入存储Raft日志的磁盘文件失败：%v", err)
-		}
-
-		// _, err = file.Write(data)
-		// if err != nil {
-		// 	fmt.Println("写入存储Raft日志的磁盘文件有问题")
-		// }
-		// 添加偏移量到数组中
-		// offsets = append(offsets, offset)
-		offsets[i] = offset
-		offset += int64(len(data))
-	}
-	// 刷新缓冲区以确保数据被写入文件
-	err = writer.Flush()
-	if err != nil {
-		log.Fatalf("刷新缓冲区失败：%v", err)
-	}
-
-	// rf.Offsets = append(rf.Offsets, offsets...)
 }
 
 // func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) (offsets []int64, err error) {
@@ -1166,68 +1087,6 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	return int32(index), int32(term), isLeader
 }
 
-func (rf *Raft) originalKvs(command interface{}) (int32, int32, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-	// var buffer bytes.Buffer
-	// enc := gob.NewEncoder(&buffer)
-	// var fileSizeLimit int64 = 10 * 1024 * 1024 // 6MB
-
-	// logEntry := LogEntry{
-	// 	Command: command.(DetailCod),
-	// 	Term:    int32(rf.currentTerm),
-	// }
-	logEntry := raftrpc.LogEntry{
-		Command: command.(*raftrpc.DetailCod),
-		Term:    int32(rf.currentTerm),
-	}
-	// fmt.Println("到这了嘛4")
-	index = rf.lastIndex() + 1 // 加一是为了除去空指令
-	term = rf.currentTerm
-	// fmt.Printf("11111offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
-	if logEntry.Command.OpType != "TermLog" { // 除去上任leader后的空指令
-		entry_global = Entry{
-			Index:       uint32(index),
-			CurrentTerm: uint32(term),
-			VotedFor:    uint32(rf.leaderId),
-			Key:         command.(*raftrpc.DetailCod).Key,
-			Value:       command.(*raftrpc.DetailCod).Value,
-		}
-		arrEntry := []*Entry{&entry_global}
-		rf.WriteEntryToFile_originalKvs(arrEntry, rf.originalLog, 0)
-	}
-	// rf.batchLog = append(rf.batchLog, &entry)
-	// if err := enc.Encode(entry); err != nil {
-	// 	util.EPrintf("Encode error in Start()：%v", err)
-	// }
-	// rf.batchLogSize += int64(buffer.Len())
-	// // 如果总大小超过3MB，截取日志数组并退出循环
-	// if rf.batchLogSize >= fileSizeLimit {
-	// 	rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
-	// go func() {
-	// 	err := rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
-	// 	if err != nil {
-	// 		fmt.Println("Error in WriteEntryToFile:", err)
-	// 	}
-	// }()
-	// 	buffer.Reset()
-	// 	rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
-	// }
-	// rf.log = append(rf.log, &logEntry) // 确保日志落盘之后，再更新log
-
-	// fmt.Printf("22222offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
-	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// rf.Offsets = append(rf.Offsets, offsets...)
-	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-
-	// util.DPrintf("RaftNode[%d] Add Command, logIndex[%d] currentTerm[%d]", rf.me, index, term)
-	return int32(index), int32(term), isLeader
-}
-
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 }
@@ -1672,43 +1531,6 @@ func (rf *Raft) doAppendEntries(peerId int) {
 			// rf.SyncChans[peerId] <- rf.peers[peerId]	// 同步日志失败也要重新发起日志同步
 			rf.SyncChans[peerId] <- strconv.Itoa(peerId)
 		}
-	}(peerId)
-}
-
-func (rf *Raft) doHeartBeat(peerId int) {
-	args := raftrpc.AppendEntriesInRaftRequest{}
-	args.Term = int32(rf.currentTerm)
-	args.LeaderId = int32(rf.me)
-	args.LeaderCommit = int32(rf.commitIndex)
-	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)
-	if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
-		args.PrevLogTerm = 0
-	} else {
-		args.PrevLogTerm = rf.termAt(int(args.PrevLogIndex))
-		if args.PrevLogTerm == -1 { // 已压缩；心跳不携带日志，follower 不校验该字段
-			args.PrevLogTerm = rf.lastIncludedTerm
-		}
-	}
-	args.Entries = []*raftrpc.LogEntry{}
-	go func(peerId int) {
-		if reply, ok := rf.sendHeartbeat(rf.peers[peerId], &args, rf.pools[peerId]); ok {
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			if rf.currentTerm != int(args.Term) {
-				return
-			}
-			if reply.Term > int32(rf.currentTerm) { // 变成follower
-				rf.role = ROLE_FOLLOWER
-				// rf.leaderId = 0
-				rf.currentTerm = int(reply.Term)
-				rf.votedFor = -1
-				rf.persistHardState() // Raft 要求 term/votedFor 落盘后再应答或发起 RPC
-				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-				return
-			}
-			// rf.SyncChans[peerId] <- strconv.Itoa(peerId)
-		}
-		// rf.SyncChans[peerId] <- strconv.Itoa(peerId)
 	}(peerId)
 }
 

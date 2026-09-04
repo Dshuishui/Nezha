@@ -11,7 +11,6 @@ import (
 
 	// "io"
 	"os"
-	"sort"
 	"time"
 
 	"gitee.com/dong-shuishui/FlexSync/raft"
@@ -332,37 +331,6 @@ func (kvs *KVServer) CreateIndex(firstSortedFilePath string) error {
 	// kvs.scanFromFile = kvs.scanFromSortedOrNew
 }
 
-// 预热缓存：读取最近的一些数据到缓存中
-func (kvs *KVServer) warmupCache(filePath string) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		fmt.Printf("Failed to open file for cache warmup: %v\n", err)
-		return
-	}
-	defer file.Close()
-
-	reader := bufio.NewReader(file)
-	count := 0
-	maxWarmupEntries := sortedFileCacheNums / 2 // 预热的条目数量
-
-	for count < maxWarmupEntries {
-		entry, _, err := ReadEntry(reader, 0)
-		if err != nil {
-			if err.Error() == "EOF" {
-				break
-			}
-			fmt.Printf("Error reading entry during cache warmup: %v\n", err)
-			return
-		}
-
-		// 添加到缓存
-		kvs.sortedFileCache.Add(kvs.persister.UnpadKey(entry.Key), entry.Value)
-		count++
-	}
-
-	fmt.Printf("Cache warmup completed with %d entries\n", count)
-}
-
 // CreateSortedFileIndex 扫描整个 sortedFile 重建索引（重启或 GC 合并后使用）。
 //
 // 原实现为每个 key 建一条 key→offset 的内存记录，索引内存随 key 数线性增长。
@@ -379,66 +347,6 @@ func (kvs *KVServer) CreateSortedFileIndex(filePath string) (*SortedFileIndex, e
 		InlineValues: NewInlineCache(kvs.inlineCacheBytes),
 		FilePath:     filePath,
 	}, nil
-}
-
-func (kvs *KVServer) processSortedFile() ([]*raft.Entry, error) {
-	// 创建LRU缓存
-	// 假设我们允许缓存占用 100MB 内存，每个条目占 20B
-	// 100MB / 20B = 5,000,000 个条目
-	cache, _ := lru.New(5000000)
-
-	// 打开原始文件
-	file, err := os.Open("/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState.log")
-	if err != nil {
-		return nil, fmt.Errorf("failed to open file: %v", err)
-	}
-	defer file.Close()
-
-	// 创建一个map来存储最新的entries
-	latestEntries := make(map[string]*raft.Entry)
-
-	// 读取文件并处理entries
-	reader := bufio.NewReader(file)
-	var currentOffset int64 = 0
-	entryCount := 1
-	for {
-		entry, entryOffset, err := ReadEntry(reader, currentOffset)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, fmt.Errorf("error reading entry: %v", err)
-		}
-
-		// 更新当前偏移量
-		currentOffset = entryOffset + int64(binary.Size(entry.Index)+binary.Size(entry.CurrentTerm)+
-			binary.Size(entry.VotedFor)+8+len(entry.Key)+len(entry.Value))
-
-		// fmt.Printf("此时读出的偏移量为:%d\n", currentOffset)
-		// 验证entry是否有效
-		entryCount++
-		// if GC4.IsValidEntry(kvs, entry, entryOffset, cache) {
-		if IsValidEntry(kvs, entry, entryOffset, cache) {
-			latestEntries[entry.Key] = entry
-			fmt.Println("一个有效的都没有？？？？？")
-		}
-		if entryCount%5000 == 1 {
-			fmt.Printf("Processed %d entries, current offset: %d\n", entryCount, currentOffset)
-		}
-	}
-	fmt.Printf("有效entry个数为：%d\n", len(latestEntries))
-
-	// 将map转换为slice并排序
-	sortedEntries := make([]*raft.Entry, 0, len(latestEntries))
-	for _, entry := range latestEntries {
-		sortedEntries = append(sortedEntries, entry)
-	}
-	sort.Slice(sortedEntries, func(i, j int) bool {
-		return sortedEntries[i].Key < sortedEntries[j].Key
-	})
-	// fmt.Println("得到已排序的entry数组")
-
-	return sortedEntries, nil
 }
 
 func IsValidEntry(kvs *KVServer, entry *raft.Entry, entryOffset int64, cache *lru.Cache) bool {
@@ -519,55 +427,6 @@ func (kvs *KVServer) CheckDatabaseContent() error {
 	fmt.Printf("Total entries checked: %d\n", count)
 	if count == 0 {
 		fmt.Println("Warning: No entries found in the database.")
-	}
-
-	return nil
-}
-
-func (kvs *KVServer) checkLogDBConsistency() error {
-	logFile, err := os.Open("./raft/RaftState.log")
-	if err != nil {
-		return fmt.Errorf("failed to open log file: %v", err)
-	}
-	defer logFile.Close()
-
-	ro := grocksdb.NewDefaultReadOptions()
-	defer ro.Destroy()
-
-	iter := kvs.persister.GetDb().NewIterator(ro)
-	defer iter.Close()
-
-	reader := bufio.NewReader(logFile)
-	var currentOffset int64 = 0
-
-	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
-		key := iter.Key()
-		value := iter.Value()
-
-		keyStr := string(key.Data())
-		dbOffset, err := raft.DecodeOffsetRecord(value.Data())
-		if err != nil {
-			return fmt.Errorf("failed to decode offset record for key %s: %v", keyStr, err)
-		}
-
-		// 读取日志文件中的对应条目
-		entry, entryOffset, err := ReadEntry(reader, currentOffset)
-		if err != nil {
-			return fmt.Errorf("error reading log entry: %v", err)
-		}
-
-		if keyStr != entry.Key {
-			fmt.Printf("Mismatch: DB key=%s, Log key=%s\n", keyStr, entry.Key)
-		}
-		if dbOffset != entryOffset {
-			fmt.Printf("Offset mismatch for key %s: DB offset=%d, Log offset=%d\n", keyStr, dbOffset, entryOffset)
-		}
-
-		currentOffset = entryOffset + int64(binary.Size(entry.Index)+binary.Size(entry.CurrentTerm)+
-			binary.Size(entry.VotedFor)+8+len(entry.Key)+len(entry.Value))
-
-		key.Free()
-		value.Free()
 	}
 
 	return nil

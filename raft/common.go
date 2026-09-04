@@ -24,8 +24,7 @@ type PutAppendArgs struct {
 }
 
 type PutAppendReply struct {
-	Err      Err
-	leaderId int // 如果请求发送的不是leader，咋需要返回leader的id
+	Err Err
 }
 
 type GetArgs struct {
@@ -36,7 +35,6 @@ type GetArgs struct {
 }
 
 type GetReply struct {
-	Err      Err
-	Value    string
-	leaderId int // 如果请求发送的不是leader，咋需要返回leader的id
+	Err   Err
+	Value string
 }
