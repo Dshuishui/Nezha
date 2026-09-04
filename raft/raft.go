@@ -78,6 +78,9 @@ type Entry struct {
 	VotedFor    uint32
 	Key         string
 	Value       string
+	// NoOp 标记 leader 上任时的空指令（TermLog）。它也要写进日志文件，否则文件里的 index
+	// 不连续，重启时无法按文件重建日志。磁盘上以 keySize==0 表示，正常记录的 key 恒为 KeyLength。
+	NoOp bool
 }
 
 // 当前角色
@@ -139,6 +142,20 @@ type Raft struct {
 	// 已压缩的条目从内存中物理删除，其内容仍保留在 rf.currentLog 磁盘文件中。
 	lastIncludedIndex int   // 已压缩掉的最后一条日志的 index
 	lastIncludedTerm  int32 // 上述条目的 term，用于 PrevLogTerm 一致性检查
+
+	// ---- 崩溃恢复 ----
+	stateFile   string // term/votedFor/日志基址的落盘文件；空表示不持久化
+	stateLoaded bool   // 启动时是否读到了状态文件（决定恢复时是否做基址交叉校验）
+	// 磁盘上最老的仍保留的日志文件之前那一条的 index/term。与 lastIncludedIndex 不同：
+	// 后者是内存裁剪点，可能远在前者之后。重启时 lastIncludedIndex 从这里取。
+	fileBaseIndex int
+	fileBaseTerm  int32
+	// 写入路径记录的"最后写进当前文件的那条"，GC 切换文件时定格为 pendingBase，
+	// 旧文件删除前由 PersistLogBase 提升为 fileBase。归 logMu 管。
+	lastWrittenIndex int
+	lastWrittenTerm  int32
+	pendingBaseIndex int
+	pendingBaseTerm  int32
 
 	// 复用的日志文件句柄。此前每写一条日志都要 OpenFile + NewWriter + Seek +
 	// Write + Flush + Close，五次系统调用里只有一次在搬运数据。写 64B 的小 value
@@ -291,6 +308,9 @@ func (rf *Raft) SetSyncOnWrite(v bool) {
 func (rf *Raft) SetCurrentLogVersioned(currentLog string, version int32) {
 	rf.logMu.Lock()
 	defer rf.logMu.Unlock()
+	// 旧文件到此为止：它的最后一条就是新文件的基址候选，旧文件被删时生效。
+	rf.pendingBaseIndex = rf.lastWrittenIndex
+	rf.pendingBaseTerm = rf.lastWrittenTerm
 	rf.currentLog = currentLog
 	rf.logVersion = version
 	if err := rf.openLogFile(currentLog); err != nil {
@@ -395,8 +415,11 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 
 		valueSize := uint32(len(entry.Value))
 
-		paddedKey := rf.persister.PadKey(entry.Key) // 存入valuelog里面也用
-		keySize := uint32(len(paddedKey))
+		paddedKey := ""
+		if !entry.NoOp {
+			paddedKey = rf.persister.PadKey(entry.Key) // 存入valuelog里面也用
+		}
+		keySize := uint32(len(paddedKey))          // NoOp 记录 keySize==0，恢复时据此识别
 		data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value
 
 		// 将数据编码到byte slice中
@@ -455,15 +478,23 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 			}
 		}
 	}
-	if startPos == 0 {
-		rf.logOffset = offset
-	} else {
-		// 覆盖写之后，文件位置停在被覆盖段的末尾，而后续追加必须回到文件真实末尾。
-		end, serr := rf.logFile.Seek(0, os.SEEK_END)
-		if serr != nil {
-			log.Fatalf("恢复追加位置失败：%v", serr)
+	if startPos != 0 {
+		// 覆盖写：被覆盖点之后的旧内容已经不属于日志（对应的 rf.log 条目刚被截掉），
+		// 必须把文件也截到新内容的末尾。以前这里把写入位置挪回旧文件末尾，
+		// 中间留着一段陈旧字节，按偏移读没事，重启时顺序扫描就会读到垃圾。
+		if err = rf.logFile.Truncate(offset); err != nil {
+			log.Fatalf("截断日志文件失败：%v", err)
 		}
-		rf.logOffset = end
+		if rf.syncOnWrite {
+			if err = rf.logFile.Sync(); err != nil {
+				log.Fatalf("截断后落盘失败：%v", err)
+			}
+		}
+	}
+	rf.logOffset = offset
+	if n := len(e); n > 0 {
+		rf.lastWrittenIndex = int(e[n-1].Index)
+		rf.lastWrittenTerm = int32(e[n-1].CurrentTerm)
 	}
 
 	rf.Offsets = append(rf.Offsets, offsets...)
@@ -795,7 +826,8 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 	if args.Term > int32(rf.currentTerm) {
 		rf.currentTerm = int(args.Term)
 		rf.role = ROLE_FOLLOWER
-		rf.votedFor = -1 // 有问题，如果两个leader同时选举，那会进行多次投票，因为都满足下方的投票条件---没有问题，如果第二个来请求投票，此时args.Term = rf.currentTerm。因为rf.currentTerm已经更新
+		rf.votedFor = -1      // 有问题，如果两个leader同时选举，那会进行多次投票，因为都满足下方的投票条件---没有问题，如果第二个来请求投票，此时args.Term = rf.currentTerm。因为rf.currentTerm已经更新
+		rf.persistHardState() // Raft 要求 term/votedFor 落盘后再应答或发起 RPC
 		// rf.leaderId = int(args.CandidateId) // 先假设这个即将成为leader
 	}
 
@@ -808,6 +840,7 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 		// log长度一样也是可以给对方投票的
 		if args.LastLogTerm > int32(lastLogTerm) || (args.LastLogTerm == int32(lastLogTerm) && args.LastLogIndex >= int32(rf.lastIndex())) {
 			rf.votedFor = int(args.CandidateId)
+			rf.persistHardState() // Raft 要求 term/votedFor 落盘后再应答或发起 RPC
 			reply.VoteGranted = true
 			rf.lastActiveTime = time.Now() // 为其他人投票，重置选举超时的时间
 		}
@@ -851,6 +884,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		rf.currentTerm = int(args.Term)
 		rf.role = ROLE_FOLLOWER
 		rf.votedFor = -1
+		rf.persistHardState() // Raft 要求 term/votedFor 落盘后再应答或发起 RPC
 		// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 	}
 
@@ -909,19 +943,19 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		index = int(args.PrevLogIndex) + 1 + i
 		logPos = rf.index2LogPos(index)
 		entry := Entry{
-			Index:       uint32(logEntry.GetCommand().Index),
-			CurrentTerm: uint32(logEntry.GetCommand().Term),
+			Index:       uint32(index), // 用自己算出的 index，不信任命令里带的
+			CurrentTerm: uint32(logEntry.Term),
 			VotedFor:    uint32(rf.leaderId),
 			Key:         logEntry.GetCommand().Key,
 			Value:       logEntry.GetCommand().Value,
+			NoOp:        logEntry.GetCommand().OpType == "TermLog",
 		}
 		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
 			rf.log = append(rf.log, logEntry)
-			if logEntry.Command.OpType != "TermLog" {
-				rf.batchLog = append(rf.batchLog, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
-			}
+			// 空指令也写文件（keySize==0 的标记），与 leader 一致，磁盘日志才完整可恢复。
+			rf.batchLog = append(rf.batchLog, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
 
-			if index == rf.lastIndex() && logEntry.Command.OpType != "TermLog" { // 已经将日志补足后，开始批量写入，同时为了与leader在偏移量上的统一，对于空指令，也不写入
+			if index == rf.lastIndex() { // 已经将日志补足后，开始批量写入
 				// offsets1, err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
 				// rf.mu.Unlock()
 				rf.WriteEntryToFile(rf.batchLog, 0)
@@ -1004,6 +1038,7 @@ func (rf *Raft) HeartbeatInRaft(ctx context.Context, args *raftrpc.AppendEntries
 		rf.currentTerm = int(args.Term)
 		rf.role = ROLE_FOLLOWER
 		rf.votedFor = -1
+		rf.persistHardState() // Raft 要求 term/votedFor 落盘后再应答或发起 RPC
 	}
 	// 认识新的leader
 	rf.leaderId = int(args.LeaderId)
@@ -1060,7 +1095,9 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	// fmt.Printf("11111offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
 	var myBatch *flushBatch
 	var needSignal bool
-	if logEntry.Command.OpType != "TermLog" { // 除去上任leader后的空指令
+	{
+		// 空指令（TermLog）也写进文件，作为一条 keySize==0 的标记记录：磁盘上的日志
+		// 因此与内存里的 rf.log 一一对应，重启时才能按文件完整重建；它也占一个 Offsets 位。
 		// 必须是局部变量。原先用包级的 entry_global 取地址，在逐条立即写入、
 		// 全程持锁的前提下没问题；一旦攒批，同一批里所有指针都会指向它，
 		// 最后写出去的是同一条记录重复 N 次。
@@ -1070,6 +1107,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 			VotedFor:    uint32(rf.leaderId),
 			Key:         command.(*raftrpc.DetailCod).Key,
 			Value:       command.(*raftrpc.DetailCod).Value,
+			NoOp:        logEntry.Command.OpType == "TermLog",
 		}
 		if rf.groupCommit {
 			myBatch, needSignal = rf.enqueueForFlush(entry)
@@ -1343,6 +1381,7 @@ func (rf *Raft) electionLoop() {
 				rf.lastActiveTime = time.Now() // 重置下次选举时间
 				rf.currentTerm += 1            // 发起新任期
 				rf.votedFor = rf.me            // 该任期投了自己
+				rf.persistHardState()          // Raft 要求 term/votedFor 落盘后再应答或发起 RPC
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
 				// 请求投票req
@@ -1426,6 +1465,7 @@ func (rf *Raft) electionLoop() {
 					rf.leaderId = 0
 					rf.currentTerm = maxTerm // 更新自己的Term和voteFor
 					rf.votedFor = -1
+					rf.persistHardState() // Raft 要求 term/votedFor 落盘后再应答或发起 RPC
 					// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 					return
 				}
@@ -1582,6 +1622,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				rf.leaderId = 0
 				rf.currentTerm = int(reply.Term)
 				rf.votedFor = -1
+				rf.persistHardState() // Raft 要求 term/votedFor 落盘后再应答或发起 RPC
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				rf.SyncChans[peerId] <- "NotLeader"
 				fmt.Printf("reply.Term-%v,rf.currentTerm-%v\n", reply.Term, rf.currentTerm)
@@ -1661,6 +1702,7 @@ func (rf *Raft) doHeartBeat(peerId int) {
 				// rf.leaderId = 0
 				rf.currentTerm = int(reply.Term)
 				rf.votedFor = -1
+				rf.persistHardState() // Raft 要求 term/votedFor 落盘后再应答或发起 RPC
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 				return
 			}
@@ -1697,6 +1739,7 @@ func (rf *Raft) CheckActive(peerId int, resultChan chan<- bool) {
 			// rf.leaderId = 0
 			rf.currentTerm = int(reply.Term)
 			rf.votedFor = -1
+			rf.persistHardState() // Raft 要求 term/votedFor 落盘后再应答或发起 RPC
 			// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 			rf.mu.Unlock()
 			return
@@ -2034,10 +2077,17 @@ func (rf *Raft) applyLogLoop() {
 				cmd := rf.log[appliedIndex].Command
 
 				if cmd.OpType == "TermLog" {
-					// TermLog 在 valuelog 里没有对应条目，不消费 Offset 槽位。
-					// 仍要推进 shotOffset，后续条目的 realIndex 才算得对。
+					// TermLog 现在也在文件里占一条标记记录、在 Offsets 里占一个槽位，
+					// 这里把槽位消费掉，但不带偏移给上层（上层对 TermLog 不做任何事）。
+					if len(rf.Offsets) == 0 {
+						return
+					}
 					rf.lastApplied = nextApplied
 					rf.shotOffset++
+					rf.Offsets = rf.Offsets[1:]
+					if len(rf.offsetVersions) > 0 {
+						rf.offsetVersions = rf.offsetVersions[1:]
+					}
 					batch = append(batch, ApplyMsg{
 						CommandValid: true,
 						Command:      cmd,
@@ -2269,9 +2319,13 @@ func (rf *Raft) commitIndexUpdateLoop() {
 }
 
 // 服务器地址数组；当前方法对应的服务器地址数组中的下标；持久化存储了当前服务器状态的结构体；传递消息的通道结构体
+// Make 只构造对象并读回持久化状态，不启动任何 goroutine 或 gRPC 服务。
+// 调用方完成日志恢复（RecoverLog）与文件挂接后再调 StartLoops，否则选举、复制、
+// apply 会在日志还没重建好的时候跑起来。stateFile 为空表示不持久化 term/votedFor。
 func Make(peers []string, me int,
-	persister *Persister, applyCh chan ApplyMsg, ctx context.Context) *Raft {
+	persister *Persister, applyCh chan ApplyMsg, stateFile string) *Raft {
 	rf := &Raft{}
+	rf.stateFile = stateFile
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
@@ -2283,6 +2337,22 @@ func Make(peers []string, me int,
 	rf.leaderId = 0
 	rf.votedFor = -1
 	rf.lastActiveTime = time.Now()
+	if stateFile != "" {
+		hs, ok, err := loadHardState(stateFile)
+		if err != nil {
+			log.Fatalf("读取 Raft 状态文件失败：%v", err)
+		}
+		if ok {
+			rf.stateLoaded = true
+			rf.currentTerm = hs.CurrentTerm
+			rf.votedFor = hs.VotedFor
+			rf.fileBaseIndex = hs.BaseIndex
+			rf.fileBaseTerm = hs.BaseTerm
+			rf.lastIncludedIndex = hs.BaseIndex
+			rf.lastIncludedTerm = hs.BaseTerm
+			util.DPrintf("RaftNode[%d] 读到持久化状态：term=%d votedFor=%d base=(%d,%d)", me, hs.CurrentTerm, hs.VotedFor, hs.BaseIndex, hs.BaseTerm)
+		}
+	}
 	rf.applyCh = applyCh
 	rf.applySignal = make(chan struct{}, 1)
 	rf.commitSignal = make(chan struct{}, 1)
@@ -2314,9 +2384,16 @@ func Make(peers []string, me int,
 
 	util.DPrintf("RaftNode[%d] Make again", rf.me)
 	rf.LastAppendTime = time.Now()
-	// go rf.ReadPersist("./raft/RaftState.log") // 如果文件已存在，则截断文件，后续如果有要求恢复raft状态的功能，可以修改打开文件的方式。
+	return rf
+}
 
-	go rf.RegisterRaftServer(ctx, peers[me])
+// StartLoops 启动 gRPC 服务与所有后台循环。必须在日志恢复完成之后调用。
+func (rf *Raft) StartLoops(ctx context.Context) {
+	rf.mu.Lock()
+	rf.lastActiveTime = time.Now() // 恢复可能花了不少时间，别一启动就误判超时
+	rf.LastAppendTime = time.Now()
+	rf.mu.Unlock()
+	go rf.RegisterRaftServer(ctx, rf.peers[rf.me])
 	// election
 	go rf.electionLoop()
 	// sync
@@ -2346,6 +2423,24 @@ func Make(peers []string, me int,
 		}
 		util.DPrintf("Raft has been closed")
 	}()
+}
 
-	return rf
+// FileBase 返回状态文件里记录的磁盘日志基址，KV 层恢复时用来校验。
+func (rf *Raft) FileBase() (int, int32) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.fileBaseIndex, rf.fileBaseTerm
+}
+
+// PersistLogBase 在 GC 删除旧日志文件之前调用：把切换时定格的 pendingBase 提升为
+// 磁盘日志基址并落盘。之后重启时，日志从新文件的第一条开始，基址就是它。
+func (rf *Raft) PersistLogBase() {
+	rf.logMu.Lock()
+	idx, term := rf.pendingBaseIndex, rf.pendingBaseTerm
+	rf.logMu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.fileBaseIndex = idx
+	rf.fileBaseTerm = term
+	rf.persistHardState()
 }
