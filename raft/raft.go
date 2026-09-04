@@ -800,7 +800,8 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 			rf.lastActiveTime = time.Now() // 为其他人投票，重置选举超时的时间
 		}
 	}
-	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
+	util.DPrintf("RaftNode[%d] RequestVote from[%d] term[%d] cand(lastIdx=%d,lastTerm=%d) mine(lastIdx=%d,lastTerm=%d,votedFor=%d) granted=%v",
+		rf.me, args.CandidateId, args.Term, args.LastLogIndex, args.LastLogTerm, rf.lastIndex(), rf.lastTerm(), rf.votedFor, reply.VoteGranted)
 	return reply, nil
 }
 
@@ -1226,26 +1227,25 @@ func (rf *Raft) RegisterRaftServer(ctx context.Context, address string) { // 传
 	}
 }
 
-func (rf *Raft) sendRequestVote(address string, args *raftrpc.RequestVoteRequest) (bool, *raftrpc.RequestVoteResponse) {
-	// time.Sleep(time.Millisecond * time.Duration(rf.delay+rand.Intn(25)))
-	// util.DPrintf("Start sendRequestVote")
-	conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
+// sendRequestVote 走与 AppendEntries 相同的连接池。以前每次选举都 grpc.Dial 一条新连接，
+// 且带 WithBlock 不带超时：对已宕机的节点这一步永远不返回，goroutine 连同选票一起挂死。
+// 连接池的 RPC 对不可达节点会快速失败，计票循环因此能拿到"这一票没了"的答复。
+func (rf *Raft) sendRequestVote(peerId int, args *raftrpc.RequestVoteRequest) (bool, *raftrpc.RequestVoteResponse) {
+	conn, err := rf.pools[peerId].Get()
 	if err != nil {
-		util.EPrintf("did not connect: %v", err)
+		util.EPrintf("RequestVote: failed to get conn to %v: %v", rf.peers[peerId], err)
 		return false, nil
 	}
 	defer conn.Close()
-	client := raftrpc.NewRaftClient(conn)
+	client := raftrpc.NewRaftClient(conn.Value())
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
 	defer cancel()
 	reply, err := client.RequestVote(ctx, args)
-
 	if err != nil {
-		util.EPrintf("Error calling RequestVote method on server side; err:%v; address:%v ", err, address)
-		return false, reply
-	} else {
-		return true, reply
+		util.EPrintf("RequestVote to %v failed: %v", rf.peers[peerId], err)
+		return false, nil
 	}
+	return true, reply
 }
 
 func (rf *Raft) sendAppendEntries(address string, args *raftrpc.AppendEntriesInRaftRequest, p pool.Pool) (*raftrpc.AppendEntriesInRaftResponse, bool) {
@@ -1358,7 +1358,7 @@ func (rf *Raft) electionLoop() {
 						if id == rf.me {
 							return
 						}
-						if ok, reply := rf.sendRequestVote(rf.peers[id], &args); ok {
+						if ok, reply := rf.sendRequestVote(id, &args); ok {
 							voteResultChan <- &VoteResult{peerId: id, resp: reply}
 						} else {
 							voteResultChan <- &VoteResult{peerId: id, resp: nil}
@@ -1367,11 +1367,19 @@ func (rf *Raft) electionLoop() {
 				}
 
 				maxTerm := 0
+				voteDeadline := time.After(timeout)
 				if voteCount > len(rf.peers)/2 {
 					goto VOTE_END
 				}
+				// 计票不能无限等：原来只在"全部应答"或"已过半"时退出，只要有一个节点永远不应答
+				//（宕机、网络分区），而活着的那票又恰好丢了，candidate 就永远停在这里，
+				// 既不重选也不让位。这正是 -race 构建下杀掉 leader 后 65 秒无 leader 的现场。
+				// 到期就带着已有的票数去 VOTE_END：没过半就回到循环，下一轮超时重新发起选举。
 				for {
 					select {
+					case <-voteDeadline:
+						util.DPrintf("RaftNode[%d] election term[%d] timed out with votes=%d answered=%d", rf.me, args.Term, voteCount, finishCount)
+						goto VOTE_END
 					case voteResult := <-voteResultChan:
 						finishCount += 1
 						if voteResult.resp != nil {
@@ -1390,6 +1398,8 @@ func (rf *Raft) electionLoop() {
 				}
 			VOTE_END:
 				rf.mu.Lock()
+				util.DPrintf("RaftNode[%d] election term[%d] votes=%d/%d answered=%d maxTerm=%d role=%s",
+					rf.me, rf.currentTerm, voteCount, len(rf.peers), finishCount, maxTerm, rf.role)
 				// defer func() {
 				// 	util.DPrintf("RaftNode[%d] RequestVote ends, finishCount[%d] voteCount[%d] Role[%s] maxTerm[%d] currentTerm[%d]", rf.me, finishCount, voteCount,
 				// 		rf.role, maxTerm, rf.currentTerm)
