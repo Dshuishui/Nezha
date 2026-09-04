@@ -15,16 +15,19 @@
 package pool
 
 import (
-	"context"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 )
 
 const (
-	// DialTimeout the timeout of create connection
-	DialTimeout = 5 * time.Second
+	// MinConnectTimeout is the minimum time one connection attempt is given before it is
+	// abandoned and backed off. It matches gRPC's own default; it must be set explicitly
+	// because WithConnectParams replaces the default rather than merging with it.
+	MinConnectTimeout = 20 * time.Second
 
 	// BackoffMaxDelay provided maximum delay when backing off after failed connection attempts.
 	BackoffMaxDelay = 3 * time.Second
@@ -84,12 +87,18 @@ var DefaultOptions = Options{
 	Reuse:                true,
 }
 
-// Dial return a grpc connection with defined configurations.
+// Dial returns a lazily connecting gRPC channel with the pool's tuning applied.
+//
+// The channel is created in the IDLE state and connects on its first RPC, so pools can be
+// built before the peer is listening (nodes may start in any order). RPCs use gRPC's
+// default fail-fast semantics: while the channel is in TRANSIENT_FAILURE they return
+// Unavailable immediately instead of waiting, which the Raft election tally relies on.
 func Dial(address string) (*grpc.ClientConn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), DialTimeout)
-	defer cancel()
-	return grpc.DialContext(ctx, address, grpc.WithInsecure(),
-		grpc.WithBackoffMaxDelay(BackoffMaxDelay),
+	bc := backoff.DefaultConfig
+	bc.MaxDelay = BackoffMaxDelay
+	return grpc.NewClient(address,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithConnectParams(grpc.ConnectParams{Backoff: bc, MinConnectTimeout: MinConnectTimeout}),
 		grpc.WithInitialWindowSize(InitialWindowSize),
 		grpc.WithInitialConnWindowSize(InitialConnWindowSize),
 		grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(MaxSendMsgSize)),
@@ -99,11 +108,4 @@ func Dial(address string) (*grpc.ClientConn, error) {
 			Timeout:             KeepAliveTimeout,
 			PermitWithoutStream: true,
 		}))
-}
-
-// DialTest return a simple grpc connection with defined configurations.
-func DialTest(address string) (*grpc.ClientConn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), DialTimeout)
-	defer cancel()
-	return grpc.DialContext(ctx, address, grpc.WithInsecure())
 }
