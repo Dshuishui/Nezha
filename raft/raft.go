@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/gob"
+	"io"
 	"log"
 	"path/filepath"
 	"runtime"
@@ -251,7 +252,7 @@ func (rf *Raft) openLogFile(filename string) error {
 	if err != nil {
 		return err
 	}
-	end, err := f.Seek(0, os.SEEK_END)
+	end, err := f.Seek(0, io.SeekEnd)
 	if err != nil {
 		f.Close()
 		return err
@@ -367,7 +368,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 		if err = writer.Flush(); err != nil {
 			log.Fatalf("刷新缓冲区失败：%v", err)
 		}
-		if _, err = rf.logFile.Seek(startPos, os.SEEK_SET); err != nil {
+		if _, err = rf.logFile.Seek(startPos, io.SeekStart); err != nil {
 			log.Fatalf("定位存储Raft日志的磁盘文件的起始位置失败：%v", err)
 		}
 		offset = startPos
@@ -521,7 +522,7 @@ func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, string
 	}
 
 	// 移动到指定偏移量
-	_, err = file.Seek(offset, os.SEEK_SET)
+	_, err = file.Seek(offset, io.SeekStart)
 	if err != nil {
 		fmt.Println("get时，seek文件的位置有问题")
 		return "", "", err
@@ -699,7 +700,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	var logPos int
 	for i, logEntry := range logEntrys {
 		if logEntry == nil || logEntry.GetCommand() == nil {
-			fmt.Println("此时logEntry为nil，或者logEntry中的Command为nil。太抽象了")
+			util.EPrintf("RaftNode[%d] AppendEntries carried a nil entry or a nil command; skipping it", rf.me)
 			continue
 		}
 
@@ -727,7 +728,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			// util.DPrintf("追加RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] Index[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, index, rf.Offsets)
 		} else { // 重叠部分
 			if rf.log[logPos].Term != logEntry.Term {
-				fmt.Println("还有重叠的情况嘛？？？")
+				util.DPrintf("RaftNode[%d] conflicting entry at index %d: local term %d, leader term %d; truncating from here", rf.me, index, rf.log[logPos].Term, logEntry.Term)
 				rf.log = rf.log[:logPos]          // 删除当前以及后续所有log
 				rf.log = append(rf.log, logEntry) // 把新log加入进来
 
@@ -919,7 +920,7 @@ func (rf *Raft) RegisterRaftServer(ctx context.Context, address string) { // 传
 			util.FPrintf("failed to serve: %v", err)
 		}
 
-		fmt.Println("跳出Raftserver的for循环，日志同步完成")
+		util.DPrintf("RaftNode[%d] Raft gRPC server stopped", rf.me)
 		break
 	}
 }
@@ -1449,7 +1450,7 @@ func (rf *Raft) appendEntriesLoop() {
 				select {
 				case val := <-rf.SyncChans[i]:
 					if val == "NotLeader" {
-						fmt.Printf("被 server %d 告知不是NotLeader，退出\n", i)
+						util.DPrintf("RaftNode[%d] peer %d reports we are not the leader; leaving the replication loop", rf.me, i)
 						return
 					}
 					// 收到信号，触发日志同步
