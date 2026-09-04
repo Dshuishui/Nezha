@@ -642,7 +642,7 @@ func (kvs *KVServer) SwitchToNewFiles(newLog string, newPersister *raft.Persiste
 	// 更新两个路径，使得垃圾回收与客户端请求并行执行
 	kvs.currentLog = newLog
 	fmt.Println("设置kvs.currentLog为", newLog)
-	kvs.raft.SetCurrentLog(kvs.currentLog)
+	kvs.raft.SetCurrentLogVersioned(kvs.currentLog, int32(kvs.numGC))
 	// kvs.raft.currentLog = newLog		// 存储value的磁盘文件由raft操作，raft接触到的只有存储value的log文件
 
 	kvs.persister = newPersister // 存储key和偏移量的rocksdb文件由kvs操作

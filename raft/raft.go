@@ -44,6 +44,16 @@ type ApplyMsg struct {
 	CommandIndex int
 	CommandTerm  int
 	Offset       int64
+	// FileVersion 标明 Offset 是相对哪一个 valuelog 文件的。
+	//
+	// 不能改用命令自带的 FileVersion：那个值在"决定写入"时记下（follower 在
+	// AppendEntries 里、leader 在 StartPut 里），而 Offset 在"实际写入文件"时才
+	//产生。两个时刻之间 GC 可以切换文件——切换走的是 logMu，与写入路径持有的
+	// rf.mu 是两把锁，拦不住。于是偏移属于新文件、版本却记成旧的，读取时拿新文件
+	// 的偏移去旧文件里找，越界报 EOF。
+	//
+	// 这里的值与 Offset 在同一把 logMu 下、同一时刻产生，因此严格对应。
+	FileVersion int32
 }
 
 // 日志项
@@ -111,6 +121,10 @@ type Raft struct {
 	LastAppendTime time.Time
 	Gap            int
 	Offsets        []int64
+	// offsetVersions 与 Offsets 一一对应，记下每个偏移属于哪一轮 GC 的文件。
+	// 两者在 WriteEntryToFile 里同一把 logMu 下一起追加、在 applyLogLoop 里
+	// 一起消费，因此不会像"命令自带的 FileVersion"那样与实际写入的文件错开。
+	offsetVersions []int32
 	shotOffset     int
 	SyncTime       int
 	SyncChans      []chan string
@@ -187,6 +201,9 @@ type Raft struct {
 	logFile   *os.File
 	logWriter *bufio.Writer
 	logOffset int64 // 下一条记录的写入位置；自行维护以省掉每次的 Seek
+	// logVersion 是 logFile 当前对应的 GC 轮次，与 logFile 一同在 logMu 下切换，
+	// 保证"偏移"与"它属于哪个文件"这两件事永远一致。
+	logVersion int32
 }
 
 func (rf *Raft) GetOffsets() []int64 {
@@ -256,6 +273,18 @@ func (rf *Raft) SetSyncOnWrite(v bool) {
 	rf.logMu.Lock()
 	defer rf.logMu.Unlock()
 	rf.syncOnWrite = v
+}
+
+// SetCurrentLog 切换日志文件。version 是切换后文件对应的 GC 轮次，
+// 与文件句柄一同在 logMu 下更新——这样后续写入记录的偏移和版本必然配套。
+func (rf *Raft) SetCurrentLogVersioned(currentLog string, version int32) {
+	rf.logMu.Lock()
+	defer rf.logMu.Unlock()
+	rf.currentLog = currentLog
+	rf.logVersion = version
+	if err := rf.openLogFile(currentLog); err != nil {
+		log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
+	}
 }
 
 func (rf *Raft) SetCurrentLog(currentLog string) {
@@ -430,6 +459,10 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 	}
 
 	rf.Offsets = append(rf.Offsets, offsets...)
+	// 版本与偏移同批追加：此刻仍持有 logMu，logVersion 必定是刚写进去的那个文件的。
+	for range offsets {
+		rf.offsetVersions = append(rf.offsetVersions, rf.logVersion)
+	}
 }
 
 func (rf *Raft) WriteEntryToFile_originalKvs(e []*Entry, filename string, startPos int64) {
@@ -913,7 +946,10 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				// offset := rf.Offsets[index-rf.shotOffset] // 将上面的改为加一了
 				// rf.Offsets = rf.Offsets[:logPos] // 删除当前错误的offset，以及后续的所有
 				rf.Offsets = rf.Offsets[:index-rf.shotOffset-1] // logPos 现在是相对基址的，改用绝对 index 推导
-				arrEntry := []*Entry{&entry}                    // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
+				if n := index - rf.shotOffset - 1; n <= len(rf.offsetVersions) {
+					rf.offsetVersions = rf.offsetVersions[:n] // 与 Offsets 同步截断，否则两者错位
+				}
+				arrEntry := []*Entry{&entry} // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
 				// offsets2, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
 				// rf.mu.Unlock()
 				rf.WriteEntryToFile(arrEntry, offset)
@@ -2004,14 +2040,22 @@ func (rf *Raft) applyLogLoop() {
 				}
 				rf.lastApplied = nextApplied
 				realIndex := rf.lastApplied - rf.shotOffset
+				var ver int32
+				if realIndex-1 < len(rf.offsetVersions) {
+					ver = rf.offsetVersions[realIndex-1]
+				}
 				batch = append(batch, ApplyMsg{
 					CommandValid: true,
 					Command:      cmd,
 					CommandIndex: rf.lastApplied,
 					CommandTerm:  int(rf.log[appliedIndex].Term),
 					Offset:       rf.Offsets[realIndex-1],
+					FileVersion:  ver,
 				})
 				rf.Offsets = rf.Offsets[1:]
+				if len(rf.offsetVersions) > 0 {
+					rf.offsetVersions = rf.offsetVersions[1:]
+				}
 				rf.shotOffset++
 				if rf.Gap > 0 && rf.lastApplied%rf.Gap == 0 {
 					util.DPrintf("RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, len(rf.Offsets))
