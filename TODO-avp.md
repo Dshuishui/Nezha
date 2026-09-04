@@ -7,7 +7,7 @@
 - 无。240/241 上没有残留进程。
   节点脚本留在两台机器上可复用：`~/rep-node.sh`（两节点稳态）、`~/three-race-node.sh`
   （三节点，`BIN=race|normal`，`start|kill9|stop|report`）。
-- **下一步：崩溃恢复**（`docs/crash-recovery.md`，等用户确认设计）。
+- 崩溃恢复已完成（见 `docs/crash-recovery.md`）。
 - 之后：三台物理机 / 六系统多节点对比 / 读路径 leader 检查（见各节）。
 
 ## 🖥 实验机器（2026-09-04 更新）
@@ -491,12 +491,18 @@ Mac 侧 `driver.sh`（scratchpad）。
 （快照），已提交未 apply 的旧版本条目在快照之后才写进旧库，GC 看不见，随后旧文件旧库
 一起删。修：切换后等 Raft 层报告旧版本无待 apply 条目再建迭代器。
 
-**原型没有崩溃恢复**（`ReadPersist` 被注释、状态全在内存）→ 用户决定修而不是写 limitation。
-设计草案 `docs/crash-recovery.md`，待确认后实现。
+**崩溃恢复已实现并验证**（用户决定修而不是写 limitation）：`5aa8fdf` `e8ebaab` `4a3d9ef`，
+设计与验证结果见 `docs/crash-recovery.md`。三种场景（follower 重启、旧 leader 重启、GC 中途宕机重启）
+在 -race 三节点下全部追平、直读全对、0 race。
 
 **仍未验证**：
 - [ ] **三台物理机**。现为 2 台跑 3 实例，性能数据不可用；论文口径是 3 节点 3 副本
-- [ ] **-race 覆盖冲突截断 / 旧 leader 重启回归**。依赖崩溃恢复实现后才能测
+- [x] **旧 leader 重启回归**：`recover.sh MODE=restart` 已覆盖
+- [ ] **冲突截断路径**：需要在写入进行中杀 leader 让其留下未提交尾巴；现有脚本是写完再杀，
+      截断分支只有单测（`TestOverwriteTruncatesStaleTail`）覆盖
+- [ ] **落后到 leader 内存日志之外的节点**：无 InstallSnapshot，重启节点只能在 leader
+      仍保留其缺失条目时追上（leader 的压缩受 min(matchIndex) 约束，宕机期间不会裁）
+- [ ] **GC 完成后旧一轮排序文件未删**（`RaftState_sorted_1` 在第 2 轮后仍在）：原有行为，占空间
 - [ ] **doAppendEntries 加锁后的吞吐**。锁内只拷贝指针切片，理论上可忽略，但没量过；
       下次跑 PUT 主表时顺带与 `73306ea` 对照一次
 - [ ] **GC 等待 apply 的耗时**（`dc62bb6`）。正常应为 0~几 ms；超过 50ms 会打印

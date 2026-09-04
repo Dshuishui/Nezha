@@ -1,4 +1,25 @@
-# 崩溃恢复设计（草案，待确认后实现）
+# 崩溃恢复设计（已实现，2026-09-04）
+
+> 实现：`5aa8fdf`（Raft 日志可重建 + term/vote/基址落盘）、`e8ebaab`（applied 下标随数据同批写入）、
+> `4a3d9ef`（KV 状态文件、启动恢复、GC 中断续做）。验证脚本 `scripts/multinode/recover.sh`。
+>
+> 与草案的差别：
+> - 空指令（TermLog）也写进日志文件（keySize==0 的标记记录），否则文件里 index 不连续无法重建；
+>   于是每条日志都占一个 Offsets 槽位，follower 冲突覆盖的偏移计算也因此变精确。
+> - 覆盖写之后把文件截断到新内容末尾（旧实现把写入位置挪回旧文件末尾，留下陈旧字节）。
+> - `kv_state.json` 在 GC **切换时**就写一次（草案只在完成时写）：切换一生效新写入就进新文件，
+>   崩在搬运中途时必须知道日志分布在两个文件里。
+> - 状态文件里的日志基址是"磁盘上最老保留文件之前那一条"，与内存裁剪点 `lastIncludedIndex` 分开记。
+>
+> 验证（三节点 -race 构建，`recover.sh`）：
+> - follower `kill -9` → leader 期间重写 20000 条 → 重启 → 10 s 内追平并直读全对
+> - leader `kill -9` → 新 leader 重写 20000 条 → 旧 leader 重启为 follower → 10 s 内追平并直读全对
+> - follower 在 GC 切换后、搬运前 `kill -9`（`NEZHA_GC_PAUSE_MS`）→ 重启后重做第 1 轮 GC、
+>   随后正常做第 2 轮 → 直读全对；三个节点 0 DATA RACE
+>
+> 未覆盖：落后到 leader 内存日志之外的追赶（需要 InstallSnapshot）；GC 完成后旧一轮的排序文件
+> （`RaftState_sorted_1`）仍留在磁盘上，这是原有行为，恢复不依赖它。
+
 
 > 现状：节点重启等于全新节点。`ReadPersist` 被注释掉，Raft 的 term/votedFor/日志/偏移队列
 > 全在内存；RocksDB 与日志文件虽然在磁盘上，但启动时没有任何代码去读它们、把状态接回来。
