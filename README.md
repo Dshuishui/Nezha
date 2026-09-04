@@ -3,7 +3,8 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Go 1.24+](https://img.shields.io/badge/go-1.24+-blue.svg)](https://golang.org/dl/)
 [![RocksDB](https://img.shields.io/badge/RocksDB-8.x-green.svg)](https://rocksdb.org/)
-[![ICDE 2026](https://img.shields.io/badge/ICDE-2026-orange.svg)](https://icde2026.github.io/)
+[![ICDE 2026](https://img.shields.io/badge/ICDE-2026-orange.svg)](https://doi.org/10.1109/ICDE65706.2026.00187)
+[![arXiv](https://img.shields.io/badge/arXiv-2603.09122-b31b1b.svg)](https://arxiv.org/abs/2603.09122)
 
 **High-Performance Distributed Key-Value Storage System with Key-Value Separation Optimized Raft Consensus Protocol**
 
@@ -414,9 +415,25 @@ sudo ufw allow 30881/tcp
 
 ## Citation
 
-This work has been accepted at **ICDE 2026**. If you use Nezha in your research, please cite:
+This work was published at the **42nd IEEE International Conference on Data Engineering (ICDE 2026)**, Montreal, QC, Canada, May 4–8, 2026. If you use Nezha in your research, please cite:
 
-> Yangyang Wang, Yucong Dong, Ziqian Cheng, and Zichen Xu. "Nezha: A Key-Value Separated Distributed Store with Optimized Raft Integration." *Accepted at IEEE International Conference on Data Engineering (ICDE 2026).*
+> Yangyang Wang, Yucong Dong, Ziqian Cheng, and Zichen Xu. "Nezha: A Key-Value Separated Distributed Store with Optimized Raft Integration." In *Proceedings of the 42nd IEEE International Conference on Data Engineering (ICDE 2026)*, pp. 2503–2516. IEEE, 2026. [https://doi.org/10.1109/ICDE65706.2026.00187](https://doi.org/10.1109/ICDE65706.2026.00187)
+
+```bibtex
+@inproceedings{wang2026nezha,
+  author    = {Yangyang Wang and Yucong Dong and Ziqian Cheng and Zichen Xu},
+  title     = {Nezha: A Key-Value Separated Distributed Store with Optimized Raft Integration},
+  booktitle = {Proceedings of the 42nd {IEEE} International Conference on Data Engineering ({ICDE} 2026)},
+  address   = {Montreal, QC, Canada},
+  pages     = {2503--2516},
+  publisher = {IEEE},
+  year      = {2026},
+  doi       = {10.1109/ICDE65706.2026.00187}
+}
+```
+
+- **IEEE Xplore**: https://ieeexplore.ieee.org/document/11629449
+- **arXiv preprint**: https://arxiv.org/abs/2603.09122
 
 ---
 
