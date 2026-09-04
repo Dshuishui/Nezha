@@ -56,7 +56,7 @@ fi
 
 # ── Run benchmark ──────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 info "Running write benchmark (100 ops)..."
 cd "$PROJECT_DIR"

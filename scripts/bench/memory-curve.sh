@@ -1,15 +1,15 @@
 #!/bin/bash
 # 内存随写入量的增长曲线：验证 rf.log 压缩使内存与数据集解耦。
-# 用法: bash scripts/bench-memory-curve.sh <标签> [value大小] [写入量列表...]
-# 例:   bash scripts/bench-memory-curve.sh after 64 250000 500000 1000000 2000000
+# 用法: bash scripts/bench/memory-curve.sh <标签> [value大小] [写入量列表...]
+# 例:   bash scripts/bench/memory-curve.sh after 64 250000 500000 1000000 2000000
 set -u
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
 info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 fail() { echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 
-# shellcheck source=scripts/lib/bench-common.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/bench-common.sh"
+# shellcheck source=../lib/bench-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/bench-common.sh"
 
 PROJECT_DIR="${PROJECT_DIR:-$HOME/Github/Nezha}"
 cd "$PROJECT_DIR" || fail "找不到项目目录 $PROJECT_DIR"

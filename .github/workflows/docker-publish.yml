@@ -6,7 +6,7 @@ on:
     branches:
       - multiGC
     paths:
-      - 'docker/Dockerfile'
+      - 'deploy/docker/Dockerfile'
       - 'go.mod'
       - 'go.sum'
       - '**/*.go'
@@ -31,7 +31,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: docker/Dockerfile
+          file: deploy/docker/Dockerfile
           push: true
           tags: |
             dyucong/nezha:latest

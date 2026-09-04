@@ -1,6 +1,6 @@
 #!/bin/bash
 # 量化 rf.log 压缩效果：跑写入负载，采样节点 RSS。
-# 用法: bash scripts/test-raftlog-memory.sh [value大小] [写入条数]
+# 用法: bash scripts/test/raftlog-memory.sh [value大小] [写入条数]
 set -e
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
@@ -8,11 +8,11 @@ info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 fail() { echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 
-# shellcheck source=scripts/lib/bench-common.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/bench-common.sh"
+# shellcheck source=../lib/bench-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/bench-common.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 cd "$PROJECT_DIR"
 
 VSIZE="${1:-64}"

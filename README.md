@@ -237,7 +237,7 @@ docker run -d \
 ### Using Docker Compose
 
 ```bash
-cd docker
+cd deploy/docker
 docker-compose up -d
 ```
 
@@ -253,7 +253,7 @@ docker rm -v nezha        # Remove container and data
 Or use the management script:
 
 ```bash
-cd docker
+cd deploy/docker
 ./manage.sh start    # Start node
 ./manage.sh stop     # Stop node
 ./manage.sh restart  # Restart node
@@ -267,7 +267,7 @@ cd docker
 If you want to build the image yourself instead of using the pre-built one:
 
 ```bash
-cd docker
+cd deploy/docker
 ./manage.sh build   # ~2 min (uses apt librocksdb, no source compilation)
 ```
 

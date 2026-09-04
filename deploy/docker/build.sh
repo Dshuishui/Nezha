@@ -13,19 +13,19 @@ echo "检查必要文件..."
 
 if [ ! -f "nezha" ]; then
     echo "❌ 错误: nezha 可执行文件不存在"
-    echo "请确保已将编译好的 nezha 复制到 docker/ 目录"
+    echo "请确保已将编译好的 nezha 复制到 deploy/docker/ 目录"
     exit 1
 fi
 
 if [ ! -f "librocksdb.so.5.18" ]; then
     echo "❌ 错误: librocksdb.so.5.18 库文件不存在"
-    echo "请确保已将 RocksDB 库文件复制到 docker/ 目录"
+    echo "请确保已将 RocksDB 库文件复制到 deploy/docker/ 目录"
     exit 1
 fi
 
 if [ ! -f "libgflags.so.2" ]; then
     echo "❌ 错误: libgflags.so.2 库文件不存在"
-    echo "请确保已将 gflags 库文件复制到 docker/ 目录"
+    echo "请确保已将 gflags 库文件复制到 deploy/docker/ 目录"
     exit 1
 fi
 
