@@ -126,6 +126,7 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 
 	// 切换到新的文件和RocksDB
 	kvs.AnotherSwitchToNewFiles(anotherNewRaftStateLogPath, newPersister)
+	kvs.waitOldVersionApplied(int32(kvs.numGC - 1)) // 理由见 GC_opt.go 同名函数
 	kvs.switchedPersister = newPersister
 
 	return kvs.mergeIntoSortedFile(startTime)

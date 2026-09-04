@@ -123,6 +123,7 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 
 	// 切换到新的文件和RocksDB
 	kvs.SwitchToNewFiles(firstNewRaftStateLogPath, newPersister)
+	kvs.waitOldVersionApplied(int32(kvs.numGC - 1))
 
 	// ============= 优化开始：边写边构建索引 =============
 
@@ -635,6 +636,26 @@ func (kvs *KVServer) checkLogDBConsistency() error {
 // 	fmt.Printf("Garbage collection completed in %v\n", time.Since(startTime))
 // 	return nil
 // }
+
+// waitOldVersionApplied 等到所有落在旧日志文件（版本 oldVersion）里的条目都 apply 完毕。
+//
+// 切换文件之后、对旧库建迭代器之前必须等这一步。RocksDB 迭代器是创建时刻的快照：
+// 一条已提交但还没 apply 的旧版本条目，会在快照之后才被写进旧库，GC 看不见它，
+// 随后旧文件被删、旧库被弃，这个 key 就没了。apply 是事件驱动的，正常只落后几微秒，
+// 所以此前从未被测出来；但 follower 落后或高并发下的 apply 积压都能把窗口撑开。
+func (kvs *KVServer) waitOldVersionApplied(oldVersion int32) {
+	start := time.Now()
+	for {
+		v, pending := kvs.raft.OldestPendingVersion()
+		if !pending || v > oldVersion {
+			if waited := time.Since(start); waited > 50*time.Millisecond {
+				fmt.Printf("GC 等待旧版本条目 apply 完毕，用时 %v\n", waited)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
 
 func (kvs *KVServer) SwitchToNewFiles(newLog string, newPersister *raft.Persister) {
 	kvs.mu.Lock()
