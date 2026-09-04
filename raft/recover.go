@@ -12,30 +12,32 @@ import (
 	"gitee.com/dong-shuishui/FlexSync/util"
 )
 
-// LogFile 是恢复时要扫的一个日志文件：路径 + 它对应的 GC 版本号（写进 offsetVersions）。
+// LogFile is one log file to replay during recovery: its path and the GC file version its
+// offsets belong to (recorded into offsetVersions).
 type LogFile struct {
 	Path    string
 	Version int32
 }
 
-// 单条记录的大小上限，只用来识别损坏的头部；正常记录远小于此。
+// Record size limits used only to recognise a corrupt header; real records are far smaller.
 const (
 	maxRecordKey   = 1 << 16
 	maxRecordValue = 1 << 30
 	recordHeader   = 20
 )
 
-// RecoverLog 用磁盘上仍保留的日志文件重建内存里的 Raft 日志。
+// RecoverLog rebuilds the in-memory Raft log from the log files still on disk.
 //
-// 文件按从旧到新给出，记录的 index 必须连续；第一条记录的 index-1 即日志基址，
-// 需与状态文件里的 BaseIndex 一致，否则视为状态不一致直接报错——不猜。
-// index > lastApplied 的记录重新进入 Offsets/offsetVersions 队列，等 apply 循环消费；
-// 之前的只留在 rf.log 里供一致性检查用，第一次 compactLog 会把它们裁掉。
+// Files are given oldest first and their record indices must be contiguous. The first
+// record's index minus one is the log base; it must match BaseIndex from the state file,
+// otherwise the state is inconsistent and recovery fails rather than guessing. Records with
+// index > lastApplied re-enter the Offsets/offsetVersions queue for the apply loop; earlier
+// ones stay in rf.log for consistency checks only, and the first compactLog trims them.
 //
-// 只有最后一个文件的最后一条允许不完整（崩溃时正写到一半），此时把文件截断到该条起点。
-// 其他任何位置的不完整或不连续都是错误。
+// Only the final record of the last file may be incomplete (a crash mid-write); it is
+// truncated away. An incomplete record anywhere else, or a gap, is an error.
 //
-// 调用方保证此时各 loop 尚未启动，无需加锁。
+// The caller guarantees that no loop is running yet, so no locking is needed.
 func (rf *Raft) RecoverLog(files []LogFile, lastApplied int) (lastIndex int, err error) {
 	var entries []*raftrpc.LogEntry
 	var offsets []int64
@@ -55,7 +57,7 @@ func (rf *Raft) RecoverLog(files []LogFile, lastApplied int) (lastIndex int, err
 		for {
 			n, rerr := io.ReadFull(r, hdr)
 			if rerr == io.EOF && n == 0 {
-				break // 正好读到文件尾
+				break // clean end of file
 			}
 			var ks, vs uint32
 			if rerr == nil {
@@ -75,7 +77,7 @@ func (rf *Raft) RecoverLog(files []LogFile, lastApplied int) (lastIndex int, err
 					f.Close()
 					return 0, fmt.Errorf("%s: incomplete record at offset %d in a non-final log file: %v", lf.Path, offset, rerr)
 				}
-				util.EPrintf("RaftNode[%d] 恢复：%s 末尾有一条不完整记录（offset=%d: %v），截断到该记录起点", rf.me, lf.Path, offset, rerr)
+				util.EPrintf("RaftNode[%d] recovery: %s ends with an incomplete record (offset=%d: %v); truncating to the record start", rf.me, lf.Path, offset, rerr)
 				if terr := f.Truncate(offset); terr != nil {
 					f.Close()
 					return 0, fmt.Errorf("truncate %s to %d: %v", lf.Path, offset, terr)
@@ -97,7 +99,7 @@ func (rf *Raft) RecoverLog(files []LogFile, lastApplied int) (lastIndex int, err
 			}
 			cmd := &raftrpc.DetailCod{Index: int32(index), Term: term}
 			if ks == 0 {
-				cmd.OpType = "TermLog" // 空指令标记：key 长度为 0，正常记录的 key 恒为 KeyLength
+				cmd.OpType = "TermLog" // no-op marker: zero-length key; real keys are always KeyLength bytes
 			} else {
 				cmd.OpType = "Put"
 				cmd.Key = rf.persister.UnpadKey(string(body[:ks]))
@@ -115,7 +117,7 @@ func (rf *Raft) RecoverLog(files []LogFile, lastApplied int) (lastIndex int, err
 	}
 
 	if expected == -1 {
-		// 一条记录都没有：允许，只要 lastApplied 也是 0 且基址为 0（空集群重启）
+		// No records at all is fine only for an empty cluster restart.
 		if lastApplied != 0 || rf.lastIncludedIndex != 0 {
 			return 0, errors.New("log files are empty but applied index / base index are not zero")
 		}
@@ -135,8 +137,8 @@ func (rf *Raft) RecoverLog(files []LogFile, lastApplied int) (lastIndex int, err
 	rf.offsetVersions = versions
 	rf.lastApplied = lastApplied
 	rf.commitIndex = lastApplied
-	rf.shotOffset = lastApplied // 不变式：Offsets[0] 对应 index lastApplied+1
-	util.DPrintf("RaftNode[%d] 恢复完成：log (%d, %d]，%d 条待 apply，term=%d votedFor=%d",
+	rf.shotOffset = lastApplied // invariant: Offsets[0] belongs to index lastApplied+1
+	util.DPrintf("RaftNode[%d] recovery complete: log (%d, %d], %d entries pending apply, term=%d votedFor=%d",
 		rf.me, base, lastIndex, len(offsets), rf.currentTerm, rf.votedFor)
 	return lastIndex, nil
 }

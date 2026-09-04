@@ -273,12 +273,12 @@ type KVServer struct {
 	// 落到新库的写入不能丢。
 	switchedPersister *raft.Persister
 
-	// ---- 崩溃恢复（见 docs/crash-recovery.md 与 recovery.go）----
+	// ---- crash recovery (see docs/crash-recovery.md and recovery.go) ----
 	dataDir                string
-	currentDBPath          string // kvs.persister 打开的 RocksDB 目录
-	oldDBPath              string // GC 进行中时 kvs.oldPersister 的目录
-	gcInProgress           bool   // 切换已生效、搬运未完成
-	sortedFilePath         string // 最近一轮完成的排序文件；空表示尚未 GC
+	currentDBPath          string // RocksDB directory opened by kvs.persister
+	oldDBPath              string // directory of kvs.oldPersister while a GC round is in flight
+	gcInProgress           bool   // switch done, migration not yet finished
+	sortedFilePath         string // latest completed sorted file; empty until the first GC
 	anotherSortedFilePath  string // 用于存储已排序文件的位置
 	anothersortedFileIndex *SortedFileIndex
 	lastSortedFileIndex    *SortedFileIndex
@@ -1330,9 +1330,10 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 
 func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResponse {
 	tHandler := time.Now() // handler 全程，用于校验各阶段之和有没有漏测
-	// 不再在这里记"该写进哪个文件"：这个值与实际写入时刻之间隔着一次 GC 切换，
-	// 曾经就是靠它判断而错位了三条记录。现在版本号由 Raft 层在写入时与偏移一起记录
-	//（ApplyMsg.FileVersion），并且这里裸读 kvs.numGC 本身也与 GC 的自增构成数据竞争。
+	// The target file is no longer decided here: a GC switch can happen between this point
+	// and the actual write, which once misplaced three records. The Raft layer now records
+	// the file version together with the offset at write time (ApplyMsg.FileVersion), and
+	// reading kvs.numGC here without a lock raced with GC's increment anyway.
 	reply := &kvrpc.PutInRaftResponse{Err: raft.OK, LeaderId: 0}
 	op := raftrpc.DetailCod{
 		OpType:   args.Op,
@@ -1347,8 +1348,8 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 	// T1开始 - Raft日志持久化阶段
 	// t1Start := time.Now()
 	tStart := time.Now()
-	// op.Index / op.Term 由 Start 在持锁、发布进日志之前填好；这里不能再写回——
-	// 返回时复制 goroutine 可能已在编码这条命令，写读同一字段就是数据竞争。
+	// Start fills op.Index/op.Term under its lock before publishing the entry; writing them
+	// back here would race with the replication goroutine that may already be encoding it.
 	_, _, isLeader = kvs.raft.Start(&op)
 	raftStartDur := time.Since(tStart)
 	// t1End := time.Now()
@@ -1769,7 +1770,7 @@ func (kvs *KVServer) applyLoop() {
 					op := cmd.(*raftrpc.DetailCod) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
 
 					if op.OpType == "TermLog" { // 需要进行类型断言才能访问结构体的字段，如果是leader开始第一个Term时发起的空指令，则不用执行。
-						kvs.persister.SetApplied(index) // 空指令没有数据，但 applied 下标要跟上，重启才不会重放
+						kvs.persister.SetApplied(index) // no data for a no-op, but the applied index must advance or a restart replays it
 						return
 					}
 
@@ -1828,11 +1829,12 @@ func (kvs *KVServer) applyLoop() {
 							// rf.mu 的写入路径）。msg.FileVersion 与 offset 同源同锁，
 							// 是唯一能保证配套的那个。
 							recordPlacement(len(op.Value), false)
-							kvs.persister.PutOffsetApplied(op.Key, offset, index) // 数据与 applied 下标同批
+							kvs.persister.PutOffsetApplied(op.Key, offset, index) // row and applied index in one batch
 						} else { // 否则存旧文件
 							kvs.oldPersister.Put_opt(op.Key, offset) //  Nezha
-							// 数据在旧库、下标在当前库，两次写不原子：先数据后下标。
-							// 崩在中间只会让这条在重启后重放一次，重放幂等（同 key 同偏移）。
+							// Row in the old index, marker in the current one: two writes, not atomic.
+							// Data first, marker second, so a crash in between only replays this entry
+							// once on restart, and the replay is idempotent (same key, same offset).
 							kvs.persister.SetApplied(index)
 							// kvs.oldPersister.Put(op.Key, op.Value)		//  original
 						}
@@ -1968,7 +1970,8 @@ func main() {
 	// 预写日志，而那个设置只在建库时读取一次。放在 Init 之后设置，库已经带着
 	// WAL 建好了，PASV 与 Original 会写出字节数完全相同的 WAL——实测两者
 	// 1920391 字节分毫不差，开关形同虚设。
-	// RocksDB 的打开推迟到 recoverOrInit：恢复时要打开的是状态文件指向的那个库，不一定是初始库。
+	// Opening RocksDB is deferred to recoverOrInit: on recovery the store to open is the one
+	// named by the state file, not necessarily the initial one.
 	kvs.startGC = false
 	kvs.endGC = false // 测试效果
 	kvs.numGC = 0
@@ -2012,16 +2015,17 @@ func main() {
 	InitGCPaths(dataDir)
 	InitAnotherGCPaths(dataDir)
 	kvs.dataDir = dataDir
-	// 全新节点在这里打开初始库并写下初始状态；重启节点则接回 GC 状态、排序文件索引与
-	// applied 下标，并拿到 Raft 需要扫描的日志文件列表。此时任何 loop 都还没启动。
+	// A fresh node opens the initial store and writes its initial state here; a restarted
+	// node restores GC state, the sorted-file index and the applied index, and gets the list
+	// of log files Raft must replay. No loop is running yet.
 	recoveredFiles, recoveredApplied := kvs.recoverOrInit(InitialPersister)
 	kvs.lastAppliedIndex = recoveredApplied
 
 	go kvs.applyLoop()
-	// 服务端随进程存活，没有任何地方会取消它；之前 WithCancel 丢掉 cancel 与此等价，
-	// 只是让 go vet 报"context 泄漏"。
+	// The servers live as long as the process and nothing cancels them; the former
+	// WithCancel with a discarded cancel was equivalent and only tripped go vet.
 	ctx := context.Background()
-	// 对客户端开放（RegisterKVServer）放到 Raft 恢复并启动之后，见函数末尾。
+	// The client-facing server (RegisterKVServer) starts after Raft has recovered; see below.
 	go func() {
 		// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
 		timeout := 5 * time.Second
@@ -2063,7 +2067,7 @@ func main() {
 				continue
 			}
 			if kvs.gcInProgress {
-				continue // 上一轮（含重启后重做的那一轮）还没收尾，不能再起一轮
+				continue // the previous round (possibly a post-restart redo) has not finished
 			}
 			// 第一轮GC
 			if kvs.FirstGC {
@@ -2119,7 +2123,7 @@ func main() {
 
 	wg.Add(1 + 1)
 	raftStateFile := filepath.Join(dataDir, "data", "raft_state.json")
-	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, raftStateFile) // 只构造，不启动
+	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, raftStateFile) // construct only; loops start below
 	if kvs.extraPersistence {
 		// Dwisckey：value 在 Raft 日志之外再落一次盘。文件与 valuelog 同目录，
 		// 只写不读，纯粹为了把那一次持久化的代价计入测量。
@@ -2135,10 +2139,11 @@ func main() {
 	}
 	if len(recoveredFiles) > 0 {
 		if _, err := kvs.raft.RecoverLog(recoveredFiles, recoveredApplied); err != nil {
-			log.Fatalf("[RECOVER] 重建 Raft 日志失败：%v", err)
+			log.Fatalf("[RECOVER] rebuild Raft log: %v", err)
 		}
 	}
-	// 当前日志文件带版本号挂接（全新节点是 RaftState.log / 版本 0），写入位置接在文件末尾。
+	// Attach the current log file with its version (a fresh node: RaftState.log, version 0);
+	// appends continue at the end of the file.
 	kvs.raft.SetCurrentLogVersioned(kvs.currentLog, int32(kvs.numGC))
 	kvs.raft.Gap = gap
 	kvs.raft.SyncTime = syncTime
