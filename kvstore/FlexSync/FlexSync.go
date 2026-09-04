@@ -1334,17 +1334,16 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 
 func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResponse {
 	tHandler := time.Now() // handler 全程，用于校验各阶段之和有没有漏测
-	// 判断数据应该写入的哪个文件
-	Newversion := kvs.numGC
-
+	// 不再在这里记"该写进哪个文件"：这个值与实际写入时刻之间隔着一次 GC 切换，
+	// 曾经就是靠它判断而错位了三条记录。现在版本号由 Raft 层在写入时与偏移一起记录
+	//（ApplyMsg.FileVersion），并且这里裸读 kvs.numGC 本身也与 GC 的自增构成数据竞争。
 	reply := &kvrpc.PutInRaftResponse{Err: raft.OK, LeaderId: 0}
 	op := raftrpc.DetailCod{
-		OpType:      args.Op,
-		Key:         args.Key,
-		Value:       args.Value,
-		ClientId:    args.ClientId,
-		SeqId:       args.SeqId,
-		FileVersion: int64(Newversion),
+		OpType:   args.Op,
+		Key:      args.Key,
+		Value:    args.Value,
+		ClientId: args.ClientId,
+		SeqId:    args.SeqId,
 	}
 
 	// 写入raft层
@@ -1352,7 +1351,9 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 	// T1开始 - Raft日志持久化阶段
 	// t1Start := time.Now()
 	tStart := time.Now()
-	op.Index, op.Term, isLeader = kvs.raft.Start(&op)
+	// op.Index / op.Term 由 Start 在持锁、发布进日志之前填好；这里不能再写回——
+	// 返回时复制 goroutine 可能已在编码这条命令，写读同一字段就是数据竞争。
+	_, _, isLeader = kvs.raft.Start(&op)
 	raftStartDur := time.Since(tStart)
 	// t1End := time.Now()
 	// t1Duration := t1End.Sub(t1Start)
@@ -2583,7 +2584,6 @@ func main() {
 	}
 	kvs.raft.SetCurrentLog(kvs.InitialRaftStateLog)
 	kvs.raft.Gap = gap
-	kvs.raft.SetNumGC(kvs.numGC)
 	kvs.raft.SyncTime = syncTime
 
 	wg.Wait()

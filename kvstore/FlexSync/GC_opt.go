@@ -641,7 +641,6 @@ func (kvs *KVServer) SwitchToNewFiles(newLog string, newPersister *raft.Persiste
 	defer kvs.mu.Unlock()
 	kvs.startGC = true
 	kvs.numGC++
-	kvs.raft.SetNumGC(kvs.numGC)
 
 	// 更新两个路径，使得垃圾回收与客户端请求并行执行
 	kvs.currentLog = newLog

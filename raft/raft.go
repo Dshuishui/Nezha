@@ -134,7 +134,6 @@ type Raft struct {
 	originalLog    string            // dwisckey
 	nullLogEntry   *raftrpc.LogEntry // 用于替换已应用的日志
 	lastNulled     int
-	numGC          int
 
 	// 日志压缩基址：rf.log[0] 对应的日志 index 为 lastIncludedIndex+1。
 	// 已压缩的条目从内存中物理删除，其内容仍保留在 rf.currentLog 磁盘文件中。
@@ -303,12 +302,6 @@ func (rf *Raft) SetCurrentPersister(persister *Persister) {
 	// rf.mu.Lock()
 	// defer rf.mu.Unlock()
 	rf.persister = persister
-}
-
-func (rf *Raft) SetNumGC(numGC int) {
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
-	rf.numGC = numGC
 }
 
 // func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
@@ -907,8 +900,6 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			Value:       logEntry.GetCommand().Value,
 		}
 		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
-			// follower在处理日志的时候更新numGC,leader则是在startput的时候
-			logEntry.Command.FileVersion = int64(rf.numGC)
 			rf.log = append(rf.log, logEntry)
 			if logEntry.Command.OpType != "TermLog" {
 				rf.batchLog = append(rf.batchLog, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
@@ -936,9 +927,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		} else { // 重叠部分
 			if rf.log[logPos].Term != logEntry.Term {
 				fmt.Println("还有重叠的情况嘛？？？")
-				rf.log = rf.log[:logPos] // 删除当前以及后续所有log
-				// follower在处理日志的时候更新numGC,leader则是在startput的时候
-				logEntry.Command.FileVersion = int64(rf.numGC)
+				rf.log = rf.log[:logPos]          // 删除当前以及后续所有log
 				rf.log = append(rf.log, logEntry) // 把新log加入进来
 
 				// offset := rf.Offsets[index]      // 截取后面错误的offset
@@ -1045,9 +1034,13 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		Command: command.(*raftrpc.DetailCod),
 		Term:    int32(rf.currentTerm),
 	}
-	// fmt.Println("到这了嘛4")
 	index = rf.lastIndex() + 1 // 加一是为了除去空指令
 	term = rf.currentTerm
+	// 在发布进 rf.log 之前就把 Index/Term 填进命令。以前是调用方拿到返回值后再写回
+	// op.Index/op.Term，而那时同一个结构体已经被复制 goroutine 拿去 gob 编码了——
+	// 写读同一字段无同步，-race 抓到的就是这个。
+	logEntry.Command.Index = int32(index)
+	logEntry.Command.Term = int32(term)
 	// fmt.Printf("11111offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
 	var myBatch *flushBatch
 	var needSignal bool
@@ -1298,12 +1291,16 @@ func (rf *Raft) AppendMonitor() {
 	timeout := 3 * time.Second
 	for {
 		time.Sleep(2 * time.Second)
-		if (time.Since(rf.LastAppendTime) > timeout) && rf.GetLeaderId() != int32(rf.me) {
+		rf.mu.Lock()
+		silent := time.Since(rf.LastAppendTime) > timeout
+		last := rf.lastIndex()
+		rf.mu.Unlock()
+		if silent && rf.GetLeaderId() != int32(rf.me) {
 			//  排在第一的服务器和后面的服务器，打印的内容是不一样的。因为排在第一个的默认就是满足第二个条件了。
 			fmt.Println("3秒没有收到来自leader的同步或者心跳信息！")
 			continue
 		}
-		fmt.Printf("当前的log大小%v\n", rf.lastIndex())
+		fmt.Printf("当前的log大小%v\n", last)
 	}
 }
 
@@ -1426,7 +1423,7 @@ func (rf *Raft) electionLoop() {
 						OpType: "TermLog",
 					}
 					rf.mu.Unlock()
-					op.Index, op.Term, _ = rf.Start(&op) // 需要提交一个空的指令，需要在初始化nextindex之后，提交空指令
+					rf.Start(&op) // 需要提交一个空的指令，需要在初始化nextindex之后，提交空指令；Index/Term 由 Start 填
 					rf.mu.Lock()
 					util.DPrintf("成为leader后发送第一个空指令给Raft层")
 					// rf.lastBroadcastTime = time.Unix(0, 0) // 令appendEntries广播立即执行，因为leader的term开始时，需要提交一条空的无操作记录。
@@ -1465,9 +1462,17 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	var buffer bytes.Buffer
 	enc := gob.NewEncoder(&buffer)
 	var totalSize int64
-	var appendLog []*raftrpc.LogEntry
 
+	// 组装请求时必须持有 rf.mu：这里读的 currentTerm / commitIndex / nextIndex / log /
+	// lastIncludedIndex 都由别的 goroutine 在锁内改。以前这一段是裸读的，-race 抓到
+	// 两类后果：Start 的 append 让切片重分配时这里可能读到撕裂的切片头（越界或读到
+	// nil，原代码里那句"rf.log 的第 %v 个为 nil"就是给这个现象打的补丁）；compactLog
+	// 换底层数组并推进 lastIncludedIndex 是两步，夹在中间读到的下标会对到错误的条目，
+	// 而 term 一致时 follower 的一致性检查发现不了，日志就此静默错位。
+	// 锁内只拷贝指针切片，gob 编码和 RPC 都在锁外做，不拖慢 Start。
 	args := raftrpc.AppendEntriesInRaftRequest{}
+	var candidates []*raftrpc.LogEntry
+	rf.mu.Lock()
 	args.Term = int32(rf.currentTerm)
 	args.LeaderId = int32(rf.me)
 	args.LeaderCommit = int32(rf.commitIndex)
@@ -1476,9 +1481,11 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// 待发送的起始位置必须仍在内存中。nextIndex 落在已压缩区间时无法从 rf.log 取到条目
 	// （包括 PrevLogIndex==0 但本节点已压缩过的情况），跳过本轮。
 	// 压缩点受 matchIndex 约束，正常不会走到这里；第三步将改为从磁盘回读旧条目。
-	if rf.index2LogPos(rf.nextIndex[peerId]) < 0 {
+	start := rf.index2LogPos(rf.nextIndex[peerId])
+	if start < 0 {
 		util.DPrintf("RaftNode[%d] peer[%d] nextIndex[%d] 落后于已压缩点[%d]，跳过本轮日志同步",
 			rf.me, peerId, rf.nextIndex[peerId], rf.lastIncludedIndex)
+		rf.mu.Unlock()
 		go func(id int) { rf.SyncChans[id] <- strconv.Itoa(id) }(peerId)
 		return
 	}
@@ -1490,53 +1497,35 @@ func (rf *Raft) doAppendEntries(peerId int) {
 		if prevTerm == -1 {
 			util.DPrintf("RaftNode[%d] peer[%d] PrevLogIndex[%d] 已压缩，跳过本轮日志同步",
 				rf.me, peerId, args.PrevLogIndex)
+			rf.mu.Unlock()
 			go func(id int) { rf.SyncChans[id] <- strconv.Itoa(id) }(peerId)
 			return
 		}
 		args.PrevLogTerm = prevTerm
 	}
-	// start := rf.index2LogPos(int(args.PrevLogIndex)+1)
-	// if (start + 0)<len(rf.log)  {
-	// 	appendLog = rf.log[start:start + 100]
-	// }else{
-	// 	appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
-	// }
+	if start < len(rf.log) {
+		candidates = make([]*raftrpc.LogEntry, len(rf.log)-start)
+		copy(candidates, rf.log[start:])
+	}
+	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
+	rf.mu.Unlock()
 
-	// 设置日志同步的阈值
-	// fmt.Println("The length of appendlog:",len(rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]))
-
-	for i := rf.index2LogPos(int(args.PrevLogIndex) + 1); i < len(rf.log); i++ {
-		if rf.log[i] == nil {
-			fmt.Printf("rf.log的第%v个为nil\n", i)
-			continue
-		}
-		if err := enc.Encode(rf.log[i]); err != nil { // 将 rf.log[i] 日志项编码后的字节序列写入到 buffer 缓冲区中
+	// 按编码后的总大小截批：超过 threshold 就只发前面这一段。条目发布进 rf.log 之后
+	// 不再被修改，所以在锁外编码是安全的。
+	n := len(candidates)
+	for i, e := range candidates {
+		if err := enc.Encode(e); err != nil { // 将日志项编码后的字节序列写入到 buffer 缓冲区中
 			fmt.Println("Encode error：", err)
 		}
 		totalSize += int64(buffer.Len())
-		// 如果总大小超过3MB，截取日志数组并退出循环
 		if totalSize >= threshold {
-			appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):i] // 不包括第i个索引
+			n = i // 不包括第 i 个
 			break
 		}
 	}
-	if totalSize < threshold {
-		appendLog = rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]
-	}
 	buffer.Reset()
+	appendLog := candidates[:n]
 	args.Entries = appendLog
-
-	// fmt.Printf("此时下标会不会有问题，log长度：%v，下标：%v", len(rf.log), args.PrevLogIndex+1)
-	// data, _ := json.Marshal(appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
-	// args.Entries = data
-	// args.Entries = append(args.Entries, rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):]...)
-	// util.DPrintf("RaftNode[%d] appendEntries starts,  currentTerm[%d] peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] args.Entries[%d] commitIndex[%d]",
-	// 	rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], len(args.Entries), rf.commitIndex)
-
-	// if len(appendLog) != 0 { // 除去普通的心跳
-	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
-	// 	// fmt.Println("重置lastAppendTime")
-	// }
 
 	go func(peerId int) {
 		// util.DPrintf("RaftNode[%d] appendEntries starts, myTerm[%d] peerId[%d]", rf.me, args.Term, args.LeaderId)
