@@ -298,9 +298,12 @@ func (rf *Raft) SetCurrentLog(currentLog string) {
 	}
 }
 
+// SetCurrentPersister 由 GC 在切换文件时调用。rf.persister 只在 WriteEntryToFile
+// 里用（PadKey，持 logMu），所以用同一把锁：否则 GC 换指针与写路径读指针互为竞争。
+// PadKey 不依赖实例状态，读到哪一个都算对，但指针的读写本身必须有同步。
 func (rf *Raft) SetCurrentPersister(persister *Persister) {
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
+	rf.logMu.Lock()
+	defer rf.logMu.Unlock()
 	rf.persister = persister
 }
 
