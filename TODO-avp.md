@@ -4,7 +4,9 @@
 
 ## 正在跑（compact 后从这里接上）
 
-- 无。下一步：**多节点故障切换验证**（见下）。
+- 无。240/241 上没有残留进程，两台 `~/work/Nezha` 均在 `c0e41cd`。
+  节点脚本 `~/rep-node.sh start|stop|report ROLE [VS N normal|race]` 留在两台机器上可复用。
+- 下一步候选：三台物理机 / 六系统多节点对比 / 读路径 leader 检查 / -race 跑故障切换（见各节）。
 
 ## 🖥 实验机器（2026-09-04 更新）
 
@@ -410,9 +412,105 @@ GC 切换文件只走 `logMu`，拦不住持 `rf.mu` 的写入路径。切换窗
 对正确性验证等效（Raft 不关心节点在哪台物理机），但**性能测试不能这么跑**，
 同机实例会争资源。
 
+**已补验（2026-09-04 下午）：重复测量 + 工具检测**
+
+两节点（leader 240 / follower 241）连续 8 轮，每轮：起集群 → 写入并校验 → 等两边
+GC 稳定 → **分别直接读 leader 和 follower** 校验（server 无 leader 检查，所以能读到
+follower 自己 GC 重建后的索引）→ 收集日志 → 停。脚本：服务器 `~/rep-node.sh`，
+Mac 侧 `driver.sh`（scratchpad）。
+
+    轮  value  条数   构建     写入校验  读leader  读follower  GC(240|241)  日志错误
+    1   64B    20000  normal   OK        300/1500  300/1500    3|3          0
+    2   1KB    20000  normal   OK        300/1500  300/1500    3|3          0
+    3   4KB    10000  normal   OK        300/1500  300/1500    3|3          0
+    4   64B    20000  normal   OK        300/1500  300/1500    3|3          0
+    5   1KB    20000  normal   OK        300/1500  300/1500    3|3          0
+    6   4KB    10000  normal   OK        300/1500  300/1500    3|2 *        0
+    7   1KB    8000   -race    OK        300/1500  300/1500    3|3          DATA RACE ×3 / ×10
+    8   64B    8000   -race    OK        300/1500  300/1500    3|3          DATA RACE ×9 / ×3
+
+    * follower 少一轮 GC：GC 由 5s 定时检查文件大小触发，两边检查时刻不同，
+      follower 一次跨过了两个阈值。数据校验全对，不是错误。
+
+**数据层面 8/8 全对**（GET 300/300、SCAN 1500/1500，两个节点各自读）。第三个 bug
+（偏移与文件版本错配）在 3 种 value 大小 × 多轮下没有复现。
+
+**-race 抓到 11 对无同步访问**（数据没坏，但其中两对能坏）→ 已修 `1eb42fa`：
+- `doAppendEntries` 组装 AppendEntries 请求时不持 `rf.mu`，裸读 log 切片 /
+  nextIndex / commitIndex / lastIncludedIndex。`Start` 的 append 重分配时可读到撕裂的
+  切片头（越界或 nil——原代码那句 `rf.log[i] == nil` 检查就是给这个打的补丁）；
+  `compactLog` 换数组 + 推进 lastIncludedIndex 是两步，夹在中间会把错误的条目发给
+  follower，且 term 一致时一致性检查发现不了。修：锁内快照并拷贝指针切片，编码和
+  RPC 在锁外。
+- `StartPut` / 选举的 TermLog 在 `Start` 返回后写回 `op.Index/op.Term`，而此时同一
+  结构体已被复制 goroutine 拿去 gob 编码。修：`Start` 在发布前填好，调用方只用返回值。
+- follower 侧 `rf.numGC`（GC 无锁写、AppendEntries 读）——只喂已废弃的
+  `Command.FileVersion`，版本现由 `offsetVersions` 携带，整条路径删除。
+- `AppendMonitor` 诊断循环裸读——改为锁内读。
+
+**静态工具（全部在 tikv240 上跑，Mac 没有 RocksDB 头文件）**：
+- `go vet`：2 项（persister 不可达代码、丢弃的 cancel）→ 已清 `15b2e16`，现为 0
+- `staticcheck`：50 项，全是 U1000 未使用 / SA1019 弃用 API / S1000 风格 /
+  SA4004 `for{...break}`，无正确性类
+- `errcheck`：62 项，值得看的只有 GC 输出文件只 Flush 不 Sync → 已修 `3aad91d`
+  （源日志删除前必须 fsync 排序文件，否则掉电丢整轮数据）
+- `go test -race`：通过（只有 persister 的 5 个单测，覆盖有限）
+
+**修后复跑（同日）**：
+
+    第二轮（HEAD 15b2e16）             第三轮（HEAD c0e41cd）
+    1KB  race    数据OK  race 1|1        1KB  race    数据OK  race 0|0
+    64B  race    数据OK  race 0|1        64B  race    数据OK  race 0|0
+    4KB  race    数据OK  race 0|1
+    1KB  normal  数据OK  错误 0|0
+    64B  normal  数据OK  错误 0|0
+
+第二轮剩下的那一对是 GC 换 `rf.persister` 指针无锁、写路径持 logMu 读（只喂 PadKey，
+读到哪个都对，但指针读写本身要同步）→ `c0e41cd` 加 logMu。第三轮两边 0 报告。
+
+合计 **15 个回合数据全对**（每回合两个节点各自 GET 300 + SCAN 1500）。
+
 **仍未验证**：
-- [ ] **重复测量**。竞态与时序相关，上述均为单次，需多轮 + 多个 value 大小
 - [ ] **三台物理机**。现为 2 台跑 3 实例，性能数据不可用；论文口径是 3 节点 3 副本
+- [ ] **-race 覆盖故障切换路径**（选举、冲突截断、旧 leader 重启回归）。上述 race
+      轮次只覆盖稳态写入 + GC。可把 `failover.sh` 改用 `/tmp/nezha-rep-race` 跑一遍
+- [ ] **doAppendEntries 加锁后的吞吐**。锁内只拷贝指针切片，理论上可忽略，但没量过；
+      下次跑 PUT 主表时顺带与 `73306ea` 对照一次
+
+## 🔍 读路径不经过 Raft，也没有 leader 检查（2026-09-04 发现，暂不修）
+
+`StartGet` 与 `ScanRangeInRaft` 里的 leader 检查和 ReadIndex 整段被注释掉
+（原作者 commit `3178d7b`，2025-01-18，早于 AVP 工作）。`raft.GetReadIndex`
+的实现还在（向所有 peer 发一轮心跳、多数派回应才返回 commitIndex），只是没人调用。
+
+现状：
+- 任何节点收到 GET/SCAN 都直接读本地 RocksDB + 日志文件返回，不确认自己是不是
+  leader，也不等 apply 追上 commit。**读操作零跨节点网络交互。**
+- 客户端把读固定发给 `leaderId`（默认 0），server 永不回 `ErrWrongLeader`，
+  发给谁就从谁读。我们的测试都手动指向了真 leader，结果才正确——这是测试设计对，
+  不是系统保证。
+- 所有性能测试 client 与 server 同机，client→server 这一跳走 loopback。
+
+后果：
+1. **正确性**：读 follower 会拿到落后的数据，被分区的旧 leader 会返回过期值。
+   现在的 GET 不是线性一致读。
+2. **可比性**：GET 的延迟/吞吐里少了 ReadIndex 那一轮 RTT。TiKV 是 lease read，
+   直接对比 Nezha 占便宜。
+3. **论文数字**：按时间推断，论文的 GET 数据同样不带 ReadIndex（无法确证）。
+
+**决定（用户 2026-09-04）：目前先这样测，记入 TODO，后续再补。**
+
+- [ ] 最低限度：恢复 leader 检查，非 leader 回 `ErrWrongLeader`。零网络开销，
+      不改性能数字，只堵读 follower 的口子。
+- [ ] 公平对比：实现 lease read（leader 心跳多数派成功后的租期内本地读）。
+      开销接近现在，也是 TiKV 的做法。
+- [ ] 严格模式：ReadIndex 做成可选开关，量化"线性一致读多贵"。现有
+      `GetReadIndex` 每次读都起 goroutine 发一轮心跳，直接打开吞吐会崩，
+      要改成多个读共享一次心跳的批量版。
+- [ ] client 与 server 分机跑一次，量 loopback 与真实网络的差距（只影响绝对数字）。
+
+顺带一提：这个"没有 leader 检查"反而让**直接读 follower 校验其本地状态**成为可能，
+重复验证脚本（见上）就靠它检查 follower GC 重建后的索引。
 
 ## 待补实验
 
