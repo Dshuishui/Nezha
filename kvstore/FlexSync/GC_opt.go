@@ -131,9 +131,8 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	inlineCache := NewInlineCache(kvs.inlineCacheBytes)
 	var currentOffset int64 = 0
 
-	// 创建bufio.Writer来写入排序文件
+	// 创建bufio.Writer来写入排序文件（末尾显式 Flush 并检查错误，不靠 defer）
 	writer := bufio.NewWriter(sortedFile)
-	defer writer.Flush()
 
 	// Read entries from RocksDB and write them in sorted order to the new file
 	it := kvs.oldPersister.GetDb().NewIterator(grocksdb.NewDefaultReadOptions())
@@ -187,10 +186,15 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 		}
 	}
 
-	// 确保所有数据都写入磁盘
+	// Flush 只是把缓冲交给内核。本函数返回 nil 后调用方会删掉源文件，
+	// 所以排序文件必须先真正落盘：否则掉电时"源已删、目标还在页缓存里"，
+	// 这一轮 GC 搬过来的数据就全没了。写路径每条都 fsync，GC 没理由例外。
 	err = writer.Flush()
 	if err != nil {
 		return fmt.Errorf("failed to flush sorted file: %v", err)
+	}
+	if err := sortedFile.Sync(); err != nil {
+		return fmt.Errorf("failed to fsync sorted file: %v", err)
 	}
 
 	// ============= 直接构建SortedFileIndex对象 =============

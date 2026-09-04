@@ -301,10 +301,14 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 		return fmt.Errorf("合并中止，源文件保持不动: %v", e.(error))
 	}
 
-	// Flush the writer
+	// Flush 之后还要 fsync：调用方拿到 nil 就会删源文件，合并文件必须先落盘
+	//（理由同 GC_opt.go 第一轮 GC 处）。
 	err = writer.Flush()
 	if err != nil {
 		return fmt.Errorf("failed to flush writer: %v", err)
+	}
+	if err := mergedFile.Sync(); err != nil {
+		return fmt.Errorf("failed to fsync merged file: %v", err)
 	}
 
 	// ============= 直接构建SortedFileIndex对象，避免AnotherCreateIndex =============
