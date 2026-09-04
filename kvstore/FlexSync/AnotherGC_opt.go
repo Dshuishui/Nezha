@@ -63,11 +63,13 @@ func (kvs *KVServer) AnotherGarbageCollection() error {
 	return err
 }
 
-func (kvs *KVServer) AnotherSwitchToNewFiles(newLog string, newPersister *raft.Persister) {
+func (kvs *KVServer) AnotherSwitchToNewFiles(newLog string, newPersister *raft.Persister, newDBPath string) {
 	kvs.mu.Lock()
 	defer kvs.mu.Unlock()
 	kvs.anotherStartGC = true
 	kvs.numGC++
+	kvs.oldDBPath = kvs.currentDBPath
+	kvs.currentDBPath = newDBPath
 
 	// 赋值旧文件变量
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
@@ -83,7 +85,9 @@ func (kvs *KVServer) AnotherSwitchToNewFiles(newLog string, newPersister *raft.P
 
 	kvs.persister = newPersister // 存储key和偏移量的rocksdb文件由kvs操作
 	kvs.raft.SetCurrentPersister(kvs.persister)
-	// 可能还需要更新其他相关的状态
+
+	kvs.gcInProgress = true // 理由见 SwitchToNewFiles
+	kvs.saveKVState()
 }
 
 func (kvs *KVServer) MergedGarbageCollection() error {
@@ -125,7 +129,7 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	kvs.anotherStartGC = true
 
 	// 切换到新的文件和RocksDB
-	kvs.AnotherSwitchToNewFiles(anotherNewRaftStateLogPath, newPersister)
+	kvs.AnotherSwitchToNewFiles(anotherNewRaftStateLogPath, newPersister, anotherNewPersisterPath)
 	kvs.waitOldVersionApplied(int32(kvs.numGC - 1)) // 理由见 GC_opt.go 同名函数
 	kvs.switchedPersister = newPersister
 
@@ -199,6 +203,9 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 			value := it.Value()
 			defer key.Free()
 			defer value.Free()
+			if raft.IsMetaKey(key.Data()) {
+				continue // 恢复用的元数据，不搬
+			}
 
 			entry, err := kvs.entryFromRecord(string(key.Data()), value.Data(), oldFile)
 			if err != nil {
@@ -364,6 +371,9 @@ func (kvs *KVServer) verifyOldDatabaseOrder(file *os.File) error {
 		value := it.Value()
 		defer key.Free()
 		defer value.Free()
+		if raft.IsMetaKey(key.Data()) {
+			continue
+		}
 
 		entry, err := kvs.entryFromRecord(string(key.Data()), value.Data(), file)
 		if err != nil {

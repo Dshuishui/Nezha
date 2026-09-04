@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	// "io"
@@ -122,9 +123,16 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	}
 
 	// 切换到新的文件和RocksDB
-	kvs.SwitchToNewFiles(firstNewRaftStateLogPath, newPersister)
+	kvs.SwitchToNewFiles(firstNewRaftStateLogPath, newPersister, firstNewPersisterPath)
 	kvs.waitOldVersionApplied(int32(kvs.numGC - 1))
 
+	return kvs.firstGCMigrate(sortedFile, firstSortedFilePath, oldFile, startTime)
+}
+
+// firstGCMigrate 是第一轮 GC 切换文件之后的搬运与建索引部分。
+// 单独成函数是为了崩溃恢复：切换已经落盘生效、搬运没做完的情况下，重启后直接从这里重做。
+func (kvs *KVServer) firstGCMigrate(sortedFile *os.File, firstSortedFilePath string, oldFile *os.File, startTime time.Time) error {
+	var err error
 	// ============= 优化开始：边写边构建索引 =============
 
 	// 初始化索引数据结构
@@ -145,6 +153,9 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 		value := it.Value()
 		defer key.Free()
 		defer value.Free()
+		if raft.IsMetaKey(key.Data()) {
+			continue // 恢复用的元数据（applied 下标），不是用户数据，不搬
+		}
 
 		// 记录可能是 [TagOffset, offset8]（去 valuelog 取）也可能是
 		// [TagInline, value]（value 就在这条记录里）——由 entryFromRecord 分流。
@@ -644,6 +655,7 @@ func (kvs *KVServer) checkLogDBConsistency() error {
 // 随后旧文件被删、旧库被弃，这个 key 就没了。apply 是事件驱动的，正常只落后几微秒，
 // 所以此前从未被测出来；但 follower 落后或高并发下的 apply 积压都能把窗口撑开。
 func (kvs *KVServer) waitOldVersionApplied(oldVersion int32) {
+	defer gcCrashWindow()
 	start := time.Now()
 	for {
 		v, pending := kvs.raft.OldestPendingVersion()
@@ -657,11 +669,28 @@ func (kvs *KVServer) waitOldVersionApplied(oldVersion int32) {
 	}
 }
 
-func (kvs *KVServer) SwitchToNewFiles(newLog string, newPersister *raft.Persister) {
+// gcCrashWindow 是崩溃恢复测试用的钩子：环境变量 NEZHA_GC_PAUSE_MS 非空时，在"切换已落盘、
+// 搬运尚未开始"这个点停留指定毫秒，让外部脚本有机会在 GC 中途 kill -9。生产不设置即无效。
+func gcCrashWindow() {
+	v := os.Getenv("NEZHA_GC_PAUSE_MS")
+	if v == "" {
+		return
+	}
+	ms, err := strconv.Atoi(v)
+	if err != nil || ms <= 0 {
+		return
+	}
+	fmt.Printf("[GC-PAUSE] 切换已生效，按 NEZHA_GC_PAUSE_MS 暂停 %d ms\n", ms)
+	time.Sleep(time.Duration(ms) * time.Millisecond)
+}
+
+func (kvs *KVServer) SwitchToNewFiles(newLog string, newPersister *raft.Persister, newDBPath string) {
 	kvs.mu.Lock()
 	defer kvs.mu.Unlock()
 	kvs.startGC = true
 	kvs.numGC++
+	kvs.oldDBPath = kvs.currentDBPath
+	kvs.currentDBPath = newDBPath
 
 	// 更新两个路径，使得垃圾回收与客户端请求并行执行
 	kvs.currentLog = newLog
@@ -671,7 +700,11 @@ func (kvs *KVServer) SwitchToNewFiles(newLog string, newPersister *raft.Persiste
 
 	kvs.persister = newPersister // 存储key和偏移量的rocksdb文件由kvs操作
 	kvs.raft.SetCurrentPersister(kvs.persister)
-	// 可能还需要更新其他相关的状态
+
+	// 切换一旦生效，新写入就进新文件了。状态必须在此刻落盘：崩在搬运中途时，
+	// 重启后才知道日志分布在旧新两个文件里、GC 该从搬运这一步重做。
+	kvs.gcInProgress = true
+	kvs.saveKVState()
 }
 
 func VerifySortedFile(filePath string) error {
