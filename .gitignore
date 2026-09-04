@@ -10,7 +10,6 @@ kvstore/FlexSync/valueLog_Leveldb.log
 kvstore/FlexSync/db_key_index
 kvstore/FlexSync/dbfile
 kvstore/FlexSync/db_key_index_new
-kvstore/LevelDB/db_key_value
 kvstore/kvserver/db_key_index
 kvstore/kvserver/db_key_index_new
 raft/RaftState.log
