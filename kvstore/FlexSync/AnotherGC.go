@@ -84,7 +84,7 @@ func (kvs *KVServer) AnotherSwitchToNewFiles(newLog string, newPersister *raft.P
 	kvs.persister = newPersister // 存储key和偏移量的rocksdb文件由kvs操作
 	kvs.raft.SetCurrentPersister(kvs.persister)
 
-	kvs.gcInProgress = true // 理由见 SwitchToNewFiles
+	kvs.gcInProgress = true // see SwitchToNewFiles
 	kvs.saveKVState()
 }
 
@@ -128,7 +128,7 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 
 	// 切换到新的文件和RocksDB
 	kvs.AnotherSwitchToNewFiles(anotherNewRaftStateLogPath, newPersister, anotherNewPersisterPath)
-	kvs.waitOldVersionApplied(int32(kvs.numGC - 1)) // 理由见 GC.go 同名函数
+	kvs.waitOldVersionApplied(int32(kvs.numGC - 1)) // see the function's comment in GC.go
 	kvs.switchedPersister = newPersister
 
 	return kvs.mergeIntoSortedFile(startTime)
@@ -202,7 +202,7 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 			defer key.Free()
 			defer value.Free()
 			if raft.IsMetaKey(key.Data()) {
-				continue // 恢复用的元数据，不搬
+				continue // recovery metadata; do not migrate it
 			}
 
 			entry, err := kvs.entryFromRecord(string(key.Data()), value.Data(), oldFile)
@@ -306,8 +306,8 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 		return fmt.Errorf("合并中止，源文件保持不动: %v", e.(error))
 	}
 
-	// Flush 之后还要 fsync：调用方拿到 nil 就会删源文件，合并文件必须先落盘
-	//（理由同 GC.go 第一轮 GC 处）。
+	// fsync after Flush: the caller deletes the source log on nil, so the merged file must be
+	// on disk first (same reasoning as in GC.go for round one).
 	err = writer.Flush()
 	if err != nil {
 		return fmt.Errorf("failed to flush writer: %v", err)

@@ -390,17 +390,18 @@ func (p *Persister) ScanRange(startKey, endKey string) (map[string]string, error
 	return result, nil
 }
 
-// ---- 崩溃恢复：已 apply 的日志下标与数据同批写入 ----
+// ---- crash recovery: the applied log index travels with the data ----
 //
-// 记在库里而不是状态文件里，是因为它和"哪些 key 已经写进库"必须原子一致：崩在两者
-// 之间就会重放或漏放。同一个 WriteBatch 由 RocksDB 保证原子，-syncWAL 下的持久性
-// 语义与数据本身完全相同，不多一次 fsync。
+// The index is kept inside the store rather than in a state file because it must agree
+// exactly with the rows that made it in: a crash between two files would replay or skip an
+// entry. One WriteBatch gives RocksDB atomicity, and under -syncWAL the marker has the same
+// durability as the data at no extra fsync.
 //
-// 键以 0x00 开头。PadKey 产出的键全是可打印字符，所以永不冲突；GC 的全库迭代和
-// 范围扫描要跳过它（见 IsMetaKey）。
+// The key starts with 0x00. PadKey only ever produces printable keys, so there is no
+// collision; GC's full-store iteration and range scans skip it (see IsMetaKey).
 const appliedIndexKey = "\x00applied_index"
 
-// IsMetaKey 判断一个库内键是不是恢复用的元数据，而不是用户数据。
+// IsMetaKey reports whether a store key is recovery metadata rather than user data.
 func IsMetaKey(k []byte) bool {
 	return len(k) > 0 && k[0] == 0
 }
@@ -411,7 +412,7 @@ func encodeApplied(applied int) []byte {
 	return b
 }
 
-// writeWithApplied 把一条数据记录和 applied 下标放进同一个 WriteBatch 写入。
+// writeWithApplied writes one data row and the applied index in a single WriteBatch.
 func (p *Persister) writeWithApplied(paddedKey []byte, value []byte, applied int) error {
 	wb := grocksdb.NewWriteBatch()
 	defer wb.Destroy()
@@ -424,7 +425,7 @@ func (p *Persister) writeWithApplied(paddedKey []byte, value []byte, applied int
 	return p.db.Write(p.wo, wb)
 }
 
-// PutOffsetApplied = Put_opt + 记录 applied 下标，一个原子批。
+// PutOffsetApplied is Put_opt plus the applied index, as one atomic batch.
 func (p *Persister) PutOffsetApplied(key string, offset int64, applied int) {
 	valueBytes := make([]byte, 9)
 	valueBytes[0] = TagOffset
@@ -434,7 +435,7 @@ func (p *Persister) PutOffsetApplied(key string, offset int64, applied int) {
 	}
 }
 
-// PutInlineApplied = PutInline + 记录 applied 下标。
+// PutInlineApplied is PutInline plus the applied index.
 func (p *Persister) PutInlineApplied(key string, value string, applied int) {
 	buf := make([]byte, 1+len(value))
 	buf[0] = TagInline
@@ -444,21 +445,21 @@ func (p *Persister) PutInlineApplied(key string, value string, applied int) {
 	}
 }
 
-// PutValueApplied = Put（基线：value 直接进库）+ 记录 applied 下标。
+// PutValueApplied is Put (baseline: the value itself goes into the store) plus the applied index.
 func (p *Persister) PutValueApplied(key string, value string, applied int) {
 	if err := p.writeWithApplied([]byte(p.PadKey(key)), []byte(value), applied); err != nil {
 		util.EPrintf("PutValueApplied key %v failed, err: %v", key, err)
 	}
 }
 
-// SetApplied 只推进 applied 下标（空指令，或数据已写进别的库的情况）。
+// SetApplied advances only the applied index (no-op entries, or rows written to another store).
 func (p *Persister) SetApplied(applied int) {
 	if err := p.writeWithApplied(nil, nil, applied); err != nil {
 		util.EPrintf("SetApplied %d failed, err: %v", applied, err)
 	}
 }
 
-// GetApplied 读回 applied 下标；库里没有记录时返回 (0, false)。
+// GetApplied reads the applied index back; (0, false) when the store has none.
 func (p *Persister) GetApplied() (int, bool, error) {
 	ro := grocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()

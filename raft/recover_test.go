@@ -8,7 +8,7 @@ import (
 	"gitee.com/dong-shuishui/FlexSync/rpc/raftrpc"
 )
 
-// 写日志用的最小 Raft：只需要 persister（PadKey）和 logMu/日志句柄。
+// Minimal Raft for writing a log: only the persister (PadKey) and logMu/log handle are needed.
 func newLogWriter(t *testing.T, path string, version int32) *Raft {
 	t.Helper()
 	rf := &Raft{persister: &Persister{}}
@@ -24,7 +24,7 @@ func noopEntry(index, term int) *Entry {
 	return &Entry{Index: uint32(index), CurrentTerm: uint32(term), NoOp: true}
 }
 
-// 一段有代表性的日志：上任空指令、若干写入、换届空指令、再写入。
+// A representative log: a no-op on taking office, some writes, a no-op for a new term, more writes.
 func writeSampleLog(t *testing.T, rf *Raft) {
 	t.Helper()
 	rf.WriteEntryToFile([]*Entry{noopEntry(1, 1)}, 0)
@@ -60,7 +60,7 @@ func TestRecoverLogRebuildsEntriesAndPendingOffsets(t *testing.T) {
 	if rf.lastApplied != 3 || rf.commitIndex != 3 || rf.shotOffset != 3 {
 		t.Fatalf("applied/commit/shot = %d/%d/%d, want 3/3/3", rf.lastApplied, rf.commitIndex, rf.shotOffset)
 	}
-	// 只有 index > 3 的条目回到待 apply 队列，偏移与写入时一致
+	// only entries with index > 3 return to the pending queue, with the offsets recorded at write time
 	if len(rf.Offsets) != 6 {
 		t.Fatalf("pending offsets = %d, want 6", len(rf.Offsets))
 	}
@@ -72,7 +72,7 @@ func TestRecoverLogRebuildsEntriesAndPendingOffsets(t *testing.T) {
 			t.Fatalf("offsetVersions[%d] = %d, want 0", i, rf.offsetVersions[i])
 		}
 	}
-	// 空指令与普通条目、任期都要还原
+	// no-ops, regular entries and terms must all be restored
 	checks := []struct {
 		pos    int
 		op     string
@@ -94,7 +94,7 @@ func TestRecoverLogRebuildsEntriesAndPendingOffsets(t *testing.T) {
 				c.term, c.op, c.key, c.value, c.cmdIdx)
 		}
 	}
-	// 只留在 rf.log 里的已 apply 条目，term 也要对（一致性检查会用）
+	// applied entries kept only in rf.log must still carry the right term (consistency checks use it)
 	if rf.termAt(9) != 2 || rf.termAt(3) != 1 {
 		t.Fatalf("termAt(9)=%d termAt(3)=%d, want 2 / 1", rf.termAt(9), rf.termAt(3))
 	}
@@ -109,10 +109,10 @@ func TestRecoverLogTruncatesHalfWrittenTail(t *testing.T) {
 	info, _ := os.Stat(logPath)
 	goodSize := info.Size()
 
-	// 模拟崩溃：最后一条只写了一半（头部完整、正文不全）
+	// simulate a crash: the last record is half written (complete header, truncated body)
 	f, _ := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0666)
 	partial := make([]byte, recordHeader+5)
-	partial[0], partial[12], partial[16] = 10, 10, 100 // index=10, keySize=10, valueSize=100，正文只给 5 字节
+	partial[0], partial[12], partial[16] = 10, 10, 100 // index=10, keySize=10, valueSize=100, but only 5 body bytes follow
 	f.Write(partial)
 	f.Close()
 
@@ -142,7 +142,7 @@ func TestRecoverLogAcrossGCFiles(t *testing.T) {
 	for i := 2; i <= 5; i++ {
 		w.WriteEntryToFile([]*Entry{putEntry(i, 1, "a", "x")}, 0)
 	}
-	w.SetCurrentLogVersioned(logB, 1) // GC 切换
+	w.SetCurrentLogVersioned(logB, 1) // GC file switch
 	for i := 6; i <= 9; i++ {
 		w.WriteEntryToFile([]*Entry{putEntry(i, 1, "b", "y")}, 0)
 	}
@@ -164,7 +164,7 @@ func TestRecoverLogAcrossGCFiles(t *testing.T) {
 			t.Fatalf("offsetVersions[%d] = %d, want 1 (all pending entries live in the new file)", i, v)
 		}
 	}
-	// 新文件里的偏移是相对新文件的：第一条待 apply 的条目就在新文件开头
+	// offsets in the new file are relative to it: the first pending entry sits at its start
 	if rf.Offsets[0] != 0 {
 		t.Fatalf("first pending offset = %d, want 0", rf.Offsets[0])
 	}
@@ -177,7 +177,7 @@ func TestRecoverLogRejectsGap(t *testing.T) {
 	w := newLogWriter(t, logA, 0)
 	w.WriteEntryToFile([]*Entry{putEntry(1, 1, "a", "x"), putEntry(2, 1, "b", "y")}, 0)
 	w.SetCurrentLogVersioned(logB, 1)
-	w.WriteEntryToFile([]*Entry{putEntry(4, 1, "d", "z")}, 0) // 少了 3
+	w.WriteEntryToFile([]*Entry{putEntry(4, 1, "d", "z")}, 0) // index 3 is missing
 	w.CloseLogFile()
 
 	rf := &Raft{persister: &Persister{}}
@@ -190,7 +190,7 @@ func TestRecoverLogRejectsBaseMismatchWithState(t *testing.T) {
 	dir := t.TempDir()
 	logA := filepath.Join(dir, "a.log")
 	w := newLogWriter(t, logA, 0)
-	w.WriteEntryToFile([]*Entry{putEntry(6, 1, "a", "x")}, 0) // 文件从 6 开始，基址应为 5
+	w.WriteEntryToFile([]*Entry{putEntry(6, 1, "a", "x")}, 0) // the file starts at 6, so the base must be 5
 	w.CloseLogFile()
 
 	rf := &Raft{persister: &Persister{}, stateLoaded: true, lastIncludedIndex: 3}
@@ -206,7 +206,7 @@ func TestOverwriteTruncatesStaleTail(t *testing.T) {
 	w.WriteEntryToFile([]*Entry{putEntry(1, 1, "a", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")}, 0)
 	w.WriteEntryToFile([]*Entry{putEntry(2, 1, "b", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")}, 0)
 	w.WriteEntryToFile([]*Entry{putEntry(3, 1, "c", "cccccccccccccccccccccccccccccccccccccccccc")}, 0)
-	// follower 冲突：从 index 2 起用一条更短的记录覆盖，3 应随之消失
+	// follower conflict: overwrite from index 2 with a shorter record; index 3 must disappear
 	w.Offsets = w.Offsets[:1]
 	w.offsetVersions = w.offsetVersions[:1]
 	w.WriteEntryToFile([]*Entry{putEntry(2, 2, "b", "short")}, 0+w.Offsets[0]+int64(recordHeader)+10+36)

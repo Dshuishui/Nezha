@@ -79,8 +79,9 @@ type Entry struct {
 	VotedFor    uint32
 	Key         string
 	Value       string
-	// NoOp 标记 leader 上任时的空指令（TermLog）。它也要写进日志文件，否则文件里的 index
-	// 不连续，重启时无法按文件重建日志。磁盘上以 keySize==0 表示，正常记录的 key 恒为 KeyLength。
+	// NoOp marks a leader's no-op entry (TermLog). It is written to the log file as well;
+	// otherwise the file has index gaps and cannot be replayed on restart. On disk it is a
+	// record with keySize==0 (real keys are always KeyLength bytes).
 	NoOp bool
 }
 
@@ -140,15 +141,17 @@ type Raft struct {
 	lastIncludedIndex int   // 已压缩掉的最后一条日志的 index
 	lastIncludedTerm  int32 // 上述条目的 term，用于 PrevLogTerm 一致性检查
 
-	// ---- 崩溃恢复 ----
-	stateFile   string // term/votedFor/日志基址的落盘文件；空表示不持久化
-	stateLoaded bool   // 启动时是否读到了状态文件（决定恢复时是否做基址交叉校验）
-	// 磁盘上最老的仍保留的日志文件之前那一条的 index/term。与 lastIncludedIndex 不同：
-	// 后者是内存裁剪点，可能远在前者之后。重启时 lastIncludedIndex 从这里取。
+	// ---- crash recovery ----
+	stateFile   string // where term/votedFor/log base are persisted; empty disables persistence
+	stateLoaded bool   // whether a state file was read at startup (enables the base cross-check)
+	// index/term of the entry just before the oldest log file still on disk. Distinct from
+	// lastIncludedIndex, which is the in-memory trim point and may be far ahead of it.
+	// lastIncludedIndex starts from here on restart.
 	fileBaseIndex int
 	fileBaseTerm  int32
-	// 写入路径记录的"最后写进当前文件的那条"，GC 切换文件时定格为 pendingBase，
-	// 旧文件删除前由 PersistLogBase 提升为 fileBase。归 logMu 管。
+	// The write path tracks the last record written to the current file; a GC file switch
+	// freezes it as pendingBase, and PersistLogBase promotes that to fileBase right before
+	// the old file is deleted. Guarded by logMu.
 	lastWrittenIndex int
 	lastWrittenTerm  int32
 	pendingBaseIndex int
@@ -223,9 +226,10 @@ func (rf *Raft) GetOffsets() []int64 {
 	return rf.Offsets
 }
 
-// OldestPendingVersion 返回最早一条"已写入日志文件、尚未 apply"的条目所属的文件版本。
-// 没有待 apply 的条目时返回 false。GC 用它判断旧文件里的东西是否都已进了旧库：
-// Offsets/offsetVersions 是按 apply 顺序消费的队列，队头就是最老的未 apply 条目。
+// OldestPendingVersion returns the file version of the oldest entry that is written to the
+// log but not yet applied, or false when nothing is pending. GC uses it to decide whether
+// everything in the old file has reached the old index: Offsets/offsetVersions is a queue
+// consumed in apply order, so its head is the oldest unapplied entry.
 func (rf *Raft) OldestPendingVersion() (int32, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -305,7 +309,8 @@ func (rf *Raft) SetSyncOnWrite(v bool) {
 func (rf *Raft) SetCurrentLogVersioned(currentLog string, version int32) {
 	rf.logMu.Lock()
 	defer rf.logMu.Unlock()
-	// 旧文件到此为止：它的最后一条就是新文件的基址候选，旧文件被删时生效。
+	// The old file ends here: its last record is the base candidate for the new file, and
+	// becomes the persisted base when the old file is deleted.
 	rf.pendingBaseIndex = rf.lastWrittenIndex
 	rf.pendingBaseTerm = rf.lastWrittenTerm
 	rf.currentLog = currentLog
@@ -327,9 +332,10 @@ func (rf *Raft) SetCurrentLog(currentLog string) {
 	}
 }
 
-// SetCurrentPersister 由 GC 在切换文件时调用。rf.persister 只在 WriteEntryToFile
-// 里用（PadKey，持 logMu），所以用同一把锁：否则 GC 换指针与写路径读指针互为竞争。
-// PadKey 不依赖实例状态，读到哪一个都算对，但指针的读写本身必须有同步。
+// SetCurrentPersister is called by GC at a file switch. rf.persister is read only in
+// WriteEntryToFile (for PadKey, under logMu), so the same lock guards the swap; without it
+// the swap and the read race. PadKey has no instance state, so either pointer yields the
+// same key, but the pointer access itself still needs synchronisation.
 func (rf *Raft) SetCurrentPersister(persister *Persister) {
 	rf.logMu.Lock()
 	defer rf.logMu.Unlock()
@@ -382,7 +388,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 		if !entry.NoOp {
 			paddedKey = rf.persister.PadKey(entry.Key) // 存入valuelog里面也用
 		}
-		keySize := uint32(len(paddedKey))          // NoOp 记录 keySize==0，恢复时据此识别
+		keySize := uint32(len(paddedKey))          // NoOp records have keySize==0; recovery relies on it
 		data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value
 
 		// 将数据编码到byte slice中
@@ -442,9 +448,10 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 		}
 	}
 	if startPos != 0 {
-		// 覆盖写：被覆盖点之后的旧内容已经不属于日志（对应的 rf.log 条目刚被截掉），
-		// 必须把文件也截到新内容的末尾。以前这里把写入位置挪回旧文件末尾，
-		// 中间留着一段陈旧字节，按偏移读没事，重启时顺序扫描就会读到垃圾。
+		// Overwrite: everything past the overwritten region is no longer part of the log
+		// (the matching rf.log entries were just truncated), so the file is truncated to the
+		// end of the new content. The old code moved the write position back to the previous
+		// end of file, leaving stale bytes that a sequential replay would read as records.
 		if err = rf.logFile.Truncate(offset); err != nil {
 			log.Fatalf("截断日志文件失败：%v", err)
 		}
@@ -707,7 +714,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		index = int(args.PrevLogIndex) + 1 + i
 		logPos = rf.index2LogPos(index)
 		entry := Entry{
-			Index:       uint32(index), // 用自己算出的 index，不信任命令里带的
+			Index:       uint32(index), // use the index we computed, not the one in the command
 			CurrentTerm: uint32(logEntry.Term),
 			VotedFor:    uint32(rf.leaderId),
 			Key:         logEntry.GetCommand().Key,
@@ -716,7 +723,8 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		}
 		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
 			rf.log = append(rf.log, logEntry)
-			// 空指令也写文件（keySize==0 的标记），与 leader 一致，磁盘日志才完整可恢复。
+			// No-ops are written as well (keySize==0 markers), matching the leader, so the
+			// on-disk log is complete and replayable.
 			rf.batchLog = append(rf.batchLog, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
 
 			if index == rf.lastIndex() { // 已经将日志补足后，开始批量写入
@@ -821,17 +829,19 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 	}
 	index = rf.lastIndex() + 1 // 加一是为了除去空指令
 	term = rf.currentTerm
-	// 在发布进 rf.log 之前就把 Index/Term 填进命令。以前是调用方拿到返回值后再写回
-	// op.Index/op.Term，而那时同一个结构体已经被复制 goroutine 拿去 gob 编码了——
-	// 写读同一字段无同步，-race 抓到的就是这个。
+	// Fill Index/Term into the command before publishing it into rf.log. Callers used to
+	// write op.Index/op.Term back after Start returned, by which time the replication
+	// goroutine could already be gob-encoding the same struct: an unsynchronised write/read
+	// of the same field, which -race reported.
 	logEntry.Command.Index = int32(index)
 	logEntry.Command.Term = int32(term)
 	// fmt.Printf("11111offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
 	var myBatch *flushBatch
 	var needSignal bool
 	{
-		// 空指令（TermLog）也写进文件，作为一条 keySize==0 的标记记录：磁盘上的日志
-		// 因此与内存里的 rf.log 一一对应，重启时才能按文件完整重建；它也占一个 Offsets 位。
+		// No-op entries (TermLog) are written too, as keySize==0 marker records, so the
+		// on-disk log maps one-to-one onto rf.log and can be replayed on restart. Each takes
+		// an Offsets slot like any other entry.
 		// 必须是局部变量。原先用包级的 entry_global 取地址，在逐条立即写入、
 		// 全程持锁的前提下没问题；一旦攒批，同一批里所有指针都会指向它，
 		// 最后写出去的是同一条记录重复 N 次。
@@ -925,9 +935,10 @@ func (rf *Raft) RegisterRaftServer(ctx context.Context, address string) { // 传
 	}
 }
 
-// sendRequestVote 走与 AppendEntries 相同的连接池。以前每次选举都 grpc.Dial 一条新连接，
-// 且带 WithBlock 不带超时：对已宕机的节点这一步永远不返回，goroutine 连同选票一起挂死。
-// 连接池的 RPC 对不可达节点会快速失败，计票循环因此能拿到"这一票没了"的答复。
+// sendRequestVote uses the same per-peer connection pool as AppendEntries. Every election
+// used to grpc.Dial a fresh connection with WithBlock and no deadline; against a dead peer
+// that call never returns, taking the goroutine and its vote with it. Through the pool an
+// unreachable peer fails fast, so the tally learns that the vote is gone.
 func (rf *Raft) sendRequestVote(peerId int, args *raftrpc.RequestVoteRequest) (bool, *raftrpc.RequestVoteResponse) {
 	conn, err := rf.pools[peerId].Get()
 	if err != nil {
@@ -1070,10 +1081,12 @@ func (rf *Raft) electionLoop() {
 				if voteCount > len(rf.peers)/2 {
 					goto VOTE_END
 				}
-				// 计票不能无限等：原来只在"全部应答"或"已过半"时退出，只要有一个节点永远不应答
-				//（宕机、网络分区），而活着的那票又恰好丢了，candidate 就永远停在这里，
-				// 既不重选也不让位。这正是 -race 构建下杀掉 leader 后 65 秒无 leader 的现场。
-				// 到期就带着已有的票数去 VOTE_END：没过半就回到循环，下一轮超时重新发起选举。
+				// The tally must not wait forever. It used to exit only on "everyone answered"
+				// or "majority reached"; with one peer permanently silent (crashed, partitioned)
+				// and the live vote lost to an RPC timeout, the candidate blocked here for good,
+				// neither retrying nor stepping down. That is the 65-second leaderless window
+				// seen after killing the leader of a -race build. On expiry go to VOTE_END with
+				// the votes collected; without a majority the loop times out again and retries.
 				for {
 					select {
 					case <-voteDeadline:
@@ -1131,7 +1144,7 @@ func (rf *Raft) electionLoop() {
 						OpType: "TermLog",
 					}
 					rf.mu.Unlock()
-					rf.Start(&op) // 需要提交一个空的指令，需要在初始化nextindex之后，提交空指令；Index/Term 由 Start 填
+					rf.Start(&op) // the no-op for the new term, after nextIndex is initialised; Start fills Index/Term
 					rf.mu.Lock()
 					util.DPrintf("成为leader后发送第一个空指令给Raft层")
 					// rf.lastBroadcastTime = time.Unix(0, 0) // 令appendEntries广播立即执行，因为leader的term开始时，需要提交一条空的无操作记录。
@@ -1171,13 +1184,15 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	enc := gob.NewEncoder(&buffer)
 	var totalSize int64
 
-	// 组装请求时必须持有 rf.mu：这里读的 currentTerm / commitIndex / nextIndex / log /
-	// lastIncludedIndex 都由别的 goroutine 在锁内改。以前这一段是裸读的，-race 抓到
-	// 两类后果：Start 的 append 让切片重分配时这里可能读到撕裂的切片头（越界或读到
-	// nil，原代码里那句"rf.log 的第 %v 个为 nil"就是给这个现象打的补丁）；compactLog
-	// 换底层数组并推进 lastIncludedIndex 是两步，夹在中间读到的下标会对到错误的条目，
-	// 而 term 一致时 follower 的一致性检查发现不了，日志就此静默错位。
-	// 锁内只拷贝指针切片，gob 编码和 RPC 都在锁外做，不拖慢 Start。
+	// The request must be assembled under rf.mu: currentTerm, commitIndex, nextIndex, log
+	// and lastIncludedIndex are all modified by other goroutines inside the lock. This used
+	// to read them unlocked, and -race showed two consequences: a reallocating append in
+	// Start can expose a torn slice header here (out of range, or a nil entry; the old
+	// "rf.log[i] == nil" check was a band-aid for exactly that), and compactLog swapping the
+	// backing array and advancing lastIncludedIndex are two steps, so a position computed in
+	// between maps to the wrong entries, which a follower cannot detect when terms match.
+	// Only the entry pointers are copied inside the lock; gob encoding and the RPC happen
+	// outside it, so Start is not slowed down.
 	args := raftrpc.AppendEntriesInRaftRequest{}
 	var candidates []*raftrpc.LogEntry
 	rf.mu.Lock()
@@ -1186,9 +1201,9 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	args.LeaderCommit = int32(rf.commitIndex)
 	args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1) // 减一是为了拿到下标
 
-	// 待发送的起始位置必须仍在内存中。nextIndex 落在已压缩区间时无法从 rf.log 取到条目
-	// （包括 PrevLogIndex==0 但本节点已压缩过的情况），跳过本轮。
-	// 压缩点受 matchIndex 约束，正常不会走到这里；第三步将改为从磁盘回读旧条目。
+	// The first entry to send must still be in memory. When nextIndex falls inside the
+	// compacted range (including PrevLogIndex==0 on a node that has compacted) skip this
+	// round; compaction is bounded by matchIndex so this should not happen in practice.
 	start := rf.index2LogPos(rf.nextIndex[peerId])
 	if start < 0 {
 		util.DPrintf("RaftNode[%d] peer[%d] nextIndex[%d] 落后于已压缩点[%d]，跳过本轮日志同步",
@@ -1218,8 +1233,8 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
 	rf.mu.Unlock()
 
-	// 按编码后的总大小截批：超过 threshold 就只发前面这一段。条目发布进 rf.log 之后
-	// 不再被修改，所以在锁外编码是安全的。
+	// Cap the batch by encoded size: past threshold only the prefix is sent. Entries are
+	// immutable once published into rf.log, so encoding outside the lock is safe.
 	n := len(candidates)
 	for i, e := range candidates {
 		if err := enc.Encode(e); err != nil { // 将日志项编码后的字节序列写入到 buffer 缓冲区中
@@ -1227,7 +1242,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 		}
 		totalSize += int64(buffer.Len())
 		if totalSize >= threshold {
-			n = i // 不包括第 i 个
+			n = i // exclusive
 			break
 		}
 	}
@@ -1511,8 +1526,8 @@ func (rf *Raft) applyLogLoop() {
 				cmd := rf.log[appliedIndex].Command
 
 				if cmd.OpType == "TermLog" {
-					// TermLog 现在也在文件里占一条标记记录、在 Offsets 里占一个槽位，
-					// 这里把槽位消费掉，但不带偏移给上层（上层对 TermLog 不做任何事）。
+					// A TermLog now has a marker record in the file and a slot in Offsets;
+					// consume the slot here but pass no offset up (the KV layer ignores TermLog).
 					if len(rf.Offsets) == 0 {
 						return
 					}
@@ -1753,9 +1768,10 @@ func (rf *Raft) commitIndexUpdateLoop() {
 }
 
 // 服务器地址数组；当前方法对应的服务器地址数组中的下标；持久化存储了当前服务器状态的结构体；传递消息的通道结构体
-// Make 只构造对象并读回持久化状态，不启动任何 goroutine 或 gRPC 服务。
-// 调用方完成日志恢复（RecoverLog）与文件挂接后再调 StartLoops，否则选举、复制、
-// apply 会在日志还没重建好的时候跑起来。stateFile 为空表示不持久化 term/votedFor。
+// Make constructs the node and loads persisted state; it starts no goroutine and no gRPC
+// server. The caller finishes log recovery (RecoverLog) and attaches the log file, then
+// calls StartLoops; otherwise election, replication and apply would run against a log that
+// is not rebuilt yet. An empty stateFile disables term/vote persistence.
 func Make(peers []string, me int,
 	persister *Persister, applyCh chan ApplyMsg, stateFile string) *Raft {
 	rf := &Raft{}
@@ -1774,7 +1790,7 @@ func Make(peers []string, me int,
 	if stateFile != "" {
 		hs, ok, err := loadHardState(stateFile)
 		if err != nil {
-			log.Fatalf("读取 Raft 状态文件失败：%v", err)
+			log.Fatalf("read Raft state file: %v", err)
 		}
 		if ok {
 			rf.stateLoaded = true
@@ -1784,7 +1800,7 @@ func Make(peers []string, me int,
 			rf.fileBaseTerm = hs.BaseTerm
 			rf.lastIncludedIndex = hs.BaseIndex
 			rf.lastIncludedTerm = hs.BaseTerm
-			util.DPrintf("RaftNode[%d] 读到持久化状态：term=%d votedFor=%d base=(%d,%d)", me, hs.CurrentTerm, hs.VotedFor, hs.BaseIndex, hs.BaseTerm)
+			util.DPrintf("RaftNode[%d] loaded persisted state: term=%d votedFor=%d base=(%d,%d)", me, hs.CurrentTerm, hs.VotedFor, hs.BaseIndex, hs.BaseTerm)
 		}
 	}
 	rf.applyCh = applyCh
@@ -1821,10 +1837,11 @@ func Make(peers []string, me int,
 	return rf
 }
 
-// StartLoops 启动 gRPC 服务与所有后台循环。必须在日志恢复完成之后调用。
+// StartLoops starts the gRPC server and every background loop. Call it only after log
+// recovery has finished.
 func (rf *Raft) StartLoops(ctx context.Context) {
 	rf.mu.Lock()
-	rf.lastActiveTime = time.Now() // 恢复可能花了不少时间，别一启动就误判超时
+	rf.lastActiveTime = time.Now() // recovery may have taken a while; do not time out immediately
 	rf.LastAppendTime = time.Now()
 	rf.mu.Unlock()
 	go rf.RegisterRaftServer(ctx, rf.peers[rf.me])
@@ -1859,15 +1876,16 @@ func (rf *Raft) StartLoops(ctx context.Context) {
 	}()
 }
 
-// FileBase 返回状态文件里记录的磁盘日志基址，KV 层恢复时用来校验。
+// FileBase returns the persisted base of the on-disk log; the KV layer uses it during recovery.
 func (rf *Raft) FileBase() (int, int32) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	return rf.fileBaseIndex, rf.fileBaseTerm
 }
 
-// PersistLogBase 在 GC 删除旧日志文件之前调用：把切换时定格的 pendingBase 提升为
-// 磁盘日志基址并落盘。之后重启时，日志从新文件的第一条开始，基址就是它。
+// PersistLogBase runs right before GC deletes an old log file: it promotes the pendingBase
+// frozen at the switch to the on-disk log base and persists it. A later restart replays
+// from the new file's first record with exactly this base.
 func (rf *Raft) PersistLogBase() {
 	rf.logMu.Lock()
 	idx, term := rf.pendingBaseIndex, rf.pendingBaseTerm

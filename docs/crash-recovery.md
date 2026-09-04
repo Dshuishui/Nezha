@@ -1,116 +1,112 @@
-# 崩溃恢复设计（已实现，2026-09-04）
+# Crash Recovery
 
-> 实现：`5aa8fdf`（Raft 日志可重建 + term/vote/基址落盘）、`e8ebaab`（applied 下标随数据同批写入）、
-> `4a3d9ef`（KV 状态文件、启动恢复、GC 中断续做）。验证脚本 `scripts/multinode/recover.sh`。
->
-> 与草案的差别：
-> - 空指令（TermLog）也写进日志文件（keySize==0 的标记记录），否则文件里 index 不连续无法重建；
->   于是每条日志都占一个 Offsets 槽位，follower 冲突覆盖的偏移计算也因此变精确。
-> - 覆盖写之后把文件截断到新内容末尾（旧实现把写入位置挪回旧文件末尾，留下陈旧字节）。
-> - `kv_state.json` 在 GC **切换时**就写一次（草案只在完成时写）：切换一生效新写入就进新文件，
->   崩在搬运中途时必须知道日志分布在两个文件里。
-> - 状态文件里的日志基址是"磁盘上最老保留文件之前那一条"，与内存裁剪点 `lastIncludedIndex` 分开记。
->
-> 验证（三节点 -race 构建，`recover.sh`）：
-> - follower `kill -9` → leader 期间重写 20000 条 → 重启 → 10 s 内追平并直读全对
-> - leader `kill -9` → 新 leader 重写 20000 条 → 旧 leader 重启为 follower → 10 s 内追平并直读全对
-> - follower 在 GC 切换后、搬运前 `kill -9`（`NEZHA_GC_PAUSE_MS`）→ 重启后重做第 1 轮 GC、
->   随后正常做第 2 轮 → 直读全对；三个节点 0 DATA RACE
->
-> 未覆盖：落后到 leader 内存日志之外的追赶（需要 InstallSnapshot）；GC 完成后旧一轮的排序文件
-> （`RaftState_sorted_1`）仍留在磁盘上，这是原有行为，恢复不依赖它。
+Status: implemented and verified (2026-09-04).
+Commits: `5aa8fdf` (Raft: rebuildable log, durable term/vote/base), `e8ebaab`
+(applied index stored with the data), `4a3d9ef` (KV state file, startup recovery,
+interrupted-GC resume). Verification driver: `scripts/multinode/recover.sh`.
 
+## Problem
 
-> 现状：节点重启等于全新节点。`ReadPersist` 被注释掉，Raft 的 term/votedFor/日志/偏移队列
-> 全在内存；RocksDB 与日志文件虽然在磁盘上，但启动时没有任何代码去读它们、把状态接回来。
-> 而且重启后的空节点追不上：leader 的 `compactLog` 已把老条目从内存裁掉，又没有 InstallSnapshot。
+Before this work a restarted node came back blank. Raft's term, vote, log and offset
+queue lived only in memory; nothing on startup read the RocksDB index or the value-log
+files back. Because the leader compacts its in-memory log, a blank node could never catch
+up either.
 
-## 目标
+## Goals
 
-1. 节点进程被 `kill -9` 后原地重启，能从本地磁盘恢复到崩溃前的状态，作为 follower 追上 leader；
-   若它崩溃前是 leader，能参与新一轮选举。
-2. 恢复过程不依赖其他节点传数据（第一版）。
-3. 不改写路径的性能：新增的持久化只发生在**选举**和 **GC 切换**这两个低频时刻。
+1. After `kill -9`, a node restarted on the same data directory recovers to its
+   pre-crash state, catches up as a follower, and can take part in elections.
+2. Recovery uses local disk only (no data transfer from peers in this version).
+3. The write path is not slowed down: new persistence happens only on elections and on
+   GC file switches.
 
-不做（第一版）：落后到 leader 内存日志之外的追赶（需要 InstallSnapshot，即传 RocksDB + 排序文件）。
-leader 的压缩本来就受 `min(matchIndex)` 约束，节点宕机期间 leader 不会裁掉它还没收到的条目，
-所以"原地重启"这一场景不需要快照；代价是宕机期间 leader 内存持续增长。
+Out of scope: a node that has fallen behind the leader's in-memory log (that needs
+InstallSnapshot, i.e. shipping RocksDB plus sorted files). Leader compaction is bounded by
+`min(matchIndex)`, so a node that is merely down does not lose the entries it is missing.
 
-## 需要恢复的状态与来源
+## What is persisted, and where
 
-| 状态 | 现状 | 恢复来源 | 何时写 |
+| State | Before | Recovered from | Written when |
 |---|---|---|---|
-| `currentTerm`, `votedFor` | 内存 | 新增 `raft_state.json`，fsync | 每次变更（选举、看到更高 term） |
-| `lastIncludedIndex/Term` | 内存 | `raft_state.json` | GC 切换时（见下） |
-| `rf.log` 尾部 | 内存 | **扫当前日志文件重建**：每条记录含 Index / Term / Key / Value | 无需额外写 |
-| `Offsets` / `offsetVersions`（未 apply 条目）| 内存 | 扫当前日志文件时顺带重建（index > lastApplied 的那些） | 无需额外写 |
-| `lastApplied` | 内存 | **RocksDB 内特殊 key `\x00applied`**，与每条 apply 同一个 WriteBatch 写入 | 每次 apply（同批，无额外 fsync） |
-| `commitIndex` | 内存 | 取 `lastApplied`；leader 的心跳会把它推上去 | — |
-| GC 轮数 `numGC`、当前日志/库/排序文件路径、`FirstGC` 标志 | 内存 | 新增 `kv_state.json`，fsync | GC 切换成功后 |
-| 排序文件的稀疏索引与 inlineCache | 内存 | 启动时对排序文件重建（`建立了索引` 已有该函数） | 无需额外写 |
-| RocksDB 索引 | 已在磁盘 | 直接打开 `kv_state.json` 指向的库 | 已有 |
+| `currentTerm`, `votedFor` | memory | `raft_state.json` (atomic write + fsync) | every change, before the RPC is answered or sent |
+| index/term just before the oldest retained log file | memory | `raft_state.json` | when GC deletes an old log |
+| Raft log tail | memory | replayed from the retained log files (each record holds index, term, key, value) | no extra write |
+| pending `Offsets` / `offsetVersions` | memory | rebuilt during the same replay for `index > applied` | no extra write |
+| applied index | memory | RocksDB key `\x00applied_index`, written in the same WriteBatch as the data row | every apply, no extra fsync |
+| `commitIndex` | memory | starts at the applied index; the leader's heartbeats advance it | — |
+| GC round, current log/index paths, latest sorted file, in-flight old log/index | memory | `kv_state.json` (atomic write + fsync) | GC switch and GC completion |
+| sparse index and inline cache of the sorted file | memory | rebuilt from the sorted file at startup (cache starts cold) | no extra write |
+| RocksDB index | disk | opened at the path named in `kv_state.json` | already durable |
 
-`lastApplied` 放进 RocksDB 而不是状态文件，是因为它和"哪些 key 已写进库"必须原子一致：
-崩在两者之间就会重放或漏放。同一个 WriteBatch 由 RocksDB 保证原子，且 `-syncWAL` 下的持久性
-语义与数据本身完全一样，不多一次 fsync。
+The applied index lives inside RocksDB rather than in a state file because it must agree
+exactly with the rows that made it into the store: a crash between two files would replay
+or skip an entry. One WriteBatch gives atomicity for free, and under `-syncWAL` the marker
+has the same durability as the data.
 
-## 启动流程
+## Changes to the on-disk log
 
-```
-1. 读 kv_state.json     → numGC、当前日志路径、当前库路径、排序文件路径、FirstGC
-   （文件不存在 = 全新节点，走现在的初始化）
-2. 打开当前 RocksDB     → 读 \x00applied 得 lastApplied
-3. 读 raft_state.json   → currentTerm、votedFor、lastIncludedIndex/Term
-4. 扫当前日志文件（从头到尾，格式即 WriteEntryToFile 写的）：
-     每条 → rf.log 追加 LogEntry{Term, Command{Key, Value, Index, Term}}
-     若 index > lastApplied → Offsets/offsetVersions 追加（offset, numGC）
-     记录文件末尾偏移 → rf.logOffset
-   文件第一条的 index - 1 应等于 lastIncludedIndex（校验，不等则报错退出，不猜）
-5. 若 FirstGC=false：对排序文件重建稀疏索引（现有函数）
-6. commitIndex = lastApplied；role = Follower；正常启动各 loop
-```
+- Leader no-op entries (`TermLog`) are written to the log file as records with an empty
+  key (`keySize == 0`; real keys are always `KeyLength` bytes after padding), on both leader
+  and follower. Without them the file had index gaps and could not be replayed. Every entry
+  now owns an offset slot, which also makes the follower's conflict-overwrite offset
+  arithmetic exact.
+- A conflict overwrite truncates the file at the end of the new content. The old code moved
+  the write position back to the previous end of file, leaving stale bytes that a sequential
+  replay would read as records.
 
-第 4 步的尾部截断：崩溃可能留下最后一条写了一半的记录（`-syncWAL` 下每条都 fsync，
-只可能是最后一条）。读到长度不足或校验失败即截断文件到该记录起点，其余照常。
-
-## GC 切换时的持久化顺序
-
-GC 成功后现在的顺序是：切换 → 迁移 → 建索引 → 删旧日志。恢复需要 `kv_state.json` 在
-"删旧日志"之前落盘，否则崩在中间会指向一个不存在的文件：
+## Startup sequence
 
 ```
-切换文件 → 等旧版本 apply 完（dc62bb6）→ 迁移 → fsync 排序文件（3aad91d）
-→ 写 kv_state.json（新路径、numGC）并 fsync → 删旧日志、旧库
+1. read kv_state.json      -> GC round, current log/index paths, sorted file, in-flight GC
+   (absent = fresh node: open the initial index, write an initial state file)
+2. open the current RocksDB -> read \x00applied_index
+   if a GC was in flight: open the old index too, take the larger applied index
+3. rebuild the sorted-file index (if a round has completed) and set the read-path flags
+4. raft.Make(stateFile)    -> loads term, vote, log base; starts nothing
+5. RecoverLog(files, applied): scan the retained log files oldest first
+     every record  -> rf.log entry (Term, Key, Value, Index; empty key = TermLog)
+     index > applied -> Offsets / offsetVersions (offset within its file, file version)
+   indices must be contiguous; first index - 1 must equal the persisted base
+   a half-written final record in the last file is truncated away
+6. SetCurrentLogVersioned(current log, round) -> appends continue at the file end
+7. StartLoops: election, replication, apply, compaction, gRPC
+8. client-facing server starts; an interrupted GC round is redone in the background
 ```
 
-崩在"写 kv_state.json"之前：重启读到旧状态，旧日志/旧库还在，重做这一轮 GC 即可
-（现有代码已允许重试：`switchedPersister` 字段）。崩在之后：新状态完整，旧文件残留，启动时清掉。
+## GC ordering
 
-`lastIncludedIndex/Term` 也在此时写入 `raft_state.json`：值为旧文件最后一条的 index/term。
-这样"当前日志文件第一条 index - 1 == lastIncludedIndex"的不变式在切换后成立。
-`compactLog` 只裁内存、不动文件，所以恢复时 `rf.log` 会比崩溃前长（多出已 apply 的部分），
-第一次 `compactLog` 会再裁掉，不影响正确性。
+Recovery needs `kv_state.json` written at the file switch, not only at completion: once the
+switch takes effect new writes go to the new file, so a crash during migration leaves the
+log split across two files and the state must say so.
 
-## 与现有机制的交互
+```
+switch files -> write kv_state (in flight) -> drain pending applies for the old version
+-> migrate -> fsync sorted file -> PersistLogBase + write kv_state (done) -> delete old log
+```
 
-- **follower 冲突截断**（`AppendEntriesInRaft` 里 `rf.log = rf.log[:logPos]` + Seek 覆盖写）：
-  恢复重建的 `rf.log` 与文件内容一致，截断逻辑照常工作。
-- **`FileVersion`**：恢复时所有未 apply 条目都在当前文件里，版本一律取 `numGC`，与 `offsetVersions` 语义一致。
-- **重启后 leader 的 nextIndex**：leader 对它的 `nextIndex` 是宕机前的值，重启节点的日志尾部完整，
-  一致性检查会直接通过，从缺的那条开始补。
+A crash before the second state write restarts the node with `gc_in_progress = true`: both
+log files are replayed, the partial sorted file is discarded, and the round is redone from
+the migration step (both rounds are re-entrant). A crash after it leaves only an unreferenced
+old file behind.
 
-## 验证方案
+## Verification
 
-三节点，`-race` 构建：
-1. 写入 N 条 → 触发 GC → `kill -9` 一个 follower → 继续写 M 条 → 重启该 follower（不清目录）
-   → 等追上 → 直接读它，N+M 条全对。
-2. 同上，杀的是 leader：新 leader 产生后继续写，旧 leader 重启回归为 follower，追上后直读全对。
-3. 崩在 GC 中途：写入过程中对正在 GC 的节点 `kill -9`（用日志里 "Starting garbage collection" 触发），
-   重启后重做 GC，读全对，且没有残留文件。
-4. 每个场景至少 3 次。
+Three-node cluster built with `-race`, 20000 keys of 1 KB, GC threshold set so both rounds run.
 
-## 实现工作量估计
+| Scenario | Result |
+|---|---|
+| follower `kill -9`, 20000 keys rewritten while it is down, restart | recovered from disk, caught up, served the new values within 10 s |
+| leader `kill -9`, new leader elected in 2 s, 20000 keys rewritten, old leader restarted | rejoined as follower, caught up, served the new values within 10 s |
+| follower `kill -9` between GC switch and migration (`NEZHA_GC_PAUSE_MS`) | detected the interrupted round, redid it in 138 ms, later ran round 2 normally, all keys correct |
 
-- Raft 层：状态文件读写、日志扫描重建、启动挂接 ~150 行
-- KV 层：`kv_state.json`、启动分支、GC 顺序调整、`\x00applied` 写入与读取 ~120 行
-- 验证脚本：在 `three-race-node.sh` 上加 `restart`（不清目录）~30 行
+No data-race reports on any node in any scenario. Unit tests cover the log rebuild, recovery
+across GC files, truncated tails, gap and base-mismatch rejection, overwrite truncation, the
+hard-state round trip and the applied-index batch.
+
+## Known gaps
+
+- Conflict truncation on a follower is exercised only by a unit test; the cluster scripts
+  kill the leader after the writes finish, so no uncommitted tail is left behind.
+- No InstallSnapshot: a node that falls behind the leader's compaction point cannot catch up.
+- After the second GC round the first round's sorted file (`RaftState_sorted_1`) is left on
+  disk. Pre-existing behaviour; recovery does not depend on it.

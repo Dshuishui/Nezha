@@ -31,7 +31,7 @@ func TestAppliedIndexTravelsWithData(t *testing.T) {
 	if v, ok := p.GetInline("43"); !ok || v != "small" {
 		t.Fatalf("inline row: %q/%v", v, ok)
 	}
-	// 元数据键不能混进用户数据的扫描
+	// the metadata key must never look like user data to a scan
 	if !IsMetaKey([]byte(appliedIndexKey)) || IsMetaKey([]byte(p.PadKey("1"))) {
 		t.Fatal("IsMetaKey misclassifies keys")
 	}

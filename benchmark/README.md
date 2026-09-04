@@ -1,21 +1,25 @@
-# benchmark 工具
+# Benchmark tools
 
-本目录下每个子目录是一个独立的 `package main` 客户端。当前实验脚本（`scripts/`）在用的：
+Each subdirectory is a standalone `package main` client. Tools used by the current
+experiment scripts under `scripts/`:
 
-| 工具 | 用途 |
+| Tool | Purpose |
 |---|---|
-| `randwrite_goroutine` | 主表 PUT 吞吐（并发 goroutine 写入） |
-| `zipf_read` | GET：Zipf 分布随机读，多轮 |
-| `scan_pro` | SCAN：范围查询，可配 keyspace / gap / 轮数 |
-| `scanverify` | 写入 + 逐条校验 GET/SCAN（正确性） |
-| `readonly` | 只读校验，故障切换/恢复后用 |
-| `countkeys` | 统计库内 key 数 |
-| `testRocksDB` | RocksDB 单机基准 |
+| `randwrite_goroutine` | PUT throughput for the main table (concurrent goroutine writers) |
+| `zipf_read` | GET: Zipf-distributed random reads over several rounds |
+| `scan_pro` | SCAN: range queries with configurable key space, gap and round count |
+| `scanverify` | write then verify every GET/SCAN result (correctness) |
+| `readonly` | read-only verification, used after failover and recovery |
+| `countkeys` | count the keys in a store |
+| `testRocksDB` | single-node RocksDB micro-benchmark |
 
-其余（`cdf` `cdf_v2` `randread` `randread_pro` `randwrite` `randwrite_pro` `scan` `scan_pro_paginated`
-`seqwrite` `small_value` `testRocksDB-kvs` `testRocksDB_v2`）是早期实验用的，暂时保留（用户 2026-09-04 决定）。
+The others (`cdf`, `cdf_v2`, `randread`, `randread_pro`, `randwrite`, `randwrite_pro`, `scan`,
+`scan_pro_paginated`, `seqwrite`, `small_value`, `testRocksDB-kvs`, `testRocksDB_v2`) belong
+to earlier experiments and are kept for now (decision of 2026-09-04).
 
-## 早期手写的调用示例（原 `client.txt`，服务器地址已过时，仅作参数参考）
+## Historical invocation examples (formerly `client.txt`)
+
+Server addresses are out of date; the lines are kept for their parameters.
 
 ```
 go run ./benchmark/randwrite/randwrite.go -cnums 300 -dnums 40000 -vsize 16000 -servers 192.168.1.62:3088,192.168.1.104:3088

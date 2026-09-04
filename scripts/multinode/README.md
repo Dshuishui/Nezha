@@ -1,20 +1,23 @@
-# 多节点正确性验证脚本
+# Multi-node verification scripts
 
-两台实验机（`tikv240` = node0，`tikv241` = node1/node2）上的三节点/两节点验证。
-所有脚本都假定：服务器上代码在 `~/work/Nezha`，环境在 `~/env.sh`，Mac 侧通过 `ssh tikv240` /
-`ssh tikv241` 免密可达；两台机器之间没有互信，所以编排全部由 Mac 侧驱动。
+Correctness drivers for the two lab machines (`tikv240` hosts node0, `tikv241` hosts node1
+and node2). They assume the repository is checked out at `~/work/Nezha` on each server with
+the toolchain environment in `~/env.sh`, and that `ssh tikv240` / `ssh tikv241` work without
+a password from the driving machine. The two servers cannot reach each other over SSH, so all
+orchestration runs from the driving machine.
 
-| 脚本 | 放哪 | 作用 |
+| Script | Runs on | Purpose |
 |---|---|---|
-| `rep-node.sh` | 两台服务器 `~/` | 两节点稳态验证的节点控制：`start ROLE VS N [normal\|race]` / `stop` / `report` |
-| `two-node-rounds.sh` | Mac | 两节点多轮：写入校验 → 等 GC 稳定 → 分别直读 leader 与 follower → 收日志 |
-| `three-node.sh` | 两台服务器 `~/` | 三节点节点控制：`start IDX PORT IPORT VS N` / `kill9` / `restart`（不清目录，走恢复）/ `stop` / `report` / `recoverlog`；`BIN=race\|normal`，`GC_PAUSE_MS=` 让 GC 在切换后暂停 |
-| `failover.sh` | Mac | 杀 leader → 新 leader → 直读两个存活节点 → 经新 leader 重写 → 再直读 |
-| `failover-loop.sh` | Mac | 连跑 N 次 `failover.sh` |
-| `recover.sh` | Mac | 崩溃恢复：`MODE=restart` follower/leader 宕机后原地重启追平；`MODE=midgc` GC 中途宕机后重启重做 |
+| `rep-node.sh` | both servers, `~/` | node control for the two-node steady-state runs: `start ROLE VS N [normal\|race]`, `stop`, `report` |
+| `two-node-rounds.sh` | driver | repeated two-node rounds: write and verify, wait for GC to settle, read the leader and the follower directly, collect logs |
+| `three-node.sh` | both servers, `~/` | three-node control: `start IDX PORT IPORT VS N`, `kill9`, `restart` (same data directory, exercises recovery), `stop`, `report`, `recoverlog`; `BIN=race\|normal`; `GC_PAUSE_MS=` pauses GC after the file switch |
+| `failover.sh` | driver | kill the leader, wait for the election, read both survivors, write through the new leader, read again |
+| `failover-loop.sh` | driver | run `failover.sh` N times |
+| `recover.sh` | driver | crash recovery: `MODE=restart` restarts a killed follower and a killed leader; `MODE=midgc` kills a follower inside the GC window and restarts it |
 
-服务器侧脚本部署：`scp three-node.sh tikv240:~/ && ssh tikv240 chmod +x ~/three-node.sh`（241 同）。
-Mac 侧脚本里调用的远端名字是 `~/three-race-node.sh` / `~/rep-node.sh`，部署时按需改名或加软链。
+Deploy the server-side scripts with `scp three-node.sh tikv240:~/ && ssh tikv240 chmod +x
+~/three-node.sh` (and the same for `tikv241` and `rep-node.sh`). The drivers call them as
+`~/three-node.sh` and `~/rep-node.sh`.
 
-直读 follower 之所以可行，是因为读路径目前没有 leader 检查（见 TODO-avp.md）；这恰好让
-"follower 本地状态是否正确"可以被直接验证。
+Reading a follower directly works because the read path currently has no leader check (see
+`TODO-avp.md`). That gap is what lets these scripts verify a follower's local state.

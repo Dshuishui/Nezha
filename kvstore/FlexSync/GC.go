@@ -128,8 +128,9 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	return kvs.firstGCMigrate(sortedFile, firstSortedFilePath, oldFile, startTime)
 }
 
-// firstGCMigrate 是第一轮 GC 切换文件之后的搬运与建索引部分。
-// 单独成函数是为了崩溃恢复：切换已经落盘生效、搬运没做完的情况下，重启后直接从这里重做。
+// firstGCMigrate is the migration and index-building part of round one, after the file
+// switch. It is a separate function so that recovery can redo it directly when the switch
+// was durable but the migration never finished.
 func (kvs *KVServer) firstGCMigrate(sortedFile *os.File, firstSortedFilePath string, oldFile *os.File, startTime time.Time) error {
 	var err error
 	// ============= 优化开始：边写边构建索引 =============
@@ -139,7 +140,7 @@ func (kvs *KVServer) firstGCMigrate(sortedFile *os.File, firstSortedFilePath str
 	inlineCache := NewInlineCache(kvs.inlineCacheBytes)
 	var currentOffset int64 = 0
 
-	// 创建bufio.Writer来写入排序文件（末尾显式 Flush 并检查错误，不靠 defer）
+	// bufio.Writer for the sorted file; flushed explicitly (and checked) at the end, not via defer
 	writer := bufio.NewWriter(sortedFile)
 
 	// Read entries from RocksDB and write them in sorted order to the new file
@@ -153,7 +154,7 @@ func (kvs *KVServer) firstGCMigrate(sortedFile *os.File, firstSortedFilePath str
 		defer key.Free()
 		defer value.Free()
 		if raft.IsMetaKey(key.Data()) {
-			continue // 恢复用的元数据（applied 下标），不是用户数据，不搬
+			continue // recovery metadata (applied index), not user data; do not migrate it
 		}
 
 		// 记录可能是 [TagOffset, offset8]（去 valuelog 取）也可能是
@@ -197,9 +198,10 @@ func (kvs *KVServer) firstGCMigrate(sortedFile *os.File, firstSortedFilePath str
 		}
 	}
 
-	// Flush 只是把缓冲交给内核。本函数返回 nil 后调用方会删掉源文件，
-	// 所以排序文件必须先真正落盘：否则掉电时"源已删、目标还在页缓存里"，
-	// 这一轮 GC 搬过来的数据就全没了。写路径每条都 fsync，GC 没理由例外。
+	// Flush only hands the buffer to the kernel. The caller deletes the source log once this
+	// function returns nil, so the sorted file must be on disk first; otherwise a power loss
+	// leaves "source deleted, destination still in the page cache" and everything this round
+	// moved is gone. The write path fsyncs every entry; GC is no exception.
 	err = writer.Flush()
 	if err != nil {
 		return fmt.Errorf("failed to flush sorted file: %v", err)
@@ -425,12 +427,15 @@ func (kvs *KVServer) CheckDatabaseContent() error {
 	return nil
 }
 
-// waitOldVersionApplied 等到所有落在旧日志文件（版本 oldVersion）里的条目都 apply 完毕。
+// waitOldVersionApplied blocks until every entry that lives in the old log file (version
+// oldVersion) has been applied.
 //
-// 切换文件之后、对旧库建迭代器之前必须等这一步。RocksDB 迭代器是创建时刻的快照：
-// 一条已提交但还没 apply 的旧版本条目，会在快照之后才被写进旧库，GC 看不见它，
-// 随后旧文件被删、旧库被弃，这个 key 就没了。apply 是事件驱动的，正常只落后几微秒，
-// 所以此前从未被测出来；但 follower 落后或高并发下的 apply 积压都能把窗口撑开。
+// This must happen after the file switch and before the iterator over the old index is
+// created. A RocksDB iterator is a snapshot of its creation time: an entry committed to the
+// old log but not yet applied lands in the old index after that snapshot, GC never sees it,
+// and it is lost when the old log and index are dropped. Apply is event-driven and normally
+// lags by microseconds, which is why no run had caught this, but a lagging follower or a
+// burst of writes widens the window.
 func (kvs *KVServer) waitOldVersionApplied(oldVersion int32) {
 	defer gcCrashWindow()
 	start := time.Now()
@@ -438,7 +443,7 @@ func (kvs *KVServer) waitOldVersionApplied(oldVersion int32) {
 		v, pending := kvs.raft.OldestPendingVersion()
 		if !pending || v > oldVersion {
 			if waited := time.Since(start); waited > 50*time.Millisecond {
-				fmt.Printf("GC 等待旧版本条目 apply 完毕，用时 %v\n", waited)
+				fmt.Printf("GC waited %v for the old file's pending entries to be applied\n", waited)
 			}
 			return
 		}
@@ -446,8 +451,9 @@ func (kvs *KVServer) waitOldVersionApplied(oldVersion int32) {
 	}
 }
 
-// gcCrashWindow 是崩溃恢复测试用的钩子：环境变量 NEZHA_GC_PAUSE_MS 非空时，在"切换已落盘、
-// 搬运尚未开始"这个点停留指定毫秒，让外部脚本有机会在 GC 中途 kill -9。生产不设置即无效。
+// gcCrashWindow is a test hook for crash recovery: when NEZHA_GC_PAUSE_MS is set, GC pauses
+// for that many milliseconds at the point where the switch is durable but migration has not
+// started, giving an external script the chance to kill -9 mid-GC. Unset in production.
 func gcCrashWindow() {
 	v := os.Getenv("NEZHA_GC_PAUSE_MS")
 	if v == "" {
@@ -457,7 +463,7 @@ func gcCrashWindow() {
 	if err != nil || ms <= 0 {
 		return
 	}
-	fmt.Printf("[GC-PAUSE] 切换已生效，按 NEZHA_GC_PAUSE_MS 暂停 %d ms\n", ms)
+	fmt.Printf("[GC-PAUSE] switch done; pausing %d ms per NEZHA_GC_PAUSE_MS\n", ms)
 	time.Sleep(time.Duration(ms) * time.Millisecond)
 }
 
@@ -478,8 +484,9 @@ func (kvs *KVServer) SwitchToNewFiles(newLog string, newPersister *raft.Persiste
 	kvs.persister = newPersister // 存储key和偏移量的rocksdb文件由kvs操作
 	kvs.raft.SetCurrentPersister(kvs.persister)
 
-	// 切换一旦生效，新写入就进新文件了。状态必须在此刻落盘：崩在搬运中途时，
-	// 重启后才知道日志分布在旧新两个文件里、GC 该从搬运这一步重做。
+	// Once the switch takes effect new writes go to the new file, so the state must be
+	// durable right now: a restart after a crash during migration has to know that the log
+	// spans both files and that GC must be redone from the migration step.
 	kvs.gcInProgress = true
 	kvs.saveKVState()
 }

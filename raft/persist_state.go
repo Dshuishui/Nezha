@@ -7,13 +7,16 @@ import (
 	"path/filepath"
 )
 
-// hardState 是 Raft 要求在应答任何 RPC 之前落盘的那部分状态，外加"日志文件从哪一条
-// 开始"的基址。日志本身就是 valuelog 文件，不在这里重复存。
+// hardState is the part of Raft state that must be durable before any RPC is answered,
+// plus the base of the on-disk log. The log itself is the value log, so it is not
+// duplicated here.
 //
-//	CurrentTerm / VotedFor  标准 Raft 持久化状态，选举与看到更高任期时写
-//	BaseIndex / BaseTerm    最老的仍保留的日志文件之前那一条的 index/term。
-//	                        GC 删旧日志时推进；重启后 lastIncludedIndex/Term 取自这里，
-//	                        并与文件里第一条记录的 index 交叉校验。
+//	CurrentTerm / VotedFor  standard Raft persistent state; written on elections and
+//	                        whenever a higher term is observed
+//	BaseIndex / BaseTerm    index/term of the entry just before the oldest log file still
+//	                        on disk. Advanced when GC deletes an old log. On restart
+//	                        lastIncludedIndex/Term start here and are cross-checked
+//	                        against the first record actually found in the files.
 type hardState struct {
 	CurrentTerm int   `json:"current_term"`
 	VotedFor    int   `json:"voted_for"`
@@ -21,7 +24,8 @@ type hardState struct {
 	BaseTerm    int32 `json:"base_term"`
 }
 
-// WriteFileAtomic 写临时文件、fsync、rename、再 fsync 目录。崩在任何一步，旧文件仍完整。
+// WriteFileAtomic writes to a temp file, fsyncs it, renames it over path, then fsyncs the
+// directory. A crash at any step leaves the previous file intact.
 func WriteFileAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
@@ -54,11 +58,12 @@ func WriteFileAtomic(path string, data []byte) error {
 	return d.Sync()
 }
 
-// persistHardState 把 term/votedFor/base 落盘。调用方持有 rf.mu。
-// 这是每次任期或投票变化时的一次小文件 fsync，只发生在选举路径上，不在写路径上。
+// persistHardState writes term, vote and log base to disk. The caller holds rf.mu.
+// This is one small fsync per term or vote change, on the election path only; the
+// write path never calls it.
 func (rf *Raft) persistHardState() {
 	if rf.stateFile == "" {
-		return // 未启用持久化（单测或旧的调用方式）
+		return // persistence disabled (unit tests, or callers that never set a path)
 	}
 	hs := hardState{
 		CurrentTerm: rf.currentTerm,
@@ -71,12 +76,14 @@ func (rf *Raft) persistHardState() {
 		panic(fmt.Sprintf("marshal raft hard state: %v", err))
 	}
 	if err := WriteFileAtomic(rf.stateFile, data); err != nil {
-		// 持久化失败不能继续当 leader/投票：宁可停机，也不能违反 Raft 的安全性前提。
+		// Continuing as leader or voter with unpersisted state would break Raft's
+		// safety argument; stopping is the only correct option.
 		panic(fmt.Sprintf("persist raft hard state to %s: %v", rf.stateFile, err))
 	}
 }
 
-// loadHardState 读取状态文件；文件不存在视为全新节点，返回 (zero, false, nil)。
+// loadHardState reads the state file. A missing file means a fresh node and returns
+// (zero, false, nil).
 func loadHardState(path string) (hardState, bool, error) {
 	var hs hardState
 	data, err := os.ReadFile(path)
