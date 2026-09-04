@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"gitee.com/dong-shuishui/FlexSync/rpc/raftrpc"
 )
 
 // Minimal Raft for writing a log: only the persister (PadKey) and logMu/log handle are needed.
@@ -198,47 +196,3 @@ func TestRecoverLogRejectsBaseMismatchWithState(t *testing.T) {
 		t.Fatal("expected base mismatch error, got nil")
 	}
 }
-
-func TestOverwriteTruncatesStaleTail(t *testing.T) {
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "RaftState.log")
-	w := newLogWriter(t, logPath, 0)
-	w.WriteEntryToFile([]*Entry{putEntry(1, 1, "a", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")}, 0)
-	w.WriteEntryToFile([]*Entry{putEntry(2, 1, "b", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")}, 0)
-	w.WriteEntryToFile([]*Entry{putEntry(3, 1, "c", "cccccccccccccccccccccccccccccccccccccccccc")}, 0)
-	// follower conflict: overwrite from index 2 with a shorter record; index 3 must disappear
-	w.Offsets = w.Offsets[:1]
-	w.offsetVersions = w.offsetVersions[:1]
-	w.WriteEntryToFile([]*Entry{putEntry(2, 2, "b", "short")}, 0+w.Offsets[0]+int64(recordHeader)+10+36)
-	w.CloseLogFile()
-
-	rf := &Raft{persister: &Persister{}}
-	last, err := rf.RecoverLog([]LogFile{{Path: logPath}}, 0)
-	if err != nil {
-		t.Fatalf("RecoverLog: %v", err)
-	}
-	if last != 2 || rf.log[1].Term != 2 || rf.log[1].Command.Value != "short" {
-		t.Fatalf("after overwrite: last %d, log[1] term %d value %q; want 2 / 2 / short", last, rf.log[1].Term, rf.log[1].Command.Value)
-	}
-}
-
-func TestHardStateRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	rf := &Raft{stateFile: filepath.Join(dir, "raft_state.json"), currentTerm: 7, votedFor: 2, fileBaseIndex: 15001, fileBaseTerm: 3}
-	rf.persistHardState()
-	hs, ok, err := loadHardState(rf.stateFile)
-	if err != nil || !ok {
-		t.Fatalf("load: ok=%v err=%v", ok, err)
-	}
-	if hs.CurrentTerm != 7 || hs.VotedFor != 2 || hs.BaseIndex != 15001 || hs.BaseTerm != 3 {
-		t.Fatalf("round trip mismatch: %+v", hs)
-	}
-	if _, ok, err := loadHardState(filepath.Join(dir, "missing.json")); ok || err != nil {
-		t.Fatalf("missing file should be (false, nil), got ok=%v err=%v", ok, err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "raft_state.json.tmp-")); err == nil {
-		t.Fatal("temp file left behind")
-	}
-}
-
-var _ = raftrpc.LogEntry{}

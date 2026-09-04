@@ -98,3 +98,24 @@ func loadHardState(path string) (hardState, bool, error) {
 	}
 	return hs, true, nil
 }
+
+// FileBase returns the persisted base of the on-disk log; the KV layer uses it during recovery.
+func (rf *Raft) FileBase() (int, int32) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.fileBaseIndex, rf.fileBaseTerm
+}
+
+// PersistLogBase runs right before GC deletes an old log file: it promotes the pendingBase
+// frozen at the switch to the on-disk log base and persists it. A later restart replays
+// from the new file's first record with exactly this base.
+func (rf *Raft) PersistLogBase() {
+	rf.logMu.Lock()
+	idx, term := rf.pendingBaseIndex, rf.pendingBaseTerm
+	rf.logMu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.fileBaseIndex = idx
+	rf.fileBaseTerm = term
+	rf.persistHardState()
+}
