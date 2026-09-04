@@ -4,9 +4,11 @@
 
 ## 正在跑（compact 后从这里接上）
 
-- 无。240/241 上没有残留进程，两台 `~/work/Nezha` 均在 `c0e41cd`。
-  节点脚本 `~/rep-node.sh start|stop|report ROLE [VS N normal|race]` 留在两台机器上可复用。
-- 下一步候选：三台物理机 / 六系统多节点对比 / 读路径 leader 检查 / -race 跑故障切换（见各节）。
+- 无。240/241 上没有残留进程。
+  节点脚本留在两台机器上可复用：`~/rep-node.sh`（两节点稳态）、`~/three-race-node.sh`
+  （三节点，`BIN=race|normal`，`start|kill9|stop|report`）。
+- **下一步：崩溃恢复**（`docs/crash-recovery.md`，等用户确认设计）。
+- 之后：三台物理机 / 六系统多节点对比 / 读路径 leader 检查（见各节）。
 
 ## 🖥 实验机器（2026-09-04 更新）
 
@@ -470,12 +472,35 @@ Mac 侧 `driver.sh`（scratchpad）。
 
 合计 **15 个回合数据全对**（每回合两个节点各自 GET 300 + SCAN 1500）。
 
+**已补验（同日傍晚）：-race 故障切换**
+
+三节点 -race 构建，流程：写 20000×1KB → GC 稳定 → `kill -9` leader → 直读两个存活节点
+→ 经新 leader 重写 20000×512B → GC 稳定 → 再直读 → 三节点日志查 DATA RACE。
+脚本：服务器 `~/three-race-node.sh`，Mac 侧 `failover-race.sh` / `failover-loop.sh`。
+
+    首跑    数据全对，0 race，但 **65 秒没选出新 leader**（node2 卡 Candidate，node1 从未变 Candidate）
+    复跑×4  数据全对，0 race，新 leader 2~3 秒（node1 与 node2 各当选过）
+
+首跑的卡死没能带诊断复现，属间歇性；但结构性原因是明确的 → `373e26d`：
+- `sendRequestVote` 每次 `grpc.Dial` 新连接且 `WithBlock` 无超时，对死节点永不返回；
+- 计票循环只在"全部应答"或"过半"退出，死节点那份应答永远不来、活着的那票又因 2s RPC
+  超时丢掉时，candidate 永久阻塞，不重选也不让位。
+修：投票走连接池（对不可达节点快速失败）；计票最多等一个选举超时；选举决策打 debug 日志。
+
+顺带发现并修掉一个 GC 数据丢失窗口 `dc62bb6`：切换文件后立即对旧库建 RocksDB 迭代器
+（快照），已提交未 apply 的旧版本条目在快照之后才写进旧库，GC 看不见，随后旧文件旧库
+一起删。修：切换后等 Raft 层报告旧版本无待 apply 条目再建迭代器。
+
+**原型没有崩溃恢复**（`ReadPersist` 被注释、状态全在内存）→ 用户决定修而不是写 limitation。
+设计草案 `docs/crash-recovery.md`，待确认后实现。
+
 **仍未验证**：
 - [ ] **三台物理机**。现为 2 台跑 3 实例，性能数据不可用；论文口径是 3 节点 3 副本
-- [ ] **-race 覆盖故障切换路径**（选举、冲突截断、旧 leader 重启回归）。上述 race
-      轮次只覆盖稳态写入 + GC。可把 `failover.sh` 改用 `/tmp/nezha-rep-race` 跑一遍
+- [ ] **-race 覆盖冲突截断 / 旧 leader 重启回归**。依赖崩溃恢复实现后才能测
 - [ ] **doAppendEntries 加锁后的吞吐**。锁内只拷贝指针切片，理论上可忽略，但没量过；
       下次跑 PUT 主表时顺带与 `73306ea` 对照一次
+- [ ] **GC 等待 apply 的耗时**（`dc62bb6`）。正常应为 0~几 ms；超过 50ms 会打印
+      "GC 等待旧版本条目 apply 完毕"，主表实验时留意
 
 ## 🔍 读路径不经过 Raft，也没有 leader 检查（2026-09-04 发现，暂不修）
 
