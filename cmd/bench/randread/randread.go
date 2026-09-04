@@ -74,8 +74,8 @@ func (kvc *KVClient) randRead() {
 					// fmt.Println("点查询key为：",key)
 				}
 				// if err == nil && keyExist {
-					// kvc.goodPut++
-					// fmt.Printf("Got the value:** corresponding to the key:%v === exist\n ", key)
+				// kvc.goodPut++
+				// fmt.Printf("Got the value:** corresponding to the key:%v === exist\n ", key)
 				// }
 				if !keyExist {
 					// kvc.PutInRaft(targetkey, value) // 找到不存在的，先随便弥补一个键值对

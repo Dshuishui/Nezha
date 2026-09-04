@@ -13,9 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gitee.com/dong-shuishui/FlexSync/api/kvrpc"
 	"gitee.com/dong-shuishui/FlexSync/internal/pool"
 	"gitee.com/dong-shuishui/FlexSync/internal/raft"
-	"gitee.com/dong-shuishui/FlexSync/api/kvrpc"
 	"gitee.com/dong-shuishui/FlexSync/internal/util"
 )
 
@@ -42,9 +42,9 @@ type KVClient struct {
 type getResult struct {
 	count         int
 	avgLatency    time.Duration
-	totalDataSize    float64 // MB/s
-	valueSize  int
-	duration   time.Duration
+	totalDataSize float64 // MB/s
+	valueSize     int
+	duration      time.Duration
 }
 
 func (kvc *KVClient) randRead() (float64, time.Duration) {
@@ -73,15 +73,15 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 			localResult.duration = time.Since(startTime)
 			if localResult.count > 0 {
 				localResult.avgLatency = localResult.duration / time.Duration(localResult.count)
-				localResult.totalDataSize = float64(localResult.count * localResult.valueSize) / 1000000 // MB
+				localResult.totalDataSize = float64(localResult.count*localResult.valueSize) / 1000000 // MB
 				// localResult.throughput = totalDataSize / duration.Seconds()
 			}
 			resultChan <- localResult
 		}(i)
 	}
 	// go func() {
-		wg.Wait()
-		close(resultChan)
+	wg.Wait()
+	close(resultChan)
 	// }()
 
 	var maxDuration time.Duration
@@ -93,8 +93,8 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 	for result := range resultChan {
 		if result.count > 0 {
 			if result.duration > maxDuration {
-                maxDuration = result.duration
-            }
+				maxDuration = result.duration
+			}
 			totalData += result.totalDataSize
 			totalAvgLatency += result.avgLatency
 			kvc.valuesize = result.valueSize

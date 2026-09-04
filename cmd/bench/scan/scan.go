@@ -83,8 +83,8 @@ func (kvc *KVClient) scan(gapkey int) {
 					// kvc.goodPut++
 					// 统计所有的scan中读取到的有效值
 					localGoodPut += len(reply.KeyValuePairs)
-					if localGoodPut%100==1 {
-						fmt.Println("这个goroutine的数量为多少：",localGoodPut)	
+					if localGoodPut%100 == 1 {
+						fmt.Println("这个goroutine的数量为多少：", localGoodPut)
 					}
 				}
 				// if j >= num+100 {

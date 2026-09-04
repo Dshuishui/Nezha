@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gitee.com/dong-shuishui/FlexSync/api/kvrpc"
 	"gitee.com/dong-shuishui/FlexSync/internal/pool"
 	"gitee.com/dong-shuishui/FlexSync/internal/raft"
-	"gitee.com/dong-shuishui/FlexSync/api/kvrpc"
 	"gitee.com/dong-shuishui/FlexSync/internal/util"
 
 	crand "crypto/rand"

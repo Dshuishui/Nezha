@@ -52,31 +52,31 @@ func (kvc *KVClient) batchRawPut(value string) {
 	kvc.goodPut = 0
 
 	for i := 0; i < *cnums; i++ {
-        go func(i int) {
-            defer wg.Done()
-            num := 0
-            rand.Seed(time.Now().Unix())
-            for j := 0; j < base; j++ {
-                // k := rand.Intn(dnums)
-                //k := basei + j
-                // key := fmt.Sprintf("key_%d", k)
-                key := util.GenerateFixedSizeKey(5)
-                // key := strconv.Itoa(rand.Intn(dnums))
-                // key:= generateUniqueRandomInts(1, *dnums)
-                // key= strconv.Itoa(key)
-                //fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
-                reply, err := kvc.PutInRaft(key, value) // 先随机传入一个地址的连接池
-                // fmt.Println("after putinraft , j:",j)
-                if err == nil && reply != nil && reply.Err != "defeat" {
-                    kvc.goodPut++
-                }
-                if j >= num+100 {
-                    num = j
-                    // fmt.Printf("Goroutine %v put key num: %v\n", i, num)
-                }
-            }
-        }(i)
-    }
+		go func(i int) {
+			defer wg.Done()
+			num := 0
+			rand.Seed(time.Now().Unix())
+			for j := 0; j < base; j++ {
+				// k := rand.Intn(dnums)
+				//k := basei + j
+				// key := fmt.Sprintf("key_%d", k)
+				key := util.GenerateFixedSizeKey(5)
+				// key := strconv.Itoa(rand.Intn(dnums))
+				// key:= generateUniqueRandomInts(1, *dnums)
+				// key= strconv.Itoa(key)
+				//fmt.Printf("Goroutine %v put key: key_%v\n", i, k)
+				reply, err := kvc.PutInRaft(key, value) // 先随机传入一个地址的连接池
+				// fmt.Println("after putinraft , j:",j)
+				if err == nil && reply != nil && reply.Err != "defeat" {
+					kvc.goodPut++
+				}
+				if j >= num+100 {
+					num = j
+					// fmt.Printf("Goroutine %v put key num: %v\n", i, num)
+				}
+			}
+		}(i)
+	}
 	wg.Wait()
 	for _, pool := range kvc.pools {
 		pool.Close()
@@ -100,11 +100,10 @@ func (kvc *KVClient) batchRawPut(value string) {
 // 	// allKeys := generateUniqueRandomInts(*dnums+5000000,*dnums+10000000)
 // 	allKeys := generateUniqueRandomInts(0,*dnums)
 
-
 // 	for i := 0; i < *cnums; i++ {
 // 		go func(i int) {
 //             defer wg.Done()
-            
+
 //             // 为每个goroutine分配一部分key
 //             start := i * base
 //             end := (i + 1) * base
@@ -112,7 +111,7 @@ func (kvc *KVClient) batchRawPut(value string) {
 //                 end = *dnums // 确保最后一个goroutine使用所有剩余的key
 //             }
 //             keys := allKeys[start:end]
-            
+
 //             // 打乱这部分key的顺序
 //             // randomGens[i].Shuffle(len(keys), func(i, j int) { keys[i], keys[j] = keys[j], keys[i] })
 
@@ -121,7 +120,7 @@ func (kvc *KVClient) batchRawPut(value string) {
 //                     break // 防止越界
 //                 }
 //                 key := strconv.Itoa(keys[j])
-                
+
 //                 // 这里使用key进行你的操作
 //                 reply, err := kvc.PutInRaft(key, value)
 //                 if err == nil && reply != nil && reply.Err != "defeat" {
@@ -138,12 +137,12 @@ func (kvc *KVClient) batchRawPut(value string) {
 // }
 
 func generateUniqueRandomInts(min, max int) []int {
-    nums := make([]int, max-min+1)
-    for i := range nums {
-        nums[i] = min + i
-    }
-    rand.Shuffle(len(nums), func(i, j int) { nums[i], nums[j] = nums[j], nums[i] })
-    return nums
+	nums := make([]int, max-min+1)
+	for i := range nums {
+		nums[i] = min + i
+	}
+	rand.Shuffle(len(nums), func(i, j int) { nums[i], nums[j] = nums[j], nums[i] })
+	return nums
 }
 
 // Method of Send RPC of PutInRaft
