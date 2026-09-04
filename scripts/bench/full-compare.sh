@@ -11,7 +11,7 @@
 #      根本不触发 GC，读路径不走 sortedFile，两组测的就不是同一件事了。
 #   3. 其余一律不动
 #
-# 用法: bash scripts/bench-full-compare.sh [写入量] [value大小] [SCAN轮数]
+# 用法: bash scripts/bench/full-compare.sh [写入量] [value大小] [SCAN轮数]
 set -u
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
@@ -55,7 +55,7 @@ grep -q "rf.Offsets = append(rf.Offsets, 0)" raft/raft.go \
 # scan_pro 的 -tests flag 只有本分支有；benchmark 是 go run 跑工作区里的文件，
 # 所以这个必须落到对照分支的工作区（对照分支仍是 benchmark/ 布局），不能只放在 $TOOLS 里。
 git show "$THIS_BRANCH:cmd/bench/scan_pro/scan_pro.go" > benchmark/scan_pro/scan_pro.go
-SCAN_TESTS="$SCAN_TESTS" bash "$TOOLS/bench-avp-compare.sh" before "$N" "$VSIZE" 64 4
+SCAN_TESTS="$SCAN_TESTS" bash "$TOOLS/bench/avp-compare.sh" before "$N" "$VSIZE" 64 4
 RC=$?
 restore
 # 对照组在这个规模跑不完是要测的结论之一，只要它写出了 CSV 就继续跑实验组，
@@ -66,7 +66,7 @@ fi
 [ $RC -eq 0 ] || warn "对照组以 rc=$RC 结束（多半是 OOM），已记录部分结果，继续跑实验组"
 
 info "===== 实验组 ($THIS_BRANCH) ====="
-SCAN_TESTS="$SCAN_TESTS" bash "$TOOLS/bench-avp-compare.sh" after "$N" "$VSIZE" 64 4 || fail "实验组未跑完"
+SCAN_TESTS="$SCAN_TESTS" bash "$TOOLS/bench/avp-compare.sh" after "$N" "$VSIZE" 64 4 || fail "实验组未跑完"
 
 echo ""
 info "===== 汇总 ====="

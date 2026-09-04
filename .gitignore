@@ -24,7 +24,7 @@ results/
 **/results/
 charts/
 cmd/bench/testRocksDB-kvs/testRocksDB-kvs
-TLA+/**/states/
+tla/**/states/
 
 # Paper drafts are reference material, not repository content
 *.pdf

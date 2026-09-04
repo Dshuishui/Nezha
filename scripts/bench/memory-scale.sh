@@ -11,7 +11,7 @@
 #   2. 把写死的 GC 阈值改成与实验组一致，保证两边 GC 行为可比
 # 除此之外不动，确保差异只来自三项优化本身。
 #
-# 用法: bash scripts/bench-memory-scale.sh [写入条数] [value大小]
+# 用法: bash scripts/bench/memory-scale.sh [写入条数] [value大小]
 set -u
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
@@ -20,8 +20,8 @@ warn(){ echo -e "${YEL}[WARN]${NC} $1"; }
 fail(){ echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 
 PROJECT_DIR="${PROJECT_DIR:-$HOME/Github/Nezha}"; cd "$PROJECT_DIR" || fail "无项目目录"
-# shellcheck source=scripts/lib/bench-common.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/bench-common.sh"
+# shellcheck source=../lib/bench-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/bench-common.sh"
 
 export PATH=$PATH:/usr/local/go/bin
 for d in /usr/lib/x86_64-linux-gnu /usr/local/lib /usr/lib; do

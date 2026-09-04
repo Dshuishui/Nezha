@@ -10,7 +10,7 @@
 #   RocksDB key 数 == 请求总数   -> 数据完好，goodPut 是统计口径问题
 #   RocksDB key 数 == goodPut    -> 真丢了那些写入，是正确性问题
 #
-# 用法: bash scripts/verify-goodput.sh [写入量] [value大小]
+# 用法: bash scripts/test/verify-goodput.sh [写入量] [value大小]
 set -u
 GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
 info(){ echo -e "${GREEN}[INFO]${NC} $1"; }

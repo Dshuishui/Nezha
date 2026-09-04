@@ -5,15 +5,15 @@
 # 稀疏索引则用「每次点查多读一个块」换取索引内存下降，这个代价必须实测。
 # 因此本脚本把 GC 阈值压低，确保 sortedFile 与稀疏索引真正被建立并走到读路径上。
 #
-# 用法: bash scripts/bench-avp-compare.sh <标签> [写入量] [value大小] [缓存MB] [块KB]
+# 用法: bash scripts/bench/avp-compare.sh <标签> [写入量] [value大小] [缓存MB] [块KB]
 set -u
 GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
 info(){ echo -e "${GREEN}[INFO]${NC} $1"; }
 warn(){ echo -e "${YEL}[WARN]${NC} $1"; }
 fail(){ echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 
-# shellcheck source=scripts/lib/bench-common.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/bench-common.sh"
+# shellcheck source=../lib/bench-common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/bench-common.sh"
 
 PROJECT_DIR="${PROJECT_DIR:-$HOME/Github/Nezha}"; cd "$PROJECT_DIR" || fail "无项目目录"
 export PATH=$PATH:/usr/local/go/bin

@@ -7,7 +7,7 @@ This guide covers building and running Nezha using Docker on a single host.
 ## Directory Structure
 
 ```
-docker/
+deploy/docker/
 ├── Dockerfile.ubuntu24      # Image definition (Ubuntu 24.04)
 ├── docker-compose.yml       # Single-node orchestration
 ├── manage.sh                # Management script
@@ -33,20 +33,20 @@ The three files marked "not in repo" must be provided before building the image.
 
 ## Step 1: Prepare Required Files
 
-The image bundles the Nezha binary and its RocksDB runtime dependencies. These must be compiled from source and copied into the `docker/` directory.
+The image bundles the Nezha binary and its RocksDB runtime dependencies. These must be compiled from source and copied into the `deploy/docker/` directory.
 
 Follow [Method 1 in the main README](../README.md#method-1-source-code-compilation) to compile, then:
 
 ```bash
 # From the project root after compiling
-cp nezha docker/
-cp /usr/local/lib/librocksdb.so.5.18 docker/
-cp /usr/local/lib/libgflags.so.2 docker/
+cp nezha deploy/docker/
+cp /usr/local/lib/librocksdb.so.5.18 deploy/docker/
+cp /usr/local/lib/libgflags.so.2 deploy/docker/
 ```
 
 Verify:
 ```bash
-ls -lh docker/nezha docker/librocksdb.so.5.18 docker/libgflags.so.2
+ls -lh deploy/docker/nezha deploy/docker/librocksdb.so.5.18 deploy/docker/libgflags.so.2
 ```
 
 ---
@@ -54,7 +54,7 @@ ls -lh docker/nezha docker/librocksdb.so.5.18 docker/libgflags.so.2
 ## Step 2: Build the Image
 
 ```bash
-cd docker
+cd deploy/docker
 ./build.sh
 ```
 
@@ -70,7 +70,7 @@ docker images nezha-multigc:latest
 ### Using Docker Compose (Recommended)
 
 ```bash
-cd docker
+cd deploy/docker
 ./manage.sh start
 ```
 
@@ -162,8 +162,8 @@ docker run --rm \
 
 ```bash
 # Check all three required files exist
-ls -lh docker/nezha docker/librocksdb.so.5.18 docker/libgflags.so.2
-chmod +x docker/nezha
+ls -lh deploy/docker/nezha deploy/docker/librocksdb.so.5.18 deploy/docker/libgflags.so.2
+chmod +x deploy/docker/nezha
 ```
 
 ### Container exits immediately
@@ -185,7 +185,7 @@ ss -tulpn | grep -E "3088|30881"
 ### Removing all data and starting fresh
 
 ```bash
-cd docker
+cd deploy/docker
 ./manage.sh clean
 ./manage.sh start
 ```
