@@ -251,14 +251,11 @@ type KVServer struct {
 	oldPersister         *raft.Persister // 排序前
 	startGC              bool            // GC是否开始
 	endGC                bool            // GC是否结束
-	valueSize            int             // valuesize
 	// currentPersister *raft.Persister
 	// getFromFile     func(string) (string, error)			// 对应与垃圾分离前后的两种查询方法。
 	// scanFromFile    func(string, string) (map[string]string, error)
 	getMeasurements []time.Duration
 	filePool        *FileDescriptorPool
-
-	sortedFileCache *lru.Cache // 用于缓存key到offset的映射
 
 	// multiGC
 	numGC          int
@@ -1482,19 +1479,6 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 // 		}
 // 	}
 
-//		if bestIndex == -1 {
-//			// return -1, errors.New(raft.ErrNoKey)
-//			return -1,nil
-//		}
-//		return bestIndex, nil
-//	}
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // getFromSortedFile 增加直接缓存value的LRU缓存功能
 func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (string, error) {
 	// 先检查LRU缓存
@@ -1530,16 +1514,6 @@ func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (stri
 	}
 
 	return entry.Value, nil
-}
-
-// 在初始化 KVServer 时，需要初始化 LRU 缓存
-func (kvs *KVServer) initSortedFileCache(cacheSize int) error {
-	cache, err := lru.New(cacheSize) // 创建指定大小的LRU缓存
-	if err != nil {
-		return fmt.Errorf("failed to create LRU cache: %v", err)
-	}
-	kvs.sortedFileCache = cache
-	return nil
 }
 
 // 普通的
@@ -1857,20 +1831,6 @@ func ReadEntryFromMMap(data []byte) (*raft.Entry, int, error) {
 // 			result[UnpadKey] = entry.Value
 // 		}
 // 	}
-
-//		return result, nil
-//	}
-//
-// 辅助函数：获取下一个可能的键
-func (kvs *KVServer) getNextPossibleKey(key string) string {
-	// 这里的实现取决于你的键的格式
-	// 例如，如果键是数字字符串，你可以将其转换为整数并加1
-	intKey, err := strconv.Atoi(key)
-	if err == nil {
-		return strconv.Itoa(intKey + 1)
-	}
-	panic(err)
-}
 
 // 带内存映射的，使用了哈希表存储索引的
 func (kvs *KVServer) scanFromSortedFile(startKey, endKey string, index *SortedFileIndex) (map[string]string, error) {
