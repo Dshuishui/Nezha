@@ -87,9 +87,9 @@ AVP 有效（Nezha-NoGC vs Nezha × AVP 开关），外部系统随后按用户�
 全部漏改——按 `[0:8]` 取偏移，把标记字节当成最低位，算出"真实偏移左移 8 位
 再截断"：看着像合法偏移，seek 过去落在文件任意位置。
 
-    GC_opt.go:125          第一轮 GC 主循环   → 读到 EOF，GC 静默失败
-    AnotherGC_opt.go:175   第二轮 GC
-    AnotherGC_opt.go:329   第二轮 GC
+    GC.go:125          第一轮 GC 主循环   → 读到 EOF，GC 静默失败
+    AnotherGC.go:175   第二轮 GC
+    AnotherGC.go:329   第二轮 GC
     FlexSync.go            SCAN 的 ReadValueFromNewFile → SCAN 静默返回空
     persister.go           parseValueInt64 要求恰好 8 字节 → 必然失败
 
@@ -211,14 +211,14 @@ A. **整包无人引用**（`grep -rl "kvstore/<pkg>\""` 均为 0；共约 3200 
    → 建议全删。LevelDB 那个先确认一下不是论文里某条曲线的来源。
 
 B. **整文件被注释掉**：`kvstore/FlexSync/GC.go`（687 行，568 行是注释）、
-   `kvstore/FlexSync/AnotherGC.go`（604 行，513 行是注释）。被 `GC_opt.go` / `AnotherGC_opt.go` 取代。
+   `kvstore/FlexSync/AnotherGC.go`（604 行，513 行是注释）。被 `GC.go` / `AnotherGC.go` 取代。
    → 删；随后把 `*_opt.go` 改回 `GC.go` / `AnotherGC.go`，去掉 `_opt` 后缀。
 
 C. **活文件里的大段注释代码**（函数级）：
    `raft/raft.go` 342 / 582（两版旧 `WriteEntryToFile`）、671（`ReadValueFromFile`）、
    757 / 772（`raftStateForPersist` / `ReadPersist`，已被 persist_state.go 取代）、1941（旧 `appendEntriesLoop`）；
    `FlexSync.go` 1447 / 1546 / 1603 / 1665 / 1810（旧的 `parallelSearchIndex` / `getFromSortedFile` / `scanFromSortedFile`）；
-   `GC_opt.go` 576（旧 `GarbageCollection`）；`AnotherGC_opt.go` 484（旧 `MergedGarbageCollection`）。
+   `GC.go` 576（旧 `GarbageCollection`）；`AnotherGC.go` 484（旧 `MergedGarbageCollection`）。
    另外 raft.go 849 行注释 / 2446 行、FlexSync.go 802 / 2568，其中很大一部分是被注释的旧逻辑。
 
 D. **staticcheck U1000（未使用符号，23 项）**：
@@ -410,7 +410,7 @@ AVP 正交叠加：`-system=nezha -inlinePlacement`。
     fd492c2  GC 读取失败不再静默跳过（这道防护当场抓出了下一个 bug）
     8185987  偏移与文件版本配对，消除 GC 切换窗口的竞态
 
-### 1. `+64000` 补偿（`GC_opt.go`）
+### 1. `+64000` 补偿（`GC.go`）
 
 follower 读 entry 时无条件加 64000 字节，注释说"follower 偏移统一比 leader 小
 一个 vsize"。**根因是 `O_APPEND`**：follower 处理冲突日志走"Seek 回退再覆盖"，
