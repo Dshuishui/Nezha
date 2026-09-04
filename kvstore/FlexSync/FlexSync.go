@@ -1612,7 +1612,7 @@ func (kvs *KVServer) RegisterKVServer(ctx context.Context, address string) { // 
 			// 开始监听时发生了错误
 			util.FPrintf("failed to serve: %v", err)
 		}
-		fmt.Println("跳出kvserver的for循环")
+		util.DPrintf("KV gRPC server stopped")
 		break
 	}
 }
@@ -1637,7 +1637,7 @@ func NewValueLog(valueLogPath string, leveldbPath string) (*ValueLog, error) {
 // Put stores the key-value pair in the Value Log and updates LevelDB.
 func (vl *ValueLog) Put_Pure(key []byte, value []byte) error {
 	// Calculate the position where the value will be written.
-	position, err := vl.file.Seek(0, os.SEEK_END)
+	position, err := vl.file.Seek(0, io.SeekEnd)
 	if err != nil {
 		return err
 	}
@@ -1689,7 +1689,7 @@ func (vl *ValueLog) Get(key []byte) ([]byte, error) {
 	position, _ := binary.Varint(positionBytes)
 
 	// Seek to the position in the Value Log.
-	_, err = vl.file.Seek(position, os.SEEK_SET)
+	_, err = vl.file.Seek(position, io.SeekStart)
 	if err != nil {
 		fmt.Println("get时，seek文件的位置有问题")
 		return nil, err
@@ -1707,7 +1707,7 @@ func (vl *ValueLog) Get(key []byte) ([]byte, error) {
 
 	// Skip over the key bytes.
 	// 因为上面已经读取了keysize和valuesize，所以文件的偏移量自动往后移动了8个字节
-	if _, err := vl.file.Seek(int64(keySize), os.SEEK_CUR); err != nil {
+	if _, err := vl.file.Seek(int64(keySize), io.SeekCurrent); err != nil {
 		fmt.Println("get时，跳过key时有问题")
 		return nil, err
 	}
