@@ -274,7 +274,14 @@ type KVServer struct {
 	//
 	// 记住这个实例，重试时便可跳过切换直接重做搬运。之所以不回滚，是因为切换之后
 	// 落到新库的写入不能丢。
-	switchedPersister      *raft.Persister
+	switchedPersister *raft.Persister
+
+	// ---- 崩溃恢复（见 docs/crash-recovery.md 与 recovery.go）----
+	dataDir                string
+	currentDBPath          string // kvs.persister 打开的 RocksDB 目录
+	oldDBPath              string // GC 进行中时 kvs.oldPersister 的目录
+	gcInProgress           bool   // 切换已生效、搬运未完成
+	sortedFilePath         string // 最近一轮完成的排序文件；空表示尚未 GC
 	anotherSortedFilePath  string // 用于存储已排序文件的位置
 	anothersortedFileIndex *SortedFileIndex
 	lastSortedFileIndex    *SortedFileIndex
@@ -2162,6 +2169,7 @@ func (kvs *KVServer) applyLoop() {
 					op := cmd.(*raftrpc.DetailCod) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
 
 					if op.OpType == "TermLog" { // 需要进行类型断言才能访问结构体的字段，如果是leader开始第一个Term时发起的空指令，则不用执行。
+						kvs.persister.SetApplied(index) // 空指令没有数据，但 applied 下标要跟上，重启才不会重放
 						return
 					}
 
@@ -2208,11 +2216,11 @@ func (kvs *KVServer) applyLoop() {
 							// 小值直接落在存储引擎里，不进 valuelog：读路径因此缩短为一次点查，
 							// 且 GC 无需再为它们做一次搬运。
 							recordPlacement(len(op.Value), true)
-							kvs.persister.PutInline(op.Key, op.Value)
+							kvs.persister.PutInlineApplied(op.Key, op.Value, index)
 						} else if !kvs.kvSeparation {
 							// 基线：value 本身写进 RocksDB。于是同一份 value 被持久化两次
 							// （Raft 日志 + LSM），而后还要被 compaction 反复搬运。
-							kvs.persister.Put(op.Key, op.Value)
+							kvs.persister.PutValueApplied(op.Key, op.Value, index)
 						} else if int(msg.FileVersion) == kvs.numGC { // 对于写入日志时，又进行了 GC ，需将偏移量存新文件
 							// 用 msg 带上来的版本，而不是命令自带的 op.FileVersion：
 							// 后者在"决定写入"时记下，而 offset 在"实际写入"时才产生，
@@ -2220,9 +2228,12 @@ func (kvs *KVServer) applyLoop() {
 							// rf.mu 的写入路径）。msg.FileVersion 与 offset 同源同锁，
 							// 是唯一能保证配套的那个。
 							recordPlacement(len(op.Value), false)
-							kvs.persister.Put_opt(op.Key, offset)
+							kvs.persister.PutOffsetApplied(op.Key, offset, index) // 数据与 applied 下标同批
 						} else { // 否则存旧文件
 							kvs.oldPersister.Put_opt(op.Key, offset) //  Nezha
+							// 数据在旧库、下标在当前库，两次写不原子：先数据后下标。
+							// 崩在中间只会让这条在重启后重放一次，重放幂等（同 key 同偏移）。
+							kvs.persister.SetApplied(index)
 							// kvs.oldPersister.Put(op.Key, op.Value)		//  original
 						}
 						recordApplyStore(time.Since(tRocks))
@@ -2367,10 +2378,7 @@ func main() {
 	// 预写日志，而那个设置只在建库时读取一次。放在 Init 之后设置，库已经带着
 	// WAL 建好了，PASV 与 Original 会写出字节数完全相同的 WAL——实测两者
 	// 1920391 字节分毫不差，开关形同虚设。
-	_, err := kvs.persister.Init(InitialPersister, true) // 初始化存储<key,index>的leveldb文件，true为禁用缓存。
-	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
-	}
+	// RocksDB 的打开推迟到 recoverOrInit：恢复时要打开的是状态文件指向的那个库，不一定是初始库。
 	kvs.startGC = false
 	kvs.endGC = false // 测试效果
 	kvs.numGC = 0
@@ -2413,12 +2421,17 @@ func main() {
 
 	InitGCPaths(dataDir)
 	InitAnotherGCPaths(dataDir)
+	kvs.dataDir = dataDir
+	// 全新节点在这里打开初始库并写下初始状态；重启节点则接回 GC 状态、排序文件索引与
+	// applied 下标，并拿到 Raft 需要扫描的日志文件列表。此时任何 loop 都还没启动。
+	recoveredFiles, recoveredApplied := kvs.recoverOrInit(InitialPersister)
+	kvs.lastAppliedIndex = recoveredApplied
 
 	go kvs.applyLoop()
 	// 服务端随进程存活，没有任何地方会取消它；之前 WithCancel 丢掉 cancel 与此等价，
 	// 只是让 go vet 报"context 泄漏"。
 	ctx := context.Background()
-	go kvs.RegisterKVServer(ctx, kvs.address)
+	// 对客户端开放（RegisterKVServer）放到 Raft 恢复并启动之后，见函数末尾。
 	go func() {
 		// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
 		timeout := 5 * time.Second
@@ -2459,93 +2472,45 @@ func main() {
 				// fmt.Printf("已经进行了 %d 轮垃圾回收，停止进一步的垃圾回收\n", kvs.numGC)
 				continue
 			}
+			if kvs.gcInProgress {
+				continue // 上一轮（含重启后重做的那一轮）还没收尾，不能再起一轮
+			}
 			// 第一轮GC
 			if kvs.FirstGC {
-				// kvs.numGC++
-				// kvs.raft.SetNumGC(kvs.numGC)
 				fmt.Printf("文件 %s 大小为 %.2f GB，开始垃圾回收\n", kvs.currentLog, fileSizeGB)
 				startTime := time.Now()
-
 				err = kvs.FirstGarbageCollection()
-				// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
 				if err != nil {
-					// 失败时绝不能往下走。下面那几行会把状态推进成"第一轮已完成"
-					// 并且 os.Remove(kvs.oldLog)——可数据还没完整搬进排序文件，
-					// 删掉源文件就是真丢数据。而且 firstSortedFileIndex 此时是 nil，
-					// 推进状态后第二轮 GC 会拿它解引用，直接空指针崩溃。
-					// 下个周期会重试；重试不成也好过删数据。
+					// 失败就停在这里：状态不推进、旧文件不删。此前的做法是照样推进 numGC
+					// 并且 os.Remove(kvs.oldLog)——可数据还没完整搬进排序文件，删掉源文件
+					// 就是永久丢数据。下一轮 5 秒检查会重试。
 					fmt.Println("垃圾回收出现了错误，本轮不推进状态、不删除旧文件: ", err)
 					continue
 				}
 				if kvs.firstSortedFileIndex == nil {
-					// GC 报告成功却没建出索引，说明中途走了某条提前返回的分支。
-					// 同样不能推进——这正是第二轮空指针崩溃的来源。
 					fmt.Println("垃圾回收返回成功但未建立排序文件索引，本轮不推进状态")
 					continue
 				}
-				fmt.Printf("垃圾回收完成，共花费了%v\n", time.Since(startTime))
-
-				// err = kvs.CheckDatabaseContent()
-				// if err != nil {
-				// 	fmt.Println("检查GC后的数据库出现了错误: ", err)
-				// }
-
-				// err = CompareLeaderAndFollowerLogs()
-				// if err != nil {
-				// 	fmt.Println("检查log文件出现了错误: ", err)
-				// }
-				kvs.lastGCFinish = true
-				kvs.FirstGC = false
-				kvs.lastSortedFileIndex = kvs.firstSortedFileIndex // 更新本轮的变量为上一次
-				// Clean up old files
-
-				if err := os.Remove(kvs.oldLog); err != nil {
-					fmt.Println("第 1 轮删除旧文件出现了错误: ", err)
+				kvs.finishFirstGC(startTime)
+			} else if kvs.lastGCFinish {
+				if kvs.lastSortedFileIndex == nil {
+					fmt.Println("缺少上一轮排序文件索引，跳过本轮迭代 GC")
+					continue
 				}
-
-				fmt.Println("第 1 轮垃圾回收完成，等待下 1 轮垃圾回收，且已删除 oldLog 指向的文件")
-			} else {
-				// 迭代GC
-				if kvs.lastGCFinish {
-					if kvs.lastSortedFileIndex == nil {
-						// 没有上一轮的排序文件索引就没法做合并——
-						// MergedGarbageCollection 第一件事就是解引用它。
-						fmt.Println("缺少上一轮排序文件索引，跳过本轮迭代 GC")
-						continue
-					}
-					// kvs.numGC++
-					// kvs.raft.SetNumGC(kvs.numGC)
-					kvs.lastGCFinish = false // make sure last gc process is finished
-					err = kvs.AnotherGarbageCollection()
-					if err != nil {
-						// 与第一轮同样的处置：不推进状态、不删源文件，等下个周期重试。
-						// 搬运失败是可恢复的，拿整个节点陪葬没有道理；而一旦往下走，
-						// os.Remove(kvs.oldLog) 会把还没搬完的数据删掉。
-						// lastGCFinish 恢复为 true，下一轮才进得来；切换过的存储实例由
-						// switchedPersister 记着，重试时直接重做搬运、不再重复切换。
-						fmt.Println("垃圾回收出现了错误，本轮不推进状态、不删除旧文件: ", err)
-						kvs.lastGCFinish = true
-						continue
-					}
-					if kvs.anothersortedFileIndex == nil {
-						// 报告成功却没建出索引，说明中途走了某条提前返回的分支。
-						// 推进状态会让下一轮拿 nil 索引解引用。
-						fmt.Println("垃圾回收返回成功但未建立排序文件索引，本轮不推进状态")
-						kvs.lastGCFinish = true
-						continue
-					}
-					kvs.anotherStartGC, kvs.anotherEndGC = false, false
+				kvs.lastGCFinish = false // make sure last gc process is finished
+				startTime := time.Now()
+				err = kvs.AnotherGarbageCollection()
+				if err != nil {
+					fmt.Println("垃圾回收出现了错误，本轮不推进状态、不删除旧文件: ", err)
 					kvs.lastGCFinish = true
-					kvs.lastSortedFileIndex = kvs.anothersortedFileIndex // 更新本轮的变量为上一次
-					// 删除 oldLog指向的文件
-
-					err = os.Remove(kvs.oldLog)
-					if err != nil {
-						fmt.Printf("第 %v 轮垃圾回收删除旧文件出现了错误: %v\n", kvs.numGC, err)
-					}
-
-					fmt.Printf("第 %v 轮垃圾回收完成，等待下一轮垃圾回收，且已删除 oldLog 指向的文件\n", kvs.numGC)
+					continue
 				}
+				if kvs.anothersortedFileIndex == nil {
+					fmt.Println("垃圾回收返回成功但未建立排序文件索引，本轮不推进状态")
+					kvs.lastGCFinish = true
+					continue
+				}
+				kvs.finishAnotherGC(startTime)
 			}
 
 			// fmt.Println("等五秒再停止服务器")
@@ -2569,7 +2534,8 @@ func main() {
 	// defer monitor.Stop()
 
 	wg.Add(1 + 1)
-	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, ctx) // 开启Raft
+	raftStateFile := filepath.Join(dataDir, "data", "raft_state.json")
+	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, raftStateFile) // 只构造，不启动
 	if kvs.extraPersistence {
 		// Dwisckey：value 在 Raft 日志之外再落一次盘。文件与 valuelog 同目录，
 		// 只写不读，纯粹为了把那一次持久化的代价计入测量。
@@ -2583,9 +2549,20 @@ func main() {
 	if *groupCommitUs_arg > 0 {
 		kvs.raft.EnableGroupCommit(time.Duration(*groupCommitUs_arg) * time.Microsecond)
 	}
-	kvs.raft.SetCurrentLog(kvs.InitialRaftStateLog)
+	if len(recoveredFiles) > 0 {
+		if _, err := kvs.raft.RecoverLog(recoveredFiles, recoveredApplied); err != nil {
+			log.Fatalf("[RECOVER] 重建 Raft 日志失败：%v", err)
+		}
+	}
+	// 当前日志文件带版本号挂接（全新节点是 RaftState.log / 版本 0），写入位置接在文件末尾。
+	kvs.raft.SetCurrentLogVersioned(kvs.currentLog, int32(kvs.numGC))
 	kvs.raft.Gap = gap
 	kvs.raft.SyncTime = syncTime
+	kvs.raft.StartLoops(ctx)
+	go kvs.RegisterKVServer(ctx, kvs.address)
+	if kvs.gcInProgress {
+		go kvs.resumeInterruptedGC()
+	}
 
 	wg.Wait()
 }
