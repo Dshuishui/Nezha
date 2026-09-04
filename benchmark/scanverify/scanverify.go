@@ -31,6 +31,10 @@ var (
 	vsize  = flag.Int("vsize", 64, "value size in bytes")
 	spanN  = flag.Int("span", 50, "keys per scan range")
 	sample = flag.Int("sample", 20, "number of scan ranges to check")
+	// 首个联系的服务器在 -servers 里的下标。列表顺序必须与集群 peers 一致，因为
+	// ErrWrongLeader 带回的 LeaderId 就是 peers 下标；故障切换后旧 leader 已死，
+	// 用它把首次请求指向一个活着的节点，再由重定向找到真 leader。
+	leader = flag.Int("leader", 0, "index in -servers to contact first")
 )
 
 // expectedValue 从 key 派生 value，长度补齐到 vsize。
@@ -139,7 +143,7 @@ func trunc(s string) string {
 
 func main() {
 	flag.Parse()
-	kvc := &KVClient{Kvservers: strings.Split(*ser, ","), clientId: nrand()}
+	kvc := &KVClient{Kvservers: strings.Split(*ser, ","), clientId: nrand(), leaderId: *leader}
 	kvc.InitPool()
 
 	fmt.Printf("写入 %d 条 (value=%dB)...\n", *dnums, *vsize)
