@@ -64,12 +64,12 @@ run() {
     sed -i "s/if fileSizeGB <= 4000 {/if fileSizeGB <= $GC_GB {/" kvstore/FlexSync/FlexSync.go
     grep -q "fileSizeGB <= $GC_GB" kvstore/FlexSync/FlexSync.go \
         || warn "对照组 GC 阈值未替换成功，两组 GC 行为可能不可比"
-    go build -o $BIN ./kvstore/FlexSync/ || { restore_branch; fail "[$label] 编译失败"; }
+    go build -o $BIN "$(server_pkg)" || { restore_branch; fail "[$label] 编译失败"; }
     restore_branch
     EXTRA=""
   else
     git checkout -q "$THIS_BRANCH"
-    go build -o $BIN ./kvstore/FlexSync/ || fail "[$label] 编译失败"
+    go build -o $BIN "$(server_pkg)" || fail "[$label] 编译失败"
     EXTRA="-inlineCacheMB 64 -indexBlockKB 4 -gcThresholdGB $GC_GB"
   fi
 
@@ -83,7 +83,7 @@ run() {
 
   local S; S=$(start_rss_sampler "$PID" "$D/rss.txt" 5)
 
-  go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
+  go run "$(bench_pkg randwrite_goroutine)" \
       -cnums 50 -dnums "$N" -vsize $VSIZE -servers 127.0.0.1:3088 > "$D/put.out" 2>&1
   local W; W=$(grep "elapse:" "$D/put.out" | tail -1)
   echo "  写入: ${W:-（无输出，benchmark 未产出结果行）}"

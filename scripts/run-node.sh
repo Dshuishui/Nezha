@@ -56,7 +56,7 @@ warn "Press Ctrl+C to stop."
 echo ""
 
 cd "$PROJECT_DIR"
-exec go run ./kvstore/FlexSync/ \
+exec go run ./cmd/nezha/ \
     -address "$ADDRESS" \
     -internalAddress "$INTERNAL_ADDRESS" \
     -peers "$PEERS" \

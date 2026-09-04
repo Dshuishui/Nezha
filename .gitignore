@@ -1,43 +1,34 @@
-.context/
+# OS and editor files
 **/.DS_Store
-dump.rdb
+.idea/
 .vscode/
-benchmark/result/*
-benchmark/wasm_client/rust-client/target
-db
-kvstore/FlexSync/valueLog_WiscKey.log
-kvstore/FlexSync/valueLog_Leveldb.log
-kvstore/FlexSync/db_key_index
-kvstore/FlexSync/dbfile
-kvstore/FlexSync/db_key_index_new
-kvstore/kvserver/db_key_index
-kvstore/kvserver/db_key_index_new
-raft/RaftState.log
-raft/RaftState_sorted.log
-raft/originalKvs.log
-raft/valuelog
-ycsb/result
-raft/RaftState_new.log
-run_server.sh
-run_client.sh
+.context/
+
+# Runtime state a node writes when started from the source tree
+# (-data defaults to the working directory; the multinode scripts use ~/work/tmp)
+data/
+cmd/nezha/data/
+cmd/nezha/other/
+db/
+dump.rdb
 error.log
 error_client.log
-result/causal_put-latency.csv
-test
-result
-charts
-TLA+/KVS-Raft/states
-TLA+/miniKVSRaft/states
-benchmark/testRocksDB-kvs
-kvstore/FlexSync/data
-kvstore/FlexSync/other
-benchmark/scan_pro/results
-benchmark/zipf_read/results
-ycsb/results
-# 论文原稿：参考用，不进仓库
-*.pdf
-paper-*.pdf
+run_server.sh
+run_client.sh
+test/
 
-# working log and session hand-off notes stay local (see notes/README.md)
+# Benchmark and experiment output
+result/
+results/
+**/result/
+**/results/
+charts/
+cmd/bench/testRocksDB-kvs/testRocksDB-kvs
+TLA+/**/states/
+
+# Paper drafts are reference material, not repository content
+*.pdf
+
+# Working log and session hand-off notes stay local (see notes/README.md)
 notes/
 CONTEXT-*.md

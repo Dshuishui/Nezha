@@ -29,7 +29,7 @@ N=${1:-200000}; VSIZE=${2:-64}; CACHE_MB=${3:-1}; GC_GB=${4:-0.005}
 READS=${READS:-20000}
 
 info "构建 ($(git rev-parse --short HEAD))..."
-go build -o /tmp/nezha-e2e ./kvstore/FlexSync/ || fail "编译失败"
+go build -o /tmp/nezha-e2e ./cmd/nezha/ || fail "编译失败"
 
 pkill -f nezha-e2e 2>/dev/null; sleep 2   # 清掉上一轮残留，否则抢 3088 端口
 
@@ -44,7 +44,7 @@ run_case() {
     sleep 10
     kill -0 $PID 2>/dev/null || { tail -20 "$D/n.log"; rm -rf "$D"; fail "[$label] 节点未启动"; }
 
-    go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
+    go run ./cmd/bench/randwrite_goroutine/ \
         -cnums 50 -dnums "$N" -vsize "$VSIZE" -servers 127.0.0.1:3088 2>&1 | grep elapse: \
         || { kill $PID; rm -rf "$D"; fail "[$label] 写入失败"; }
 
@@ -56,7 +56,7 @@ run_case() {
     kill -0 $PID 2>/dev/null || { tail -30 "$D/n.log"; rm -rf "$D"; fail "[$label] 节点在 GC 中崩溃"; }
 
     local out
-    out=$(go run ./benchmark/zipf_read/zipf_read.go \
+    out=$(go run ./cmd/bench/zipf_read/ \
         -cnums 20 -dnums "$READS" -servers 127.0.0.1:3088 2>&1)
 
     if ! kill -0 $PID 2>/dev/null; then

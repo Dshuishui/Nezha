@@ -25,7 +25,7 @@ RUN GOPROXY=https://goproxy.cn,direct go mod download
 COPY . .
 RUN CGO_CFLAGS="-I/usr/include" \
     CGO_LDFLAGS="-L/usr/lib/x86_64-linux-gnu -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd" \
-    go build -o /nezha ./kvstore/FlexSync/
+    go build -o /nezha ./cmd/nezha/
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM ubuntu:24.04

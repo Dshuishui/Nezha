@@ -15,6 +15,12 @@
 # 于是整轮实验数据在最后一步全部丢失——节点确实跑完了，结果却没落盘。
 # 2026-08-30 那轮 64KB 块尺寸对比就是这样废掉的。
 
+# Package paths depend on the checked-out branch: this branch uses the cmd/ layout, the
+# baseline branches the comparison scripts check out still have kvstore/ and benchmark/.
+# Resolve against the working tree at call time, never hard-code either layout.
+server_pkg() { if [ -d cmd/nezha ]; then echo ./cmd/nezha/; else echo ./kvstore/FlexSync/; fi; }
+bench_pkg()  { if [ -d cmd/bench ]; then echo "./cmd/bench/$1/"; else echo "./benchmark/$1/"; fi; }
+
 # rss_kb <pid> —— 返回进程 RSS（KB）。进程不存在时返回 0，绝不返回空串。
 rss_kb() {
     local v
