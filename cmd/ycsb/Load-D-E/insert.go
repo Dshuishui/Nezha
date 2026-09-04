@@ -13,9 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gitee.com/dong-shuishui/FlexSync/api/kvrpc"
 	"gitee.com/dong-shuishui/FlexSync/internal/pool"
 	"gitee.com/dong-shuishui/FlexSync/internal/raft"
-	"gitee.com/dong-shuishui/FlexSync/api/kvrpc"
 	"gitee.com/dong-shuishui/FlexSync/internal/util"
 )
 
@@ -87,140 +87,140 @@ type mixedWorkloadResult struct {
 }
 
 func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadStats {
-    stats := &WorkloadStats{
-        readLatencies:  make([]time.Duration, 0),
-        writeLatencies: make([]time.Duration, 0),
-    }
+	stats := &WorkloadStats{
+		readLatencies:  make([]time.Duration, 0),
+		writeLatencies: make([]time.Duration, 0),
+	}
 
-    wg := sync.WaitGroup{}
-    opsPerThread := *dnums / *cnums
-    wg.Add(*cnums)
+	wg := sync.WaitGroup{}
+	opsPerThread := *dnums / *cnums
+	wg.Add(*cnums)
 
-    // 为读操作预生成唯一的key集合
-    maxReadKey := 2000000
-    allReadKeys := generateUniqueRandomInts(0, maxReadKey)
-    
-    // 为写操作预生成不同范围的key集合
-    writeKeyStart := maxReadKey + 1  // 确保写操作的key在读操作范围之外
-    writeKeyEnd := writeKeyStart + 2000000
-    allWriteKeys := generateUniqueRandomInts(writeKeyStart, writeKeyEnd)
-    
-    results := make(chan mixedWorkloadResult, *cnums)
+	// 为读操作预生成唯一的key集合
+	maxReadKey := 2000000
+	allReadKeys := generateUniqueRandomInts(0, maxReadKey)
 
-    for i := 0; i < *cnums; i++ {
-        go func(threadID int) {
-            defer wg.Done()
+	// 为写操作预生成不同范围的key集合
+	writeKeyStart := maxReadKey + 1 // 确保写操作的key在读操作范围之外
+	writeKeyEnd := writeKeyStart + 2000000
+	allWriteKeys := generateUniqueRandomInts(writeKeyStart, writeKeyEnd)
 
-            localResult := mixedWorkloadResult{}
-            
-            // 计算每个线程的操作范围
-            start := threadID * opsPerThread
-            end := (threadID + 1) * opsPerThread
-            if threadID == *cnums-1 {
-                end = *dnums
-            }
+	results := make(chan mixedWorkloadResult, *cnums)
 
-            localOpsCount := end - start
-            writeCount := int(float64(localOpsCount) * writeRatio)
-            readCount := localOpsCount - writeCount
+	for i := 0; i < *cnums; i++ {
+		go func(threadID int) {
+			defer wg.Done()
 
-            // 从两个不同的key集合中获取对应范围的key
-            var localReadKeys, localWriteKeys []int
-            if start < len(allReadKeys) {
-                readEnd := min(start+readCount, len(allReadKeys))
-                localReadKeys = allReadKeys[start:readEnd]
-            }
-            if start < len(allWriteKeys) {
-                writeEnd := min(start+writeCount, len(allWriteKeys))
-                localWriteKeys = allWriteKeys[start:writeEnd]
-            }
+			localResult := mixedWorkloadResult{}
 
-            // 创建混合操作序列
-            operations := make([]bool, localOpsCount) // true表示写操作
-            for i := 0; i < writeCount; i++ {
-                operations[i] = true
-            }
-            
-            // 随机打乱操作顺序
-            rand.Shuffle(len(operations), func(i, j int) {
-                operations[i], operations[j] = operations[j], operations[i]
-            })
+			// 计算每个线程的操作范围
+			start := threadID * opsPerThread
+			end := (threadID + 1) * opsPerThread
+			if threadID == *cnums-1 {
+				end = *dnums
+			}
 
-            writeKeyIndex := 0
-            readKeyIndex := 0
+			localOpsCount := end - start
+			writeCount := int(float64(localOpsCount) * writeRatio)
+			readCount := localOpsCount - writeCount
 
-            // 执行操作序列
-            for _, isWrite := range operations {
-                var key string
-                if isWrite {
-                    if writeKeyIndex >= len(localWriteKeys) {
-                        continue
-                    }
-                    key = strconv.Itoa(localWriteKeys[writeKeyIndex])
-                    writeKeyIndex++
-                } else {
-                    if readKeyIndex >= len(localReadKeys) {
-                        continue
-                    }
-                    key = strconv.Itoa(localReadKeys[readKeyIndex])
-                    readKeyIndex++
-                }
+			// 从两个不同的key集合中获取对应范围的key
+			var localReadKeys, localWriteKeys []int
+			if start < len(allReadKeys) {
+				readEnd := min(start+readCount, len(allReadKeys))
+				localReadKeys = allReadKeys[start:readEnd]
+			}
+			if start < len(allWriteKeys) {
+				writeEnd := min(start+writeCount, len(allWriteKeys))
+				localWriteKeys = allWriteKeys[start:writeEnd]
+			}
 
-                startTime := time.Now()
-                var result OperationResult
+			// 创建混合操作序列
+			operations := make([]bool, localOpsCount) // true表示写操作
+			for i := 0; i < writeCount; i++ {
+				operations[i] = true
+			}
 
-                if isWrite {
-                    reply, err := kvc.PutInRaft(key, value)
-                    result = OperationResult{
-                        isWrite:   true,
-                        latency:   time.Since(startTime),
-                        success:   err == nil && reply != nil && reply.Err != "defeat",
-                        valueSize: len(value),
-                    }
-                } else {
-                    value, exists, err := kvc.Get(key)
-                    result = OperationResult{
-                        isWrite:   false,
-                        latency:   time.Since(startTime),
-                        success:   err == nil && exists,
-                        valueSize: len([]byte(value)),
-                    }
-                }
+			// 随机打乱操作顺序
+			rand.Shuffle(len(operations), func(i, j int) {
+				operations[i], operations[j] = operations[j], operations[i]
+			})
 
-                localResult.valueSize = result.valueSize
-                localResult.totalCount++
-                localResult.totalLatency += result.latency
+			writeKeyIndex := 0
+			readKeyIndex := 0
 
-                stats.addResult(result)
-            }
-            results <- localResult
-        }(i)
-    }
+			// 执行操作序列
+			for _, isWrite := range operations {
+				var key string
+				if isWrite {
+					if writeKeyIndex >= len(localWriteKeys) {
+						continue
+					}
+					key = strconv.Itoa(localWriteKeys[writeKeyIndex])
+					writeKeyIndex++
+				} else {
+					if readKeyIndex >= len(localReadKeys) {
+						continue
+					}
+					key = strconv.Itoa(localReadKeys[readKeyIndex])
+					readKeyIndex++
+				}
 
-    wg.Wait()
-    close(results)
+				startTime := time.Now()
+				var result OperationResult
 
-    var totalCount float64
-    var maxDuration time.Duration
-    var valueSize int
+				if isWrite {
+					reply, err := kvc.PutInRaft(key, value)
+					result = OperationResult{
+						isWrite:   true,
+						latency:   time.Since(startTime),
+						success:   err == nil && reply != nil && reply.Err != "defeat",
+						valueSize: len(value),
+					}
+				} else {
+					value, exists, err := kvc.Get(key)
+					result = OperationResult{
+						isWrite:   false,
+						latency:   time.Since(startTime),
+						success:   err == nil && exists,
+						valueSize: len([]byte(value)),
+					}
+				}
 
-    for result := range results {
-        totalCount += float64(result.totalCount)
-        if result.totalLatency > maxDuration {
-            maxDuration = result.totalLatency
-        }
-        valueSize = result.valueSize
-    }
-    stats.throughput = (totalCount * float64(valueSize) / 1000000) / maxDuration.Seconds()
+				localResult.valueSize = result.valueSize
+				localResult.totalCount++
+				localResult.totalLatency += result.latency
 
-    return stats
+				stats.addResult(result)
+			}
+			results <- localResult
+		}(i)
+	}
+
+	wg.Wait()
+	close(results)
+
+	var totalCount float64
+	var maxDuration time.Duration
+	var valueSize int
+
+	for result := range results {
+		totalCount += float64(result.totalCount)
+		if result.totalLatency > maxDuration {
+			maxDuration = result.totalLatency
+		}
+		valueSize = result.valueSize
+	}
+	stats.throughput = (totalCount * float64(valueSize) / 1000000) / maxDuration.Seconds()
+
+	return stats
 }
 
 func min(a, b int) int {
-    if a < b {
-        return a
-    }
-    return b
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // Get方法实现

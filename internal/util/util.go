@@ -104,8 +104,8 @@ func WriteCsv(filepath string, spentTimeArr []int) {
 }
 
 // 记录每次执行put请求的时间
-func Put_Request_Time(filePath string, executionTime time.Duration,key string ,value string,num_k int,clientNum int) error {
-// Open the file in append mode, create it if not exists
+func Put_Request_Time(filePath string, executionTime time.Duration, key string, value string, num_k int, clientNum int) error {
+	// Open the file in append mode, create it if not exists
 	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		return fmt.Errorf("error opening file: %v", err)
@@ -117,16 +117,16 @@ func Put_Request_Time(filePath string, executionTime time.Duration,key string ,v
 	defer writer.Flush()
 
 	var v string
-	if len(value)<1024{
-		v =strconv.Itoa(len(value))+"B"
-	}else{
-		v =strconv.Itoa(len(value)/1024) + "KB"
+	if len(value) < 1024 {
+		v = strconv.Itoa(len(value)) + "B"
+	} else {
+		v = strconv.Itoa(len(value)/1024) + "KB"
 	}
 
 	// Prepare the data to be appended
 	data := []string{
-		fmt.Sprintf("client-%v;key-%vB;value-%s;%d",len(key),clientNum,v, num_k), // Concatenate key, value, and num
-		fmt.Sprintf("%v", executionTime), // Calculate the time since the start time
+		fmt.Sprintf("client-%v;key-%vB;value-%s;%d", len(key), clientNum, v, num_k), // Concatenate key, value, and num
+		fmt.Sprintf("%v", executionTime),                                            // Calculate the time since the start time
 	}
 
 	// Write the data to the CSV file
@@ -165,6 +165,7 @@ func BecomeSyncMap(argMap map[string]int32) sync.Map {
 }
 
 //	因果一致性
+//
 // 判断vectorClock是否更大（key都有，并且value>=other.value）
 func IsUpper(vectorClock sync.Map, arg_vc sync.Map) bool {
 	DPrintf("IsUpper(): vectorClock: %v, arg_vc: %v", BecomeMap(vectorClock), BecomeMap(arg_vc))

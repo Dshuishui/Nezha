@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
+	"gitee.com/dong-shuishui/FlexSync/api/kvrpc"
 	"gitee.com/dong-shuishui/FlexSync/internal/pool"
 	"gitee.com/dong-shuishui/FlexSync/internal/raft"
-	"gitee.com/dong-shuishui/FlexSync/api/kvrpc"
 	"gitee.com/dong-shuishui/FlexSync/internal/util"
 
 	crand "crypto/rand"
@@ -99,11 +99,11 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 				// 【关键修改】使用分页的rangeGet
 				reply, err := kvc.rangeGetWithPagination(startKey, endKey, gapkey)
 				duration := time.Since(start)
-				
+
 				if err != nil {
 					fmt.Printf("有问题：%v\n", err)
 				}
-				
+
 				if err == nil && reply != nil && len(reply.KeyValuePairs) != 0 {
 					count := len(reply.KeyValuePairs)
 					localResult.totalCount += count
@@ -351,11 +351,11 @@ func saveSummaryToFile(filePath string, numTests int, avgThroughput float64, avg
 
 func main() {
 	flag.Parse()
-	
+
 	// 【重要】这里的gapkey就是你的scan范围大小
 	// 如果要测试1,000,000个key的scan，将gapkey设为1000000
-	gapkey := 1000000  // 修改为你需要的scan范围大小
-	
+	gapkey := 1000000 // 修改为你需要的scan范围大小
+
 	servers := strings.Split(*ser, ",")
 	kvc := new(KVClient)
 	kvc.Kvservers = servers

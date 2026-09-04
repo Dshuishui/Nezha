@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"math/rand"
 
-	"strconv"
 	"context"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,7 +55,7 @@ type putResult struct {
 //     wg := sync.WaitGroup{}
 //     base := *dnums / *cnums
 //     wg.Add(*cnums)
-    
+
 //     // Create a channel to collect results from goroutines
 //     resultChan := make(chan int, *cnums)
 
@@ -111,14 +111,14 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 		go func(i int) {
 			defer wg.Done()
 			localResult := putResult{}
-			
+
 			start := i * base
 			end := (i + 1) * base
 			if i == *cnums-1 {
 				end = *dnums
 			}
 			keys := allKeys[start:end]
-			
+
 			startTime := time.Now()
 			for j := 0; j < len(keys); j++ {
 				key := strconv.Itoa(keys[j])
@@ -128,20 +128,20 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 				}
 			}
 			totalLatency := time.Since(startTime)
-			
+
 			if localResult.goodPut > 0 {
 				localResult.avgLatency = totalLatency / time.Duration(localResult.goodPut)
-				localDataSize := float64(localResult.goodPut * len(value)) / 1000000 // MB
+				localDataSize := float64(localResult.goodPut*len(value)) / 1000000 // MB
 				localResult.throughput = localDataSize / totalLatency.Seconds()
 			}
-			
+
 			results <- localResult
 		}(i)
 	}
 
 	// go func() {
-		wg.Wait()
-		close(results)
+	wg.Wait()
+	close(results)
 	// }()
 
 	var totalGoodPut int
@@ -171,12 +171,12 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 }
 
 func generateUniqueRandomInts(min, max int) []int {
-    nums := make([]int, max-min+1)
-    for i := range nums {
-        nums[i] = min + i
-    }
-    rand.Shuffle(len(nums), func(i, j int) { nums[i], nums[j] = nums[j], nums[i] })
-    return nums
+	nums := make([]int, max-min+1)
+	for i := range nums {
+		nums[i] = min + i
+	}
+	rand.Shuffle(len(nums), func(i, j int) { nums[i], nums[j] = nums[j], nums[i] })
+	return nums
 }
 
 // Method of Send RPC of PutInRaft
@@ -276,7 +276,7 @@ func main() {
 
 	value := util.GenerateLargeValue(valueSize)
 	kvc.InitPool()
-	
+
 	startTime := time.Now()
 	avgThroughput, avgLatency := kvc.batchRawPut(value)
 	elapsedTime := time.Since(startTime)
