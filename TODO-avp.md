@@ -193,6 +193,66 @@ goroutine，谁连吃两次超时谁就把墙钟拖长。那个分簇是九轮�
   "超时内收到确认的请求"，不是"成功写入的请求"。
   实证待补：`bash scripts/verify-goodput.sh 200000 64`（停机后数 RocksDB key 数）。
 
+## 🧹 代码整理（用户 2026-09-04 提出：去掉不需要的，保持结构清晰、专业）
+
+**原则**
+- 只删"没有任何引用、也没有任何脚本/文档在用"的东西；判定依据要落在下面的清单里，不凭感觉。
+- 每个删除 commit 之后：`go build ./...`、`go vet`、`go test -race ./raft/ ./kvstore/FlexSync/`、
+  再跑一轮 `scripts/multinode/two-node-rounds.sh`。
+- git 历史就是归档：被删的代码在 commit message 里写明"最后一次存在于 <hash>"，不另存文件。
+- 大段注释掉的代码一律删（10 行以上）；一两行的"备选写法"注释看情况。
+- 拿不准是否还要用的（尤其 benchmark 工具）先问用户，不猜。
+
+**清单（2026-09-04 盘点，均有依据）**
+
+A. **整包无人引用**（`grep -rl "kvstore/<pkg>\""` 均为 0；共约 3200 行）：
+   `kvstore/GC` `GC2` `GC3` `GC4` `GCtime`（几代 GC 原型）、`kvstore/PerformanceMonitor`、
+   `kvstore/LevelDB`（独立 `package main`，早期 LevelDB 版本；`-system original` 基线不依赖它）。
+   → 建议全删。LevelDB 那个先确认一下不是论文里某条曲线的来源。
+
+B. **整文件被注释掉**：`kvstore/FlexSync/GC.go`（687 行，568 行是注释）、
+   `kvstore/FlexSync/AnotherGC.go`（604 行，513 行是注释）。被 `GC_opt.go` / `AnotherGC_opt.go` 取代。
+   → 删；随后把 `*_opt.go` 改回 `GC.go` / `AnotherGC.go`，去掉 `_opt` 后缀。
+
+C. **活文件里的大段注释代码**（函数级）：
+   `raft/raft.go` 342 / 582（两版旧 `WriteEntryToFile`）、671（`ReadValueFromFile`）、
+   757 / 772（`raftStateForPersist` / `ReadPersist`，已被 persist_state.go 取代）、1941（旧 `appendEntriesLoop`）；
+   `FlexSync.go` 1447 / 1546 / 1603 / 1665 / 1810（旧的 `parallelSearchIndex` / `getFromSortedFile` / `scanFromSortedFile`）；
+   `GC_opt.go` 576（旧 `GarbageCollection`）；`AnotherGC_opt.go` 484（旧 `MergedGarbageCollection`）。
+   另外 raft.go 849 行注释 / 2446 行、FlexSync.go 802 / 2568，其中很大一部分是被注释的旧逻辑。
+
+D. **staticcheck U1000（未使用符号，23 项）**：
+   raft：`entry_global`、字段 `batchLogSize` `nullLogEntry` `lastNulled`、`(*Raft).originalKvs`、`(*Raft).doHeartBeat`、
+   `common.go` 两个 `leaderId` 字段；FlexSync：`sortedFileCacheNums`、`verifyOldDatabaseOrder`、
+   `verifySortedFileOrder`、字段 `valueSize` `sortedFileCache`、`min`、`initSortedFileCache`、
+   `getNextPossibleKey`、`warmupCache`、`processSortedFile`、`checkLogDBConsistency`、
+   `WriteEntryToFile_originalKvs`（raft.go 461，errcheck 也指到它）。
+   → 删。`verify*Order` / `checkLogDBConsistency` 是调试用校验，若想保留就改成 `_test.go` 里的测试。
+
+E. **benchmark 工具 19 个**，脚本/文档有引用的只有 7 个：
+   `randwrite_goroutine`（主表 PUT）、`scan_pro`、`zipf_read`、`scanverify`、`readonly`、`countkeys`、`testRocksDB`。
+   无引用的 12 个：`cdf` `cdf_v2` `randread` `randread_pro` `randwrite` `randwrite_pro` `scan`
+   `scan_pro_paginated` `seqwrite` `small_value` `testRocksDB-kvs` `testRocksDB_v2`。
+   根目录 `client.txt` 是一份手写的命令备忘，引用的正是 `randwrite` / `seqwrite` / `randread` 这几个老工具。
+   → **先问用户**：哪些对应论文里的图（比如 `cdf` 可能是延迟 CDF 图的来源）。确认后删无用的，
+   保留的补一行用途说明到 `benchmark/README.md`。
+
+F. **根目录杂物**：`client.txt`（见上）、`CONTEXT-avp-memory.md`（会话上下文，不该进仓库，移到 `docs/` 或删）。
+   `ycsb/`（A、A_pro、D、E 四个负载目录）与 `TLA+/`、`docker/` 是论文配套，保留，但 `ycsb/` 里
+   `.out` 类结果文件要不要跟踪需确认。
+
+G. **弃用 API（staticcheck SA1019，15 处）**：`grpc.Dial`/`WithInsecure`/`WithBlock` → `grpc.NewClient` +
+   `insecure.NewCredentials()`；`os.SEEK_*` → `io.Seek*`。低风险，顺手做。
+
+H. **日志文案**：`"还有重叠的情况嘛？？？"`、`"太抽象了"`、`"到这了嘛"` 之类的调试口语，
+   改成说明发生了什么的英文或中文正式文案；`fmt.Println` 散落在热路径的也顺手清一下。
+
+I. **`-system lsm-raft` 占位**：现在等价于 `original` 只多一句提示，容易误导。
+   要么实现（follower 侧 KV 分离），要么先从枚举里去掉，等实现再加回。
+
+**建议顺序**：A、B（纯删除，零风险）→ D、C（删符号与注释块）→ E、F（问过用户）→ G、H、I。
+每一步一个 commit，写清依据。
+
 ## 待清理
 
 - [x] **Dependabot 告警已全部 dismiss**（5 条，2026-09-02）
