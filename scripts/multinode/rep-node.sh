@@ -16,10 +16,10 @@ start)
   VS=${3:?vsize}; N=${4:?n}; BIN=${5:-normal}
   SELF=$L; [ "$ROLE" = follower ] && SELF=$F
   EXE=/tmp/nezha-rep; [ "$BIN" = race ] && EXE=/tmp/nezha-rep-race
-  NEWEST=$(ls -t raft/*.go kvstore/FlexSync/*.go | head -1)
+  NEWEST=$(ls -t internal/raft/*.go cmd/nezha/*.go | head -1)
   if [ ! -x "$EXE" ] || [ "$EXE" -ot "$NEWEST" ]; then
-    if [ "$BIN" = race ]; then go build -race -o "$EXE" ./kvstore/FlexSync/ || { echo BUILD_FAIL; exit 1; }
-    else go build -o "$EXE" ./kvstore/FlexSync/ || { echo BUILD_FAIL; exit 1; }; fi
+    if [ "$BIN" = race ]; then go build -race -o "$EXE" ./cmd/nezha/ || { echo BUILD_FAIL; exit 1; }
+    else go build -o "$EXE" ./cmd/nezha/ || { echo BUILD_FAIL; exit 1; }; fi
   fi
   rm -rf "$D"; mkdir -p "$D"
   GB=$(awk -v n="$N" -v v="$VS" 'BEGIN{printf "%.6f", n*(20+10+v)/1073741824/3}')

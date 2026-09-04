@@ -53,8 +53,8 @@ grep -q "fileSizeGB <= $GC_GB" kvstore/FlexSync/FlexSync.go \
 grep -q "rf.Offsets = append(rf.Offsets, 0)" raft/raft.go \
     && fail "对照组哨兵未删除——会在 GC 后崩溃"
 # scan_pro 的 -tests flag 只有本分支有；benchmark 是 go run 跑工作区里的文件，
-# 所以这个必须落到工作区，不能只放在 $TOOLS 里。
-git checkout -q "$THIS_BRANCH" -- benchmark/scan_pro/scan_pro.go
+# 所以这个必须落到对照分支的工作区（对照分支仍是 benchmark/ 布局），不能只放在 $TOOLS 里。
+git show "$THIS_BRANCH:cmd/bench/scan_pro/scan_pro.go" > benchmark/scan_pro/scan_pro.go
 SCAN_TESTS="$SCAN_TESTS" bash "$TOOLS/bench-avp-compare.sh" before "$N" "$VSIZE" 64 4
 RC=$?
 restore

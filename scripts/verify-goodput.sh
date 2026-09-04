@@ -22,8 +22,8 @@ D=$(mktemp -d -p "${TMPDIR:-/tmp}")
 BIN=/tmp/nezha-vgp
 GB=$(awk -v n="$N" -v v="$VSIZE" 'BEGIN{printf "%.4f", n*(30+v)/1073741824/3}')
 
-go build -o "$BIN" ./kvstore/FlexSync/ || fail "编译失败"
-go build -o /tmp/countkeys ./benchmark/countkeys/ || fail "countkeys 编译失败"
+go build -o "$BIN" ./cmd/nezha/ || fail "编译失败"
+go build -o /tmp/countkeys ./cmd/bench/countkeys/ || fail "countkeys 编译失败"
 
 "$BIN" -address 127.0.0.1:3088 -internalAddress 127.0.0.1:30881 \
     -peers 127.0.0.1:30881 -data "$D" -gap 1000000 \
@@ -35,7 +35,7 @@ sleep 10
 kill -0 $PID 2>/dev/null || { tail -20 "$D/n.log"; fail "节点未启动"; }
 
 info "写入 $N 条 × ${VSIZE}B..."
-go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
+go run ./cmd/bench/randwrite_goroutine/ \
     -cnums 50 -dnums "$N" -vsize "$VSIZE" -servers 127.0.0.1:3088 > "$D/put.out" 2>&1
 PUT=$(grep elapse: "$D/put.out" | tail -1)
 echo "  $PUT"

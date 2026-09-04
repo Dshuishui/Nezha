@@ -60,7 +60,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 info "Running write benchmark (100 ops)..."
 cd "$PROJECT_DIR"
-go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
+go run ./cmd/bench/randwrite_goroutine/ \
     -cnums 5 -dnums 100 -vsize 1024 \
     -servers 127.0.0.1:3088 && pass "Benchmark completed" || fail "Benchmark failed"
 

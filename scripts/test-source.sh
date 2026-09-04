@@ -39,7 +39,7 @@ fi
 # ── Step 4: Build binary ───────────────────────────────────────────────────────
 info "Building nezha binary..."
 cd "$PROJECT_DIR"
-go build -o /tmp/nezha-test ./kvstore/FlexSync/ || fail "Build failed"
+go build -o /tmp/nezha-test ./cmd/nezha/ || fail "Build failed"
 pass "Build successful"
 
 # ── Step 5: Start node ────────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ fi
 
 # ── Step 6: Benchmark ─────────────────────────────────────────────────────────
 info "Running write benchmark (100 ops)..."
-go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
+go run ./cmd/bench/randwrite_goroutine/ \
     -cnums 5 -dnums 100 -vsize 1024 \
     -servers 127.0.0.1:3088 && pass "Benchmark completed" || fail "Benchmark failed"
 

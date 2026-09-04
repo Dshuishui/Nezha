@@ -31,7 +31,7 @@ export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}:$L
 BIN=/tmp/nezha-curve-$LABEL
 CSV=/tmp/curve_${LABEL}.csv
 info "构建 ($(git rev-parse --short HEAD))..."
-go build -o "$BIN" ./kvstore/FlexSync/ || fail "编译失败"
+go build -o "$BIN" ./cmd/nezha/ || fail "编译失败"
 
 echo "label,commit,vsize,writes,peak_rss_mb,final_rss_mb,latency_ms,throughput_mbs,goodput,node_alive" > "$CSV"
 COMMIT=$(git rev-parse --short HEAD)
@@ -48,7 +48,7 @@ for N in "${SIZES[@]}"; do
 
     info "[$LABEL] 写入 $N 条 (value=${VSIZE}B)..."
     # 完整输出先落盘，再抓结果行：管道退出码取自 grep，直接判断 $? 抓不到 benchmark 崩溃。
-    go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
+    go run ./cmd/bench/randwrite_goroutine/ \
         -cnums $CNUMS -dnums "$N" -vsize "$VSIZE" -servers 127.0.0.1:3088 > "$DATA_DIR/put.out" 2>&1
     OUT=$(grep "elapse:" "$DATA_DIR/put.out" | tail -1)
 

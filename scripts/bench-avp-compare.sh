@@ -35,7 +35,7 @@ CSV="/tmp/avpcmp_${LABEL}.csv"
 
 # 旧版本没有这些 flag，探测后按需拼接，使同一脚本能跑两个分支
 EXTRA=""
-HELP=$(go run ./kvstore/FlexSync/ -h 2>&1 || true)
+HELP=$(go run "$(server_pkg)" -h 2>&1 || true)
 grep -q "inlineCacheMB" <<<"$HELP" && EXTRA="$EXTRA -inlineCacheMB $CACHE_MB"
 grep -q "indexBlockKB"  <<<"$HELP" && EXTRA="$EXTRA -indexBlockKB $BLOCK_KB"
 if grep -q "gcThresholdGB" <<<"$HELP"; then
@@ -46,7 +46,7 @@ fi
 info "版本 $COMMIT 支持的额外参数:${EXTRA:- (无)}"
 
 info "构建..."
-go build -o "/tmp/nezha-cmp-$LABEL" ./kvstore/FlexSync/ || fail "编译失败"
+go build -o "/tmp/nezha-cmp-$LABEL" "$(server_pkg)" || fail "编译失败"
 
 D=$(mktemp -d)
 # 失败时保留 $D：里面有节点日志和 RSS 采样，删掉就无从追查了。
@@ -80,7 +80,7 @@ run_bench(){  # $1=名称 $2...=命令；完整输出留在 $D/<名称>.out
 }
 
 info "[$LABEL] PUT $N 条 (value=${VSIZE}B)..."
-run_bench put go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
+run_bench put go run "$(bench_pkg randwrite_goroutine)" \
     -cnums 50 -dnums "$N" -vsize "$VSIZE" -servers 127.0.0.1:3088
 PUT=$(grep -iE "elapse" "$D/put.out" | tail -1)   # randwrite 只跑一轮
 echo "  ${PUT:-（无输出）}"
@@ -104,7 +104,7 @@ info "[$LABEL] GET (Zipf)..."
 # keyspace 必须等于实际写入量。默认的 1 亿键空间下，读请求大部分落在从未写入
 # 的 key 上——测的是查不存在的 key 有多快，且覆盖率随写入量漂移，跨规模不可比。
 # YCSB 的 run 阶段从 [0, recordcount) 采样，db_bench 用同一个 --num 管两端。
-run_bench get go run ./benchmark/zipf_read/zipf_read.go \
+run_bench get go run "$(bench_pkg zipf_read)" \
     -cnums 20 -dnums 20000 -keyspace "$N" -servers 127.0.0.1:3088
 GET=$(<"$D/get.out")
 
@@ -112,7 +112,7 @@ GET=$(<"$D/get.out")
 # dnums=100 时在 50 万 key 上要跑 4 小时以上，用 README 文档化的 dnums=4 规模，快 25 倍。
 info "[$LABEL] SCAN..."
 # SCAN 每轮扫遍全库，耗时随数据量线性增长；轮数可调，默认沿用 benchmark 的 100
-run_bench scan go run ./benchmark/scan_pro/scan_pro.go \
+run_bench scan go run "$(bench_pkg scan_pro)" \
     -cnums 1 -dnums 4 -tests "${SCAN_TESTS:-100}" -servers 127.0.0.1:3088
 SCAN=$(<"$D/scan.out")
 

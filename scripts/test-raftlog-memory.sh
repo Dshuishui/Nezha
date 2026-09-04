@@ -30,7 +30,7 @@ export CGO_LDFLAGS="-L${ROCKSDB_LIB_DIR} -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnap
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${ROCKSDB_LIB_DIR}
 
 info "构建..."
-go build -o /tmp/nezha-memtest ./kvstore/FlexSync/ || fail "编译失败"
+go build -o /tmp/nezha-memtest ./cmd/nezha/ || fail "编译失败"
 
 DATA_DIR="$(mktemp -d)"
 trap 'kill $NODE_PID 2>/dev/null; rm -rf "$DATA_DIR" /tmp/nezha-memtest' EXIT
@@ -48,7 +48,7 @@ info "写入前 RSS: $(rss_mb "$NODE_PID") MB"
 SAMPLER=$(start_rss_sampler "$NODE_PID" "$DATA_DIR/rss.txt" 5)
 
 info "开始写入..."
-go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
+go run ./cmd/bench/randwrite_goroutine/ \
     -cnums $CNUMS -dnums $DNUMS -vsize $VSIZE -servers 127.0.0.1:3088 2>&1 | tail -3
 
 kill $SAMPLER 2>/dev/null || true

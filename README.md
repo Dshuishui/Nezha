@@ -135,7 +135,7 @@ go mod download
 ### Build
 
 ```bash
-go build -o nezha ./kvstore/FlexSync/
+go build -o nezha ./cmd/nezha/
 ```
 
 ### Run
@@ -153,7 +153,7 @@ go build -o nezha ./kvstore/FlexSync/
 Or using `go run` directly (no build step required):
 
 ```bash
-go run ./kvstore/FlexSync/ \
+go run ./cmd/nezha/ \
   -address 127.0.0.1:3088 \
   -internalAddress 127.0.0.1:30881 \
   -peers 127.0.0.1:30881 \
@@ -292,7 +292,7 @@ Dataset: 100 GB, key size 10 B, value size 1 KB–256 KB, Zipf access distributi
 ### PUT (Random Write)
 
 ```bash
-go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
+go run ./cmd/bench/randwrite_goroutine/ \
   -cnums 100 -dnums 39062 -vsize 256000 \
   -servers 127.0.0.1:3088
 ```
@@ -300,7 +300,7 @@ go run ./benchmark/randwrite_goroutine/randwrite_goroutine.go \
 ### GET (Zipf Distribution Read)
 
 ```bash
-go run ./benchmark/zipf_read/zipf_read.go \
+go run ./cmd/bench/zipf_read/ \
   -cnums 100 -dnums 10000 \
   -servers 127.0.0.1:3088
 ```
@@ -308,7 +308,7 @@ go run ./benchmark/zipf_read/zipf_read.go \
 ### SCAN (Range Scan)
 
 ```bash
-go run ./benchmark/scan_pro/scan_pro.go \
+go run ./cmd/bench/scan_pro/ \
   -cnums 1 -dnums 4 \
   -servers 127.0.0.1:3088
 ```

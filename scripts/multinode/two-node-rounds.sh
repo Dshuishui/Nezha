@@ -9,7 +9,7 @@ r() { ssh -o ConnectTimeout=40 -o ServerAliveInterval=15 "$@" 2>/dev/null; }
 say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 
 say "编译客户端工具"
-r tikv240 'source ~/env.sh; cd ~/work/Nezha; export TMPDIR=~/work/tmp; go build -o /tmp/scanverify ./benchmark/scanverify/ && go build -o /tmp/readonly ./benchmark/readonly/ && echo TOOLS_OK' | tail -1 | tee -a "$LOG"
+r tikv240 'source ~/env.sh; cd ~/work/Nezha; export TMPDIR=~/work/tmp; go build -o /tmp/scanverify ./cmd/bench/scanverify/ && go build -o /tmp/readonly ./cmd/bench/readonly/ && echo TOOLS_OK' | tail -1 | tee -a "$LOG"
 
 ROUNDS=(
   "64 20000 normal"
