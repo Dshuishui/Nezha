@@ -2511,8 +2511,21 @@ func main() {
 					kvs.lastGCFinish = false // make sure last gc process is finished
 					err = kvs.AnotherGarbageCollection()
 					if err != nil {
-						fmt.Println("垃圾回收出现了错误: ", err)
-						panic(err)
+						// 与第一轮同样的处置：不推进状态、不删源文件，等下个周期重试。
+						// 搬运失败是可恢复的，拿整个节点陪葬没有道理；而一旦往下走，
+						// os.Remove(kvs.oldLog) 会把还没搬完的数据删掉。
+						// lastGCFinish 恢复为 true，下一轮才进得来；切换过的存储实例由
+						// switchedPersister 记着，重试时直接重做搬运、不再重复切换。
+						fmt.Println("垃圾回收出现了错误，本轮不推进状态、不删除旧文件: ", err)
+						kvs.lastGCFinish = true
+						continue
+					}
+					if kvs.anothersortedFileIndex == nil {
+						// 报告成功却没建出索引，说明中途走了某条提前返回的分支。
+						// 推进状态会让下一轮拿 nil 索引解引用。
+						fmt.Println("垃圾回收返回成功但未建立排序文件索引，本轮不推进状态")
+						kvs.lastGCFinish = true
+						continue
 					}
 					kvs.anotherStartGC, kvs.anotherEndGC = false, false
 					kvs.lastGCFinish = true
