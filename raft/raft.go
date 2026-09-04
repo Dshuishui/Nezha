@@ -209,6 +209,18 @@ func (rf *Raft) GetOffsets() []int64 {
 	return rf.Offsets
 }
 
+// OldestPendingVersion 返回最早一条"已写入日志文件、尚未 apply"的条目所属的文件版本。
+// 没有待 apply 的条目时返回 false。GC 用它判断旧文件里的东西是否都已进了旧库：
+// Offsets/offsetVersions 是按 apply 顺序消费的队列，队头就是最老的未 apply 条目。
+func (rf *Raft) OldestPendingVersion() (int32, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if len(rf.offsetVersions) == 0 {
+		return 0, false
+	}
+	return rf.offsetVersions[0], true
+}
+
 // openLogFile 打开（或重开）日志文件并接管写入位置。调用方必须持有 rf.logMu。
 func (rf *Raft) openLogFile(filename string) error {
 	if rf.logWriter != nil {
