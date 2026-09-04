@@ -77,7 +77,9 @@ func (kvs *KVServer) AnotherSwitchToNewFiles(newLog string, newPersister *raft.P
 	// 更新两个路径，使得垃圾回收与客户端请求并行执行
 	kvs.currentLog = newLog
 	fmt.Println("设置kvs.currentLog为", newLog)
-	kvs.raft.SetCurrentLog(kvs.currentLog)
+	// 带上版本：偏移与"它属于哪个文件"必须在同一把 logMu 下一起确定，
+	// 否则切换窗口内写入的那几条会记成旧版本、偏移却是新文件的。
+	kvs.raft.SetCurrentLogVersioned(kvs.currentLog, int32(kvs.numGC))
 	// kvs.raft.currentLog = newLog		// 存储value的磁盘文件由raft操作，raft接触到的只有存储value的log文件
 
 	kvs.persister = newPersister // 存储key和偏移量的rocksdb文件由kvs操作

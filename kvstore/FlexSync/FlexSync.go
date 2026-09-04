@@ -2212,7 +2212,12 @@ func (kvs *KVServer) applyLoop() {
 							// 基线：value 本身写进 RocksDB。于是同一份 value 被持久化两次
 							// （Raft 日志 + LSM），而后还要被 compaction 反复搬运。
 							kvs.persister.Put(op.Key, op.Value)
-						} else if op.FileVersion == int64(kvs.numGC) { // 对于写入日志时，又进行了 GC ，需将偏移量存新文件
+						} else if int(msg.FileVersion) == kvs.numGC { // 对于写入日志时，又进行了 GC ，需将偏移量存新文件
+							// 用 msg 带上来的版本，而不是命令自带的 op.FileVersion：
+							// 后者在"决定写入"时记下，而 offset 在"实际写入"时才产生，
+							// 两个时刻之间 GC 可能已经换过文件（切换走 logMu，拦不住持
+							// rf.mu 的写入路径）。msg.FileVersion 与 offset 同源同锁，
+							// 是唯一能保证配套的那个。
 							recordPlacement(len(op.Value), false)
 							kvs.persister.Put_opt(op.Key, offset)
 						} else { // 否则存旧文件
