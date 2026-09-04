@@ -4,11 +4,12 @@
 
 ## 正在跑（compact 后从这里接上）
 
-- 无。240/241 上没有残留进程。
-  节点脚本留在两台机器上可复用：`~/rep-node.sh`（两节点稳态）、`~/three-race-node.sh`
-  （三节点，`BIN=race|normal`，`start|kill9|stop|report`）。
-- 崩溃恢复已完成（见 `docs/crash-recovery.md`）。
-- 之后：三台物理机 / 六系统多节点对比 / 读路径 leader 检查（见各节）。
+- 无进行中任务。HEAD `89eaa05`，两台服务器同步，无残留进程。
+  节点脚本在两台机器 `~/three-node.sh` `~/rep-node.sh`（源 `scripts/multinode/`）。
+- **用户 2026-09-05 定的顺序**：① `pool/options.go` 的 `grpc.Dial` → `grpc.NewClient`（需验证惰性建连
+  对启动顺序与选举快速失败的影响）→ ② `-system lsm-raft` 真实实现（开工前先给用户看设计，
+  确认是"follower 侧 KV 分离"还是"传输 compacted SSTable"）→ ③ 存量中文注释英文化 → 实验主线。
+- 会话交接快照：工作目录 `CONTEXT-avp-recovery.md`（gitignored）。
 
 ## 🖥 实验机器（2026-09-04 更新）
 
