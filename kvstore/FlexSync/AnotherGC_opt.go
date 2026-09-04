@@ -68,7 +68,6 @@ func (kvs *KVServer) AnotherSwitchToNewFiles(newLog string, newPersister *raft.P
 	defer kvs.mu.Unlock()
 	kvs.anotherStartGC = true
 	kvs.numGC++
-	kvs.raft.SetNumGC(kvs.numGC)
 
 	// 赋值旧文件变量
 	kvs.oldPersister = kvs.persister // 给old 数据库文件赋初始值
