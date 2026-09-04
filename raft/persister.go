@@ -429,3 +429,86 @@ func (p *Persister) ScanRange(startKey, endKey string) (map[string]string, error
 
 	return result, nil
 }
+
+// ---- 崩溃恢复：已 apply 的日志下标与数据同批写入 ----
+//
+// 记在库里而不是状态文件里，是因为它和"哪些 key 已经写进库"必须原子一致：崩在两者
+// 之间就会重放或漏放。同一个 WriteBatch 由 RocksDB 保证原子，-syncWAL 下的持久性
+// 语义与数据本身完全相同，不多一次 fsync。
+//
+// 键以 0x00 开头。PadKey 产出的键全是可打印字符，所以永不冲突；GC 的全库迭代和
+// 范围扫描要跳过它（见 IsMetaKey）。
+const appliedIndexKey = "\x00applied_index"
+
+// IsMetaKey 判断一个库内键是不是恢复用的元数据，而不是用户数据。
+func IsMetaKey(k []byte) bool {
+	return len(k) > 0 && k[0] == 0
+}
+
+func encodeApplied(applied int) []byte {
+	b := make([]byte, 8)
+	binary.LittleEndian.PutUint64(b, uint64(applied))
+	return b
+}
+
+// writeWithApplied 把一条数据记录和 applied 下标放进同一个 WriteBatch 写入。
+func (p *Persister) writeWithApplied(paddedKey []byte, value []byte, applied int) error {
+	wb := grocksdb.NewWriteBatch()
+	defer wb.Destroy()
+	if paddedKey != nil {
+		wb.Put(paddedKey, value)
+	}
+	wb.Put([]byte(appliedIndexKey), encodeApplied(applied))
+	p.muWO.Lock()
+	defer p.muWO.Unlock()
+	return p.db.Write(p.wo, wb)
+}
+
+// PutOffsetApplied = Put_opt + 记录 applied 下标，一个原子批。
+func (p *Persister) PutOffsetApplied(key string, offset int64, applied int) {
+	valueBytes := make([]byte, 9)
+	valueBytes[0] = TagOffset
+	binary.LittleEndian.PutUint64(valueBytes[1:], uint64(offset))
+	if err := p.writeWithApplied([]byte(p.PadKey(key)), valueBytes, applied); err != nil {
+		util.EPrintf("PutOffsetApplied key %v failed, err: %v", key, err)
+	}
+}
+
+// PutInlineApplied = PutInline + 记录 applied 下标。
+func (p *Persister) PutInlineApplied(key string, value string, applied int) {
+	buf := make([]byte, 1+len(value))
+	buf[0] = TagInline
+	copy(buf[1:], value)
+	if err := p.writeWithApplied([]byte(p.PadKey(key)), buf, applied); err != nil {
+		util.EPrintf("PutInlineApplied key %v failed, err: %v", key, err)
+	}
+}
+
+// PutValueApplied = Put（基线：value 直接进库）+ 记录 applied 下标。
+func (p *Persister) PutValueApplied(key string, value string, applied int) {
+	if err := p.writeWithApplied([]byte(p.PadKey(key)), []byte(value), applied); err != nil {
+		util.EPrintf("PutValueApplied key %v failed, err: %v", key, err)
+	}
+}
+
+// SetApplied 只推进 applied 下标（空指令，或数据已写进别的库的情况）。
+func (p *Persister) SetApplied(applied int) {
+	if err := p.writeWithApplied(nil, nil, applied); err != nil {
+		util.EPrintf("SetApplied %d failed, err: %v", applied, err)
+	}
+}
+
+// GetApplied 读回 applied 下标；库里没有记录时返回 (0, false)。
+func (p *Persister) GetApplied() (int, bool, error) {
+	ro := grocksdb.NewDefaultReadOptions()
+	defer ro.Destroy()
+	v, err := p.db.Get(ro, []byte(appliedIndexKey))
+	if err != nil {
+		return 0, false, err
+	}
+	defer v.Free()
+	if !v.Exists() || v.Size() != 8 {
+		return 0, false, nil
+	}
+	return int(binary.LittleEndian.Uint64(v.Data())), true, nil
+}
