@@ -221,13 +221,6 @@ func (kvs *KVServer) firstGCMigrate(sortedFile *os.File, firstSortedFilePath str
 	}
 	kvs.mu.Unlock()
 
-	// 初始化LRU缓存，设置合适的缓存大小
-	// err = kvs.initSortedFileCache(sortedFileCacheNums)
-	// if err != nil {
-	// 	fmt.Printf("Failed to initialize LRU cache: %v\n", err)
-	// 	return err
-	// }
-
 	// 预热缓存
 	// kvs.warmupCache(firstSortedFilePath)
 
@@ -431,81 +424,6 @@ func (kvs *KVServer) CheckDatabaseContent() error {
 
 	return nil
 }
-
-// func (kvs *KVServer) GarbageCollection() error {
-// 	fmt.Println("Starting garbage collection...")
-// 	startTime := time.Now()
-
-// 	// 创建新的文件用于接收新的写入
-// 	currentLog := "./raft/RaftState_new.log"
-// 	// newRaftStateLog, err := os.Create(currentLog)
-// 	// if err != nil {
-// 	//     return fmt.Errorf("failed to create new RaftState log: %v", err)
-// 	// }
-// 	// defer newRaftStateLog.Close()
-
-// 	// 创建新的RocksDB实例
-// 	persister_new, err := NewPersister() // 创建一个新的用于保存key和index的persister
-// 	if err != nil {
-// 		return fmt.Errorf("failed to create new persister: %v", err)
-// 	}
-// 	newPersister, err := persister_new.Init("./kvstore/FlexSync/db_key_index_new", true)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to initialize new RocksDB: %v", err)
-// 	}
-
-// 	// 切换到新的文件和RocksDB
-// 	kvs.SwitchToNewFiles(currentLog, newPersister)
-
-// 	err = kvs.checkDatabaseContent()
-// 	if err != nil {
-// 		fmt.Println("检查数据库内容有错误：", err)
-// 	}
-
-// 	// err = kvs.checkLogDBConsistency()
-// 	// if err != nil {
-// 	// 	fmt.Println("检查数据库内容有错误：", err)
-// 	// }
-
-// 	// 开始处理旧文件
-// 	sortedEntries, err := kvs.processSortedFile()
-// 	if err != nil {
-// 		return fmt.Errorf("failed to process old file: %v", err)
-// 	}
-// 	fmt.Printf("Processed %d entries from old file\n", len(sortedEntries))
-
-// 	// 写入新的排序文件
-// 	firstSortedFilePath := "./raft/RaftState_sorted.log"
-// 	err = GC4.WriteEntriesToNewFile(sortedEntries, firstSortedFilePath)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to write sorted file: %v", err)
-// 	}
-
-// 	fileInfo, err := os.Stat(firstSortedFilePath)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to stat new file: %v", err)
-// 	}
-// 	fmt.Printf("New sorted file size :%d bytes\n", fileInfo.Size())
-
-// 	//  先不删除
-// 	// // 删除旧的RaftState.log文件
-// 	// err = os.Remove("./raft/RaftState.log")
-// 	// if err != nil {
-// 	//     return fmt.Errorf("failed to remove old RaftState.log: %v", err)
-// 	// }
-
-// 	// // 删除旧的RocksDB数据
-// 	// err = os.RemoveAll("./kvstore/FlexSync/db_key_index")
-// 	// if err != nil {
-// 	//     return fmt.Errorf("failed to remove old RocksDB data: %v", err)
-// 	// }
-
-// 	// 更新KVServer的查询方法
-// 	kvs.updateQueryMethods(firstSortedFilePath)
-
-// 	fmt.Printf("Garbage collection completed in %v\n", time.Since(startTime))
-// 	return nil
-// }
 
 // waitOldVersionApplied 等到所有落在旧日志文件（版本 oldVersion）里的条目都 apply 完毕。
 //

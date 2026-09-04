@@ -335,40 +335,6 @@ func (rf *Raft) SetCurrentPersister(persister *Persister) {
 	rf.persister = persister
 }
 
-// func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) {
-// 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-// 	if err != nil {
-// 		log.Fatalf("打开存储Raft日志的磁盘文件失败：%v", err)
-// 	}
-// 	defer file.Close()
-// 	// 获取当前写入位置，即为返回的偏移量
-// 	var offset int64
-// 	var offsets []int64
-// 	// 预分配足够大的偏移量切片，避免了在循环中动态扩容偏移量切片的操作
-// 	offsets = make([]int64, len(e))
-// 	if startPos == 0 {
-// 		offset, err = file.Seek(0, os.SEEK_END)
-// 		if err != nil {
-// 			log.Fatalf("定位存储Raft日志的磁盘文件失败：%v", err)
-// 		}
-// 	} else { // 同步日志时，需要已有的日志与leader的冲突，需要覆盖之前的错误的
-// 		offset, err = file.Seek(startPos, os.SEEK_SET)
-// 		if err != nil {
-// 			log.Fatalf("定位存储Raft日志的磁盘文件的起始位置失败：%v", err)
-// 		}
-// 	}
-// 	for i, entry := range e {
-// 		// 将数据编码并直接写入文件
-// 		err := binary.Write(file, binary.BigEndian, *entry)
-// 		if err != nil {
-// 			log.Fatalf("写入存储Raft日志的磁盘文件失败：%v", err)
-// 		}
-// 		offsets[i] = offset
-// 		offset += int64(binary.Size(entry))
-// 	}
-// 	rf.Offsets = append(rf.Offsets, offsets...)
-// }
-
 // WriteEntryToFile 将条目追加到当前日志文件。
 //
 // 不接受文件名参数：目标文件由 rf.currentLog 决定，而它归 logMu 管。让调用方
@@ -500,32 +466,8 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 	}
 }
 
-// func (rf *Raft) WriteEntryToFile(e []*Entry, filename string, startPos int64) (offsets []int64, err error) {
-// 	rf.mu.Lock()
-// 	defer rf.mu.Unlock()
-// 	// 打开文件，如果文件不存在则创建
-// 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("打开存储Raft日志的磁盘文件失败：%v", err)
-// 	}
-// 	defer file.Close()
-
 // 	// 包装文件对象以进行缓冲写入
 // 	writer := bufio.NewWriter(file)
-
-// 	// 获取当前写入位置，即为返回的偏移量
-// 	var offset int64
-// 	if startPos == 0 {
-// 		offset, err = file.Seek(0, os.SEEK_END)
-// 		if err != nil {
-// 			return nil, fmt.Errorf("定位存储Raft日志的磁盘文件失败：%v", err)
-// 		}
-// 	} else { // 同步日志时，需要已有的日志与leader的冲突，需要覆盖之前的错误的
-// 		offset, err = file.Seek(startPos, os.SEEK_SET)
-// 		if err != nil {
-// 			return nil, fmt.Errorf("定位存储Raft日志的磁盘文件的起始位置失败：%v", err)
-// 		}
-// 	}
 
 // 	// 准备写入的数据
 // 	// keySize := uint32(len(e.Key))
@@ -541,20 +483,6 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 // 	// copy(data[20:20+keySize], e.Key)
 // 	// copy(data[20+keySize:], e.Value)
 
-// 	// // 写入文件
-// 	// _, err = file.Write(data)
-// 	// if err != nil {
-// 	// 	fmt.Println("写入存储Raft日志的磁盘文件有问题")
-// 	// 	return 0, err
-// 	// }
-// 	// writer := bufio.NewWriter(file)
-// 	// u,err := writer.Write(data)
-// 	// if err != nil || u<len(data) {
-// 	// 	fmt.Println("写入存储Raft日志的磁盘文件有问题")
-// 	// 	return 0, err
-// 	// }
-// 	// writer.Flush()		// 刷新缓冲区数据到文件中
-
 // 	for _, entry := range e {
 // 		keySize := uint32(len(entry.Key))
 // 		valueSize := uint32(len(entry.Value))
@@ -569,46 +497,12 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 // 		copy(data[20:20+keySize], entry.Key)
 // 		copy(data[20+keySize:], entry.Value)
 
-// 		// 写入文件
-// 		_, err := writer.Write(data)
-// 		if err != nil {
-// 			return nil, fmt.Errorf("写入存储Raft日志的磁盘文件失败：%v", err)
-// 		}
-
-// 		// 刷新缓冲区以确保数据被写入文件
-// 		err = writer.Flush()
-// 		if err != nil {
-// 			return nil, fmt.Errorf("刷新缓冲区失败：%v", err)
-// 		}
-
 // 		// 添加偏移量到数组中
 // 		offsets = append(offsets, offset)
 // 		offset += int64(len(data))
 // 	}
 // 	rf.Offsets = append(rf.Offsets, offsets...)
 // 	return offsets, nil
-// }
-
-// func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, error) {
-// 	// 打开文件
-// 	file, err := os.Open(filename)
-// 	if err != nil {
-// 		return "", err
-// 	}
-// 	defer file.Close()
-// 	// 移动到指定偏移量
-// 	_, err = file.Seek(offset, os.SEEK_SET)
-// 	if err != nil {
-// 		fmt.Println("get时，seek文件的位置有问题")
-// 		return "", err
-// 	}
-// 	 // 从文件中读取数据并解码到 entry 结构体中
-// 	 var entry Entry
-// 	 err = binary.Read(file, binary.BigEndian, &entry)
-// 	 if err != nil {
-// 		 return "", err
-// 	 }
-// 	return entry.Value, nil
 // }
 
 // ReadValueFromFile 从指定的偏移量读取value
@@ -632,14 +526,6 @@ func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, string
 		fmt.Println("get时，seek文件的位置有问题")
 		return "", "", err
 	}
-
-	// 获取文件信息
-	// fileInfo, err := file.Stat()
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// fileSize := fileInfo.Size()
-	// fmt.Printf("当前的offset: %v===filesize: %v\n", offset, fileSize)
 
 	// 读取数据到buffer中，首先是固定长度的20字节
 	header := make([]byte, 20)
@@ -674,43 +560,6 @@ func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, string
 	return key, value, nil
 }
 
-// save Raft's persistent state to stable storage
-// func (rf *Raft) raftStateForPersist(filePath string, currentTerm int, votedFor int, log []LogEntry) {
-// 	state := RaftState{CurrentTerm: currentTerm, VotedFor: votedFor, Log: log}
-// 	file, err := os.Create(filePath) // 如果文件已存在，则会截断该文件，原文件中的所有数据都会丢失，即不断更新持久化的数据
-// 	if err != nil {
-// 		util.EPrintf("Failed to create file: %v", err)
-// 	}
-// 	defer file.Close()
-
-// 	encoder := gob.NewEncoder(file)
-// 	if err := encoder.Encode(state); err != nil {
-// 		util.EPrintf("Failed to encode data: %v", err)
-// 	}
-// }
-
-// // restore previously persisted state.
-// func (rf *Raft) ReadPersist(filePath string) *RaftState {
-// 	file, err := os.Open(filePath)
-// 	if err != nil {
-// 		util.EPrintf("Failed to open file: %v", err)
-// 	}
-// 	defer file.Close()
-// 	// var err error
-// 	// file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
-// 	// if err != nil {
-// 	// 	fmt.Println("打开RaftState文件有问题")
-// 	// 	return nil
-// 	// }
-
-// 	var state RaftState
-// 	decoder := gob.NewDecoder(file)
-// 	if err := decoder.Decode(&state); err != nil {
-// 		util.EPrintf("Failed to decode data: %v", err)
-// 	}
-// 	return &state
-// }
-
 func (rf *Raft) GetLeaderId() (leaderId int32) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -730,13 +579,6 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 	reply := &raftrpc.RequestVoteResponse{}
 	reply.Term = int32(rf.currentTerm)
 	reply.VoteGranted = false
-
-	// util.DPrintf("RaftNode[%d] Handle RequestVote, CandidatesId[%d] Term[%d] CurrentTerm[%d] LastLogIndex[%d] LastLogTerm[%d] votedFor[%d]",
-	// 	rf.me, args.CandidateId, args.Term, rf.currentTerm, args.LastLogIndex, args.LastLogTerm, rf.votedFor)
-	// defer func() {
-	// 	util.DPrintf("RaftNode[%d] Return RequestVote, CandidatesId[%d] Term[%d] currentTerm[%d] VoteGranted[%v] votedFor[%d]", rf.me, args.CandidateId,
-	// 		args.Term, rf.currentTerm, reply.VoteGranted, rf.votedFor)
-	// }()
 
 	// 任期不如我大，拒绝投票
 	if args.Term < int32(rf.currentTerm) {
@@ -881,18 +723,6 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				// rf.mu.Unlock()
 				rf.WriteEntryToFile(rf.batchLog, 0)
 				rf.batchLog = rf.batchLog[:0] // 清空暂存日志的数组
-				// go func() {
-				// 	err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
-				// 	if err != nil {
-				// 		fmt.Println("Error in WriteEntryToFile:", err)
-				// 	}
-				// }()
-				// rf.mu.Lock()
-				// rf.Offsets = append(rf.Offsets, offsets1...)
-				// if err != nil {
-				// 	fmt.Println("这里有问题嘛")
-				// 	panic(err)
-				// }
 			}
 			// util.DPrintf("追加RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] Index[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, index, rf.Offsets)
 		} else { // 重叠部分
@@ -913,18 +743,6 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				// offsets2, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
 				// rf.mu.Unlock()
 				rf.WriteEntryToFile(arrEntry, offset)
-				// go func() {
-				// 	err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
-				// 	if err != nil {
-				// 		fmt.Println("Error in WriteEntryToFile:", err)
-				// 	}
-				// }()
-				// rf.mu.Lock()
-				// rf.Offsets = append(rf.Offsets, offsets2[0])
-				// if err != nil {
-				// 	panic(err)
-				// }
-				// util.DPrintf("重叠RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] commitIndex[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex, rf.Offsets)
 			} // term一样啥也不用做，继续向后比对Log
 		} // 每追加一个日志就持久化，并将offset和index绑定，存储到内存中。后续可以考虑这里实现批量持久化
 	}
@@ -966,12 +784,6 @@ func (rf *Raft) HeartbeatInRaft(ctx context.Context, args *raftrpc.AppendEntries
 	// 刷新活跃时间
 	rf.lastActiveTime = time.Now()
 	reply.Success = true // 成功心跳
-	// if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
-	// 	rf.commitIndex = int(args.LeaderCommit)
-	// 	if rf.lastIndex() < rf.commitIndex { // 感觉，不存在这种情况，走到这里基本都是日志与leader一样了，怎么还会索引比commitindex小
-	// 		rf.commitIndex = rf.lastIndex()
-	// 	}
-	// }
 	return reply, nil
 }
 
@@ -1038,23 +850,6 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 			tWriteFile = time.Since(tw)
 		}
 	}
-	// rf.batchLog = append(rf.batchLog, &entry)
-	// if err := enc.Encode(entry); err != nil {
-	// 	util.EPrintf("Encode error in Start()：%v", err)
-	// }
-	// rf.batchLogSize += int64(buffer.Len())
-	// // 如果总大小超过3MB，截取日志数组并退出循环
-	// if rf.batchLogSize >= fileSizeLimit {
-	// 	rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
-	// go func() {
-	// 	err := rf.WriteEntryToFile(rf.batchLog, "./raft/RaftState.log", 0)
-	// 	if err != nil {
-	// 		fmt.Println("Error in WriteEntryToFile:", err)
-	// 	}
-	// }()
-	// 	buffer.Reset()
-	// 	rf.batchLog = rf.batchLog[:0] // 清空缓存区和暂存的数组
-	// }
 	rf.log = append(rf.log, &logEntry) // 确保日志落盘之后，再更新log
 	rf.mu.Unlock()
 
@@ -1075,13 +870,6 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 		<-myBatch.done
 		tWriteFile = time.Since(tw)
 	}
-	// fmt.Printf("22222offset%v,changdu%v\n",rf.Offsets,len(rf.Offsets))
-	// // offsets, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", 0)
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// rf.Offsets = append(rf.Offsets, offsets...)
-	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
 	// util.DPrintf("RaftNode[%d] Add Command, logIndex[%d] currentTerm[%d]", rf.me, index, term)
 	return int32(index), int32(term), isLeader
@@ -1310,11 +1098,6 @@ func (rf *Raft) electionLoop() {
 				rf.mu.Lock()
 				util.DPrintf("RaftNode[%d] election term[%d] votes=%d/%d answered=%d maxTerm=%d role=%s",
 					rf.me, rf.currentTerm, voteCount, len(rf.peers), finishCount, maxTerm, rf.role)
-				// defer func() {
-				// 	util.DPrintf("RaftNode[%d] RequestVote ends, finishCount[%d] voteCount[%d] Role[%s] maxTerm[%d] currentTerm[%d]", rf.me, finishCount, voteCount,
-				// 		rf.role, maxTerm, rf.currentTerm)
-				// }()
-				// 如果角色改变了，则忽略本轮投票结果；当多个server同时开始选举，有一个leader已经选出后，则本server的选举结果可直接不用管。
 				if rf.role != ROLE_CANDIDATES {
 					return
 				}
@@ -1642,23 +1425,10 @@ func (rf *Raft) appendEntriesLoop() {
 				rf.mu.Unlock()
 				return
 			}
-			// 100ms广播1次
-			// now := time.Now()
-			// if now.Sub(rf.lastBroadcastTime) < 11*time.Millisecond {
-			// 	return
-			// }
 			if rf.lastIndex() == 0 {
 				rf.mu.Unlock()
 				return
 			}
-			// rf.lastBroadcastTime = time.Now() // 确定过了广播的时间间隔，才开始进行广播，并且设置新的广播时间
-			// 向所有follower发送心跳
-			// for peerId := 0; peerId < len(rf.peers); peerId++ {
-			// for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
-			// 	if peerId == rf.me {
-			// 		continue
-			// 	}
-			// if (now.Sub(rf.LastAppendTime) > 300*time.Millisecond) && Heartbeat == 1 {
 			rf.mu.Unlock()
 			if First {
 				for peerId := 0; peerId < len(rf.peers); peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
@@ -1670,16 +1440,6 @@ func (rf *Raft) appendEntriesLoop() {
 				}
 				First = false
 			}
-			// now := time.Now() // 心跳
-			// if now.Sub(rf.LastAppendTime) > 1000*time.Millisecond {
-			// 	for peerId := 0; peerId < len(rf.peers); peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
-			// 		if peerId == rf.me {
-			// 			continue
-			// 		}
-			// 		// rf.doHeartBeat(peerId)
-			// 	}
-			// 	rf.LastAppendTime = time.Now()
-			// }
 
 			for i := 0; i < len(rf.peers); i++ {
 				if i == rf.me {
@@ -1699,158 +1459,9 @@ func (rf *Raft) appendEntriesLoop() {
 				}
 			}
 
-			// select {
-			// case value1 := <-rf.SyncChans[0]:
-			// 	if value1 == "NotLeader" {
-			// 		fmt.Println("被 server 0 告知不是NotLeader，退出")
-			// 		return
-			// 	}
-			// 	rf.doAppendEntries(0)
-			// default:
-			// }
-
-			// select {
-			// case value2 := <-rf.SyncChans[1]:
-			// 	if value2 == "NotLeader" {
-			// 		fmt.Println("被 server 1 告知不是NotLeader，退出")
-			// 		return
-			// 	}
-			// 	rf.doAppendEntries(1)
-			// default:
-			// }
-
-			// select {
-			// case value3 := <-rf.SyncChans[2]:
-			// 	if value3 == "NotLeader" {
-			// 		fmt.Println("被 server 2 告知不是NotLeader，退出")
-			// 		return
-			// 	}
-			// 	rf.doAppendEntries(2)
-			// default:
-			// }
-
-			// select { //   日志同步由对方服务器发来的反馈触发，避免过于重复的日志同步
-			// // case value := <-rf.SyncChan:
-			// // fmt.Println("value",value)
-			// // switch value {
-			// case value1 := <-rf.SyncChans[0]:
-			// 	if value1 == "NotLeader" {
-			// 		fmt.Println("被告知不是NotLeader，退出")
-			// 		return
-			// 	}
-			// 	rf.doAppendEntries(0)
-			// case value2 := <-rf.SyncChans[1]:
-			// 	if value2 == "NotLeader" {
-			// 		fmt.Println("被告知不是NotLeader，退出")
-			// 		return
-			// 	}
-			// 	rf.doAppendEntries(1)
-			// case value3 := <-rf.SyncChans[2]:
-			// 	if value3 == "NotLeader" {
-			// 		fmt.Println("被告知不是NotLeader，退出")
-			// 		return
-			// 	}
-			// 	rf.doAppendEntries(2)
-			// default: // 如果不是leader了就退出，后续设置一下
-			// 	fmt.Println("被告知不是NotLeader，退出")
-			// 	return
-			// }
-			// }
 		}()
 	}
 }
-
-// func (rf *Raft) appendEntriesLoop() {
-// 	for !rf.killed() {
-// 		time.Sleep(10 * time.Millisecond)       // 间隔10ms
-// 		for peerId := 0; peerId < 3; peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
-// 			if peerId == rf.me {
-// 				continue
-// 			}
-// 			go func(peerId int) {
-// 				rf.mu.Lock()
-// 				// 只有leader才向外广播心跳
-// 				if rf.role != ROLE_LEADER {
-// 					rf.mu.Unlock()
-// 					return
-// 				}
-// 				if rf.lastIndex() == 0 {
-// 					rf.mu.Unlock()
-// 					return
-// 				}
-// 				args := raftrpc.AppendEntriesInRaftRequest{}
-// 				args.Term = int32(rf.currentTerm)
-// 				args.LeaderId = int32(rf.me)
-// 				args.LeaderCommit = int32(rf.commitIndex)
-// 				args.PrevLogIndex = int32(rf.nextIndex[peerId] - 1)
-// 				if args.PrevLogIndex == 0 { // 确保在从0开始的时候直接进行日志追加即可
-// 					args.PrevLogTerm = 0
-// 				} else {
-// 					args.PrevLogTerm = int32(rf.log[rf.index2LogPos(int(args.PrevLogIndex))].Term)
-// 				}
-// 				appendLog := rf.log[rf.index2LogPos(int(args.PrevLogIndex)+1):] //这里如果下标大于或等于log数组的长度，只是会返回一个空切片，所以正好当作心跳使用
-// 				// fmt.Printf("此时下标会不会有问题，log长度：%v，下标：%v", len(rf.log), args.PrevLogIndex+1)
-// 				data, _ := json.Marshal(appendLog) // 后续计算日志的长度的时候可千万别用这个转换后的直接数组
-// 				args.Entries = data
-// 				rf.mu.Unlock()
-// 				if reply, ok := rf.sendAppendEntries(rf.peers[peerId], &args, rf.pools[peerId]); ok {
-// 					rf.mu.Lock()
-// 					// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
-// 					if rf.currentTerm != int(args.Term) {
-// 						rf.mu.Unlock()
-// 						return
-// 					}
-// 					if reply.Term > int32(rf.currentTerm) { // 变成follower
-// 						rf.role = ROLE_FOLLOWER
-// 						rf.leaderId = 0
-// 						rf.currentTerm = int(reply.Term)
-// 						rf.votedFor = -1
-// 						// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-// 						rf.mu.Unlock()
-// 						return
-// 					}
-// 					// 因为RPC期间无锁, 可能相关状态被其他RPC修改了
-// 					// 因此这里得根据发出RPC请求时的状态做更新，而不要直接对nextIndex和matchIndex做相对加减
-// 					if reply.Success { // 同步日志成功
-// 						rf.nextIndex[peerId] = int(args.PrevLogIndex) + len(appendLog) + 1
-// 						rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // 记录已经复制到其他server的日志的最后index的情况
-// 						rf.updateCommitIndex()  			// 更新commitIndex
-// 					} else {
-// 						// 回退优化，参考：https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations
-// 						// nextIndexBefore := rf.nextIndex[peerId] // 仅为打印log
-
-// 						if reply.ConflictTerm != -1 { // follower的prevLogIndex位置term冲突了
-// 							// 我们找leader log中conflictTerm最后出现位置，如果找到了就用它作为nextIndex，否则用follower的conflictIndex
-// 							conflictTermIndex := -1
-// 							for index := args.PrevLogIndex; index > 0; index-- {
-// 								// if rf.log[rf.index2LogPos(int(index))].Term == reply.ConflictTerm {
-// 								// 	conflictTermIndex = int(index)
-// 								// 	break
-// 								// }
-// 								// 我认为下方这个效果更好，这样PrevLogIndex的值就为 index
-// 								if rf.log[rf.index2LogPos(int(index))].Term != reply.ConflictTerm {
-// 									conflictTermIndex = int(index + 1)
-// 									break
-// 								}
-// 							}
-// 							if conflictTermIndex != -1 { // leader log出现了这个term，那么从这里prevLogIndex之前的最晚出现位置尝试同步
-// 								rf.nextIndex[peerId] = conflictTermIndex
-// 							} else {
-// 								rf.nextIndex[peerId] = int(reply.ConflictIndex) // 用follower首次出现term的index作为同步开始
-// 							}
-// 						} else {
-// 							// follower没有发现prevLogIndex term冲突, 可能是被snapshot了或者日志长度不够
-// 							// 这时候我们将返回的conflictIndex设置为nextIndex即可
-// 							rf.nextIndex[peerId] = int(reply.ConflictIndex)
-// 						}
-// 						// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
-// 					}
-// 					rf.mu.Unlock()
-// 				}
-// 			}(peerId)
-// 		}
-// 	}
-// }
 
 // maxApplyBatch 限制一次持锁期间取走多少条待应用的日志。
 // 取太小则锁开销摊不薄，取太大则一次持锁时间过长、反过来挡住写入路径。

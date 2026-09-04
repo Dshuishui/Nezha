@@ -337,27 +337,6 @@ func (p *Persister) ScanRange_opt(startKey, endKey string) (map[string]int64, er
 		return nil, fmt.Errorf("iterator error: %v", err)
 	}
 
-	// 如果键不存在，设定值为-1，使得在读取磁盘文件时，标志该key不存在，就不用去查找默认值为0的偏移量了
-	// 遍历结束，现在检查是否有缺失的键
-	// 解析起始和结束键为整数
-	// 下面的不用进行，因为范围查询，针对不存在的key直接不返回即可
-	// startInt, err := strconv.ParseInt(startKey, 10, 64)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("error parsing startKey: %v", err)
-	// }
-	// endInt, err := strconv.ParseInt(endKey, 10, 64)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("error parsing endKey: %v", err)
-	// }
-	// // 遍历结束，现在检查是否有缺失的键
-	// for i := startInt; i <= endInt; i++ {
-	//     // keyStr := fmt.Sprintf("%010d", i) // 生成预期的键
-	// 	stringValue := strconv.FormatInt(i, 10) // 将 int64 转换为 string
-	//     if _, exists := result[stringValue]; !exists {
-	//         result[stringValue] = -1 // 如果键不存在，赋值默认值
-	//     }
-	// }
-
 	return result, nil
 }
 
@@ -407,25 +386,6 @@ func (p *Persister) ScanRange(startKey, endKey string) (map[string]string, error
 	if err := it.Err(); err != nil {
 		return nil, fmt.Errorf("iterator error: %v", err)
 	}
-
-	// 遍历结束，现在检查是否有缺失的键.如果键不存在，设定值为NOKEY
-	// 解析起始和结束键为整数
-	// startInt, err := strconv.ParseInt(startKey, 10, 64)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("error parsing startKey: %v", err)
-	// }
-	// endInt, err := strconv.ParseInt(endKey, 10, 64)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("error parsing endKey: %v", err)
-	// }
-	// 遍历结束，现在检查是否有缺失的键
-	// for i := startInt; i <= endInt; i++ {
-	//     // keyStr := fmt.Sprintf("%010d", i) // 生成预期的键
-	// 	stringValue := strconv.FormatInt(i, 10) // 将 int64 转换为 string
-	//     if _, exists := result[stringValue]; !exists {
-	//         result[stringValue] = "NOKEY" // 如果键不存在，赋值默认值
-	//     }
-	// }
 
 	return result, nil
 }
