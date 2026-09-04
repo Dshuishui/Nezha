@@ -15,6 +15,7 @@ import (
 	// lru "github.com/hashicorp/golang-lru"
 	"gitee.com/dong-shuishui/FlexSync/raft"
 	"github.com/linxGnu/grocksdb"
+	"sync/atomic"
 )
 
 //	type keyOffset struct{
@@ -174,6 +175,17 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 	oldEntryChan := make(chan *raft.Entry, 1000)
 	existingEntryChan := make(chan *raft.Entry, 1000)
 
+	// readErr 收集两个读取 goroutine 的失败。
+	//
+	// 这两个 goroutine 原先把错误吞掉——一个 continue 跳过读不出来的记录，另一个
+	// 遇到非 EOF 就 break 提前收尾。主流程因此拿不到任何信号，整轮 GC 照常报成功，
+	// 随后 os.Remove(kvs.oldLog) 把源文件删掉：那些没搬过去的数据就此永久丢失，
+	// 而存储引擎里的偏移还指着一个已经不存在的文件。
+	//
+	// GC 是数据搬运，搬不动就必须让整轮失败、保住源文件等下一轮重试。
+	// 少搬一条也不能当作成功。
+	var readErr atomic.Value
+
 	// Start goroutine to read from old database
 	go func() {
 		defer close(oldEntryChan)
@@ -188,8 +200,8 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 
 			entry, err := kvs.entryFromRecord(string(key.Data()), value.Data(), oldFile)
 			if err != nil {
-				fmt.Printf("Error building entry from record: %v\n", err)
-				continue
+				readErr.Store(fmt.Errorf("读取旧库记录失败（key=%q）: %v", key.Data(), err))
+				return
 			}
 			oldEntryChan <- entry
 		}
@@ -203,10 +215,10 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 			entry, _, err := ReadEntry(reader, 0)
 			if err != nil {
 				if err == io.EOF {
-					break
+					break // 正常读完
 				}
-				fmt.Printf("Error reading sorted file: %v\n", err)
-				break
+				readErr.Store(fmt.Errorf("读取已排序文件失败: %v", err))
+				return
 			}
 			existingEntryChan <- entry
 		}
@@ -278,6 +290,13 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 				fmt.Printf("Merged %d entries\n", writeCount)
 			}
 		}
+	}
+
+	// 读取端出过错就不能往下走：合并文件此刻是不完整的，而调用方在本函数返回 nil
+	// 之后会删掉源文件。宁可整轮失败、留着源文件等下一轮重试，也不能拿一份缺数据的
+	// 排序文件顶替它。
+	if e := readErr.Load(); e != nil {
+		return fmt.Errorf("合并中止，源文件保持不动: %v", e.(error))
 	}
 
 	// Flush the writer
