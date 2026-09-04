@@ -37,3 +37,6 @@ ycsb/results
 # 论文原稿：参考用，不进仓库
 *.pdf
 paper-*.pdf
+
+# session hand-off notes live in the working tree only
+CONTEXT-*.md
