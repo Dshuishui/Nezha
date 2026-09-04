@@ -38,5 +38,6 @@ ycsb/results
 *.pdf
 paper-*.pdf
 
-# session hand-off notes live in the working tree only
+# working log and session hand-off notes stay local (see notes/README.md)
+notes/
 CONTEXT-*.md

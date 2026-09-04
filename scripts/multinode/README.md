@@ -19,5 +19,5 @@ Deploy the server-side scripts with `scp three-node.sh tikv240:~/ && ssh tikv240
 ~/three-node.sh` (and the same for `tikv241` and `rep-node.sh`). The drivers call them as
 `~/three-node.sh` and `~/rep-node.sh`.
 
-Reading a follower directly works because the read path currently has no leader check (see
-`TODO-avp.md`). That gap is what lets these scripts verify a follower's local state.
+Reading a follower directly works because the read path currently has no leader check. That
+gap is what lets these scripts verify a follower's local state.
