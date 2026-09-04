@@ -328,52 +328,42 @@ go run ./cmd/bench/scan_pro/ \
 
 ```
 Nezha/
-├── go.mod / go.sum            # Go module dependencies
+├── go.mod / go.sum            # Go module
 │
-├── scripts/                   # Deployment helper scripts
-│   ├── setup-env.sh           # One-command environment setup
-│   └── run-node.sh            # One-command node startup
-│
-├── docker/                    # Docker deployment files
-│   ├── Dockerfile             # Container image definition (Ubuntu 24.04)
-│   ├── docker-compose.yml     # Single-node orchestration
-│   └── manage.sh              # Node management script
-│
-├── .github/workflows/         # CI/CD
-│   └── docker-publish.yml     # Auto build and push to Docker Hub
-│
-├── kvstore/                   # Storage service implementations
-│   ├── FlexSync/              # KVS-Raft core (main entry point)
-│   │   ├── FlexSync.go        # gRPC server and Raft integration
-│   │   ├── GC.go              # Garbage collection strategy
-│   │   ├── GC_opt.go          # Optimized GC implementation
-│   │   ├── AnotherGC.go       # Multi-round GC implementation
-│   │   ├── AnotherGC_opt.go   # Optimized multi-round GC
+├── cmd/                       # Executables
+│   ├── nezha/                 # The KV server (Raft + key-value separation)
+│   │   ├── FlexSync.go        # gRPC service, Raft integration, apply loop
+│   │   ├── GC.go              # First garbage-collection round (value-log rewrite)
+│   │   ├── AnotherGC.go       # Subsequent GC rounds (merge into the sorted file)
+│   │   ├── recovery.go        # Crash recovery: state file, log replay, GC resume
+│   │   ├── inlinecache.go     # Inline small-value cache (AVP)
+│   │   ├── sparseindex.go     # Sparse index over the sorted value file
 │   │   └── filePool.go        # File handle pool
-│   ├── LevelDB/               # LevelDB storage engine adapter
-│   └── GC/                    # GC strategy experiments
+│   ├── bench/                 # Benchmark tools, one main per directory (see bench/README.md)
+│   └── ycsb/                  # YCSB workloads A, D, E, F and load scripts
 │
-├── raft/                      # Raft consensus protocol
-│   ├── raft.go                # Core implementation (election, log replication)
-│   ├── persister.go           # State persistence
-│   └── common.go              # Shared data structures
+├── internal/                  # Libraries private to this module
+│   ├── raft/                  # Raft: election, replication, value log as Raft log,
+│   │                          #   compaction, persistence, recovery
+│   ├── pool/                  # gRPC connection pool
+│   └── util/                  # Logging and helpers
 │
-├── rpc/                       # gRPC protocol definitions
+├── api/                       # gRPC protocol definitions and generated code
 │   ├── kvrpc/                 # Client-server RPC (Put/Get/Scan)
 │   └── raftrpc/               # Raft inter-node RPC (RequestVote/AppendEntries)
 │
-├── benchmark/                 # Performance benchmark suite
-│   ├── randwrite_goroutine/   # Concurrent random write
-│   ├── zipf_read/             # Zipf-distribution read
-│   ├── scan_pro/              # Range scan
-│   └── ...                    # Additional benchmark workloads
+├── scripts/                   # Operations and experiment scripts
+│   ├── setup-env.sh           # One-command environment setup
+│   ├── run-node.sh            # One-command node startup
+│   ├── bench/                 # Performance comparison drivers
+│   ├── test/                  # End-to-end and regression checks
+│   ├── multinode/             # Multi-node correctness and failover drivers
+│   └── lib/                   # Shared shell helpers
 │
-├── ycsb/                      # YCSB standard benchmarks
-│   ├── A/, D/, E/, F/         # YCSB workload implementations
-│   └── run_ycsb.sh            # YCSB execution script
-│
-├── pool/                      # gRPC connection pool
-└── util/                      # Utility functions
+├── deploy/docker/             # Dockerfile, docker-compose.yml, manage.sh
+├── .github/workflows/         # CI: build and push the Docker image
+├── docs/                      # Design documents (e.g. crash recovery)
+└── tla/                       # TLA+ specifications of the KVS-Raft protocol
 ```
 
 ---
