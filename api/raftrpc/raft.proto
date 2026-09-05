@@ -10,6 +10,11 @@ service Raft {
   rpc AppendEntriesInRaft (AppendEntriesInRaftRequest) returns (AppendEntriesInRaftResponse) {}
   rpc HeartbeatInRaft (AppendEntriesInRaftRequest) returns (AppendEntriesInRaftResponse) {}
   rpc RequestVote (RequestVoteRequest) returns (RequestVoteResponse) {}
+  // InstallSSTable ships one span of the leader's state machine to a follower as
+  // SSTable files (the LSM-Raft baseline). The follower ingests the files instead of
+  // replaying the entries of that span. Client streaming: every message repeats the
+  // span header, Data carries one chunk of one file.
+  rpc InstallSSTable (stream InstallSSTableRequest) returns (InstallSSTableResponse) {}
 }
  
 message AppendEntriesInRaftRequest{
@@ -54,4 +59,32 @@ message RequestVoteRequest{
 message RequestVoteResponse{
   int32 Term = 1;
   bool VoteGranted = 2;
+}
+
+message InstallSSTableRequest{
+  int32 Term = 1;
+  int32 LeaderId = 2;
+  int64 SpanStart = 3;        // first log index the span covers, inclusive
+  int64 SpanEnd = 4;          // last log index the span covers, inclusive
+  int64 OldestAvailable = 5;  // start of the oldest span the leader can still send (0 = unknown)
+  string FileName = 6;        // basename of the file this chunk belongs to
+  int32 FileSeq = 7;          // ingestion order of FileName within the span, from 0
+  int32 FileCount = 8;        // number of files in the span
+  int64 Offset = 9;           // byte offset of Data inside FileName
+  bytes Data = 10;
+  bool Last = 11;             // final chunk of the span
+}
+
+enum InstallSSTableStatus {
+  INGESTED = 0;      // files ingested, Applied == SpanEnd
+  SKIPPED = 1;       // follower had already applied through SpanEnd
+  GAP = 2;           // follower's Applied < SpanStart-1; resend from Applied+1
+  STALE_TERM = 3;    // Term is older than the follower's term
+  FAILED = 4;        // ingestion error, see the follower log
+}
+
+message InstallSSTableResponse{
+  int32 Term = 1;
+  int64 Applied = 2;
+  InstallSSTableStatus Status = 3;
 }
