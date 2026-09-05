@@ -1,6 +1,7 @@
 #!/bin/bash
 # 重复验证用的节点启动脚本（两台机器各放一份，内容相同）。
 #   rep-node.sh start ROLE VS N BIN      ROLE=leader|follower  BIN=normal|race
+#   env SYSTEM=nezha|original|lsm-raft|... (default nezha), EXTRA="..." extra node flags
 #   rep-node.sh stop  ROLE
 #   rep-node.sh report ROLE               GC 轮数 + 错误行
 # 与 two-node.sh 的区别：不每轮重编译（二进制比源码旧才重编），且支持 -race 版本。
@@ -13,7 +14,7 @@ D=$HOME/work/rep-$ROLE
 L=192.168.1.240:30991; F=192.168.1.241:30991
 case $CMD in
 start)
-  VS=${3:?vsize}; N=${4:?n}; BIN=${5:-normal}
+  VS=${3:?vsize}; N=${4:?n}; BIN=${5:-normal}; SYSTEM=${SYSTEM:-nezha}; EXTRA=${EXTRA:-}
   SELF=$L; [ "$ROLE" = follower ] && SELF=$F
   EXE=/tmp/nezha-rep; [ "$BIN" = race ] && EXE=/tmp/nezha-rep-race
   NEWEST=$(ls -t internal/raft/*.go cmd/nezha/*.go | head -1)
@@ -24,7 +25,7 @@ start)
   rm -rf "$D"; mkdir -p "$D"
   GB=$(awk -v n="$N" -v v="$VS" 'BEGIN{printf "%.6f", n*(20+10+v)/1073741824/3}')
   nohup "$EXE" -address "${SELF%:*}:3099" -internalAddress "$SELF" -peers "$L,$F" \
-      -data "$D" -gap 1000000 -system nezha -syncWAL -gcThresholdGB "$GB" -commitTimeoutS 60 \
+      -data "$D" -gap 1000000 -system "$SYSTEM" -syncWAL -gcThresholdGB "$GB" -commitTimeoutS 60 $EXTRA \
       > "$D/n.log" 2>&1 &
   echo $! > "$D/pid"
   sleep 1; kill -0 "$(cat "$D/pid")" 2>/dev/null && echo "STARTED $ROLE pid=$(cat "$D/pid") bin=$BIN gc=${GB}GB" || { echo "START_FAIL $ROLE"; tail -5 "$D/n.log"; exit 1; }
