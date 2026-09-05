@@ -100,6 +100,10 @@ var (
 	vizAddr_arg = flag.String("vizAddr", "", "listen address for the AVP placement visualiser, e.g. :8080 (empty = disabled)")
 
 	system_arg = flag.String("system", "", "system under test: original | pasv | dwisckey | lsm-raft | nezha-nogc | nezha (empty = use the individual flags below)")
+	// LSM-Raft baseline (lsmraft.go): the leader ships one span of flushed SSTables per
+	// sstSpanMB of applied values, or after sstIdleMs without writes.
+	sstSpanMB_arg = flag.Int("sstSpanMB", 32, "lsm-raft: applied value bytes per shipped SSTable span")
+	sstIdleMs_arg = flag.Int("sstIdleMs", 1000, "lsm-raft: cut the open span after this many ms without writes")
 
 	kvSeparation_arg = flag.Bool("kvSeparation", true, "keep values in the Raft log and store only offsets (false = baseline: values into RocksDB)")
 	// 真正的 Adaptive Value Placement：写入时按 value 大小决定放在哪里。
@@ -156,7 +160,8 @@ type KVServer struct {
 	reqMap    map[int]*OpContext // log index -> 请求上下文
 	seqMap    map[int64]int64    // 客户端id -> 客户端seq
 
-	lastAppliedIndex int // 已持久化存储的日志index
+	lastAppliedIndex int      // 已持久化存储的日志index
+	lsm              *lsmRaft // LSM-Raft baseline state; nil unless -system lsm-raft
 	kvrpc.UnimplementedKVServer
 	// resultCh  chan *kvrpc.PutInRaftResponse
 
@@ -1663,133 +1668,140 @@ func FindIndexInPeers(arr []string, target string) int {
 
 func (kvs *KVServer) applyLoop() {
 	for !kvs.killed() {
-		select {
-		case msg := <-kvs.applyCh:
-			// fmt.Printf("asdasd\n")
-			// 如果是安装快照
-			if msg.CommandValid {
-				// T4开始 - 实际存储操作开始
-				// t4Start := time.Now()
-				cmd := msg.Command
-				index := msg.CommandIndex
-				cmdTerm := msg.CommandTerm
-				offset := msg.Offset
-				// index = index-2
-				func() {
-					kvs.mu.Lock()
-					defer kvs.mu.Unlock()
-					// fmt.Printf("进入了fun\n")
-					// 更新已经应用到的日志
-					kvs.lastAppliedIndex = index
-					// fmt.Println("进入到applyLoop")
-					// 操作日志
-					op := cmd.(*raftrpc.DetailCod) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
+		msg := <-kvs.applyCh
+		if !msg.CommandValid {
+			continue
+		}
+		kvs.mu.Lock()
+		// In lsm-raft mode a follower holds committed entries and ingests the leader's
+		// SSTables instead of replaying them (lsmraft.go).
+		if kvs.lsm == nil || !kvs.lsmHoldOrApply(msg) {
+			kvs.applyCommand(msg)
+		}
+		kvs.mu.Unlock()
+	}
+}
 
-					if op.OpType == "TermLog" { // 需要进行类型断言才能访问结构体的字段，如果是leader开始第一个Term时发起的空指令，则不用执行。
-						kvs.persister.SetApplied(index) // no data for a no-op, but the applied index must advance or a restart replays it
-						return
-					}
+// applyCommand applies one committed entry to the store and wakes the client waiting on
+// it. Caller holds kvs.mu.
+func (kvs *KVServer) applyCommand(msg raft.ApplyMsg) {
+	cmd := msg.Command
+	index := msg.CommandIndex
+	cmdTerm := msg.CommandTerm
+	offset := msg.Offset
+	// 更新已经应用到的日志
+	kvs.lastAppliedIndex = index
+	// fmt.Println("进入到applyLoop")
+	// 操作日志
+	op := cmd.(*raftrpc.DetailCod) // 操作在server端的PutAppend函数中已经调用Raft的Start函数，将请求以Op的形式存入日志。
 
-					opCtx, existOp := kvs.reqMap[index] // 检查当前index对应的等待put的请求是否超时，即是否还在等待被apply
-					// prevSeq, existSeq := kvs.seqMap[op.ClientId] // 上一次该客户端发来的请求的序号
-					// _, existSeq := kvs.seqMap[op.ClientId] // 上一次该客户端发来的请求的序号
-					kvs.seqMap[op.ClientId] = op.SeqId // 更新服务器端，客户端请求的序列号
-					// fmt.Printf("op:%v---index%v\n",existOp,index)
-					if existOp { // 存在等待结果的apply日志的RPC, 那么判断状态是否与写入时一致，可能之前接受过该日志，但是身份不是leader了，该index对应的请求日志被别的leader同步日志时覆盖了。
-						// 虽然没超时，但是如果已经和刚开始写入的请求不一致了，那也不行。
-						if opCtx.op.Term != int32(cmdTerm) { //这里要用msg里面的CommandTerm而不是cmd里面的Term，因为当拿去到的是空指令时，其cmd里面的Term是0，会重复发生错误
-							// fmt.Printf("这里有问题吗,opCtx.op.Term:%v,op.Term:%v\n",opCtx.op.Term,op.Term)
-							opCtx.wrongLeader = true
-						}
-					}
+	if op.OpType == "TermLog" { // 需要进行类型断言才能访问结构体的字段，如果是leader开始第一个Term时发起的空指令，则不用执行。
+		kvs.persister.SetApplied(index) // no data for a no-op, but the applied index must advance or a restart replays it
+		if kvs.lsm != nil {
+			kvs.lsmAfterApply(index, "", nil)
+		}
+		return
+	}
 
-					// 只处理ID单调递增的客户端写请求
-					if op.OpType == OP_TYPE_PUT {
-						// fmt.Printf("kaishiput")
-						// if !existSeq || op.SeqId > prevSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
-						// if !existSeq {	//	如果要改就是改这个了，就不管序号，直接先执行。
-						// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
-						if op.SeqId%10000 == 0 {
-							fmt.Println("底层执行了Put请求，以及重置put操作时间")
-						}
-						kvs.lastPutTime = time.Now() // 更新put操作时间
+	opCtx, existOp := kvs.reqMap[index] // 检查当前index对应的等待put的请求是否超时，即是否还在等待被apply
+	// prevSeq, existSeq := kvs.seqMap[op.ClientId] // 上一次该客户端发来的请求的序号
+	// _, existSeq := kvs.seqMap[op.ClientId] // 上一次该客户端发来的请求的序号
+	kvs.seqMap[op.ClientId] = op.SeqId // 更新服务器端，客户端请求的序列号
+	// fmt.Printf("op:%v---index%v\n",existOp,index)
+	if existOp { // 存在等待结果的apply日志的RPC, 那么判断状态是否与写入时一致，可能之前接受过该日志，但是身份不是leader了，该index对应的请求日志被别的leader同步日志时覆盖了。
+		// 虽然没超时，但是如果已经和刚开始写入的请求不一致了，那也不行。
+		if opCtx.op.Term != int32(cmdTerm) { //这里要用msg里面的CommandTerm而不是cmd里面的Term，因为当拿去到的是空指令时，其cmd里面的Term是0，会重复发生错误
+			// fmt.Printf("这里有问题吗,opCtx.op.Term:%v,op.Term:%v\n",opCtx.op.Term,op.Term)
+			opCtx.wrongLeader = true
+		}
+	}
 
-						// 将整数编码为字节流并存入 LevelDB
-						// indexKey := make([]byte, 4)                            // 假设整数是 int32 类型
-						// kvs.persister.Put(op.Key,indexKey)
-						// binary.BigEndian.PutUint32(indexKey, uint32(op.Index)) // 这里注意是把op.Index放进去还是对应日志的entry.Command.Index，两者应该都一样
-						// kvs.persister.Put(op.Key, indexKey)                    // <key,idnex>,其中index是string类型
-						// addrs := kvs.raft.GetOffsets()		// 拿到raft层的offsets，这个可以优化用通道传输
-						// addr := addrs[op.Index]
-						// positionBytes := make([]byte, binary.MaxVarintLen64) // 相当于把地址（指向keysize开始处）压缩一下
-						// n := binary.PutVarint(positionBytes, offset)
-						// 只保留实际使用的字节
-						// positionBytes = positionBytes[:n]
-						// fmt.Printf("此时put进去的offsetL%v\n", offset)
-						// fmt.Printf("转换后的offset：%v\n", positionBytes)
+	// 只处理ID单调递增的客户端写请求
+	if op.OpType == OP_TYPE_PUT {
+		// fmt.Printf("kaishiput")
+		// if !existSeq || op.SeqId > prevSeq { // 如果是客户端第一次发请求，或者发生递增的请求ID，即比上次发来请求的序号大，那么接受它的变更
+		// if !existSeq {	//	如果要改就是改这个了，就不管序号，直接先执行。
+		// kvs.kvStore[op.Key] = op.Value		// ----------------------------------------------
+		if op.SeqId%10000 == 0 {
+			fmt.Println("底层执行了Put请求，以及重置put操作时间")
+		}
+		kvs.lastPutTime = time.Now() // 更新put操作时间
 
-						tRocks := time.Now()
-						if kvs.inlinePlacement && len(op.Value) < kvs.inlineThreshold {
-							// 小值直接落在存储引擎里，不进 valuelog：读路径因此缩短为一次点查，
-							// 且 GC 无需再为它们做一次搬运。
-							recordPlacement(len(op.Value), true)
-							kvs.persister.PutInlineApplied(op.Key, op.Value, index)
-						} else if !kvs.kvSeparation {
-							// 基线：value 本身写进 RocksDB。于是同一份 value 被持久化两次
-							// （Raft 日志 + LSM），而后还要被 compaction 反复搬运。
-							kvs.persister.PutValueApplied(op.Key, op.Value, index)
-						} else if int(msg.FileVersion) == kvs.numGC { // 对于写入日志时，又进行了 GC ，需将偏移量存新文件
-							// 用 msg 带上来的版本，而不是命令自带的 op.FileVersion：
-							// 后者在"决定写入"时记下，而 offset 在"实际写入"时才产生，
-							// 两个时刻之间 GC 可能已经换过文件（切换走 logMu，拦不住持
-							// rf.mu 的写入路径）。msg.FileVersion 与 offset 同源同锁，
-							// 是唯一能保证配套的那个。
-							recordPlacement(len(op.Value), false)
-							kvs.persister.PutOffsetApplied(op.Key, offset, index) // row and applied index in one batch
-						} else { // 否则存旧文件
-							kvs.oldPersister.Put_opt(op.Key, offset) //  Nezha
-							// Row in the old index, marker in the current one: two writes, not atomic.
-							// Data first, marker second, so a crash in between only replays this entry
-							// once on restart, and the replay is idempotent (same key, same offset).
-							kvs.persister.SetApplied(index)
-							// kvs.oldPersister.Put(op.Key, op.Value)		//  original
-						}
-						recordApplyStore(time.Since(tRocks))
-					} else { // OP_TYPE_GET
-						if existOp { // 如果是GET请求，只要没超时，都可以进行幂等处理
-							// opCtx.value, opCtx.keyExist = kvs.kvStore[op.Key]	// --------------------------------------------
-							// value := kvs.persister.Get(op.Key)		leveldb拿取value
+		// 将整数编码为字节流并存入 LevelDB
+		// indexKey := make([]byte, 4)                            // 假设整数是 int32 类型
+		// kvs.persister.Put(op.Key,indexKey)
+		// binary.BigEndian.PutUint32(indexKey, uint32(op.Index)) // 这里注意是把op.Index放进去还是对应日志的entry.Command.Index，两者应该都一样
+		// kvs.persister.Put(op.Key, indexKey)                    // <key,idnex>,其中index是string类型
+		// addrs := kvs.raft.GetOffsets()		// 拿到raft层的offsets，这个可以优化用通道传输
+		// addr := addrs[op.Index]
+		// positionBytes := make([]byte, binary.MaxVarintLen64) // 相当于把地址（指向keysize开始处）压缩一下
+		// n := binary.PutVarint(positionBytes, offset)
+		// 只保留实际使用的字节
+		// positionBytes = positionBytes[:n]
+		// fmt.Printf("此时put进去的offsetL%v\n", offset)
+		// fmt.Printf("转换后的offset：%v\n", positionBytes)
 
-							// 从 LevelDB 中获取键对应的值，并解码为整数
-							positionBytes, err := kvs.persister.Get_opt(op.Key)
-							if err != nil {
-								fmt.Println("拿取value有问题")
-								panic(err)
-							}
-							// positionBytes := kvs.persister.Get(op.Key)
-							// position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
-							if positionBytes == -1 { //  说明leveldb中没有该key
-								opCtx.keyExist = false
-								opCtx.value = raft.NoKey
-							} else {
-								_, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
-								if err != nil {
-									fmt.Println("拿取value有问题")
-									panic(err)
-								}
-								opCtx.value = value
-							}
-						}
-					}
+		tRocks := time.Now()
+		if kvs.inlinePlacement && len(op.Value) < kvs.inlineThreshold {
+			// 小值直接落在存储引擎里，不进 valuelog：读路径因此缩短为一次点查，
+			// 且 GC 无需再为它们做一次搬运。
+			recordPlacement(len(op.Value), true)
+			kvs.persister.PutInlineApplied(op.Key, op.Value, index)
+		} else if !kvs.kvSeparation {
+			// 基线：value 本身写进 RocksDB。于是同一份 value 被持久化两次
+			// （Raft 日志 + LSM），而后还要被 compaction 反复搬运。
+			kvs.persister.PutValueApplied(op.Key, op.Value, index)
+			if kvs.lsm != nil {
+				kvs.lsmAfterApply(index, kvs.persister.PadKey(op.Key), []byte(op.Value))
+			}
+		} else if int(msg.FileVersion) == kvs.numGC { // 对于写入日志时，又进行了 GC ，需将偏移量存新文件
+			// 用 msg 带上来的版本，而不是命令自带的 op.FileVersion：
+			// 后者在"决定写入"时记下，而 offset 在"实际写入"时才产生，
+			// 两个时刻之间 GC 可能已经换过文件（切换走 logMu，拦不住持
+			// rf.mu 的写入路径）。msg.FileVersion 与 offset 同源同锁，
+			// 是唯一能保证配套的那个。
+			recordPlacement(len(op.Value), false)
+			kvs.persister.PutOffsetApplied(op.Key, offset, index) // row and applied index in one batch
+		} else { // 否则存旧文件
+			kvs.oldPersister.Put_opt(op.Key, offset) //  Nezha
+			// Row in the old index, marker in the current one: two writes, not atomic.
+			// Data first, marker second, so a crash in between only replays this entry
+			// once on restart, and the replay is idempotent (same key, same offset).
+			kvs.persister.SetApplied(index)
+			// kvs.oldPersister.Put(op.Key, op.Value)		//  original
+		}
+		recordApplyStore(time.Since(tRocks))
+	} else { // OP_TYPE_GET
+		if existOp { // 如果是GET请求，只要没超时，都可以进行幂等处理
+			// opCtx.value, opCtx.keyExist = kvs.kvStore[op.Key]	// --------------------------------------------
+			// value := kvs.persister.Get(op.Key)		leveldb拿取value
 
-					// 唤醒挂起的RPC
-					if existOp { // 如果等待apply的请求还没超时
-						// fmt.Printf("666")
-						close(opCtx.committed)
-					}
-				}()
+			// 从 LevelDB 中获取键对应的值，并解码为整数
+			positionBytes, err := kvs.persister.Get_opt(op.Key)
+			if err != nil {
+				fmt.Println("拿取value有问题")
+				panic(err)
+			}
+			// positionBytes := kvs.persister.Get(op.Key)
+			// position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
+			if positionBytes == -1 { //  说明leveldb中没有该key
+				opCtx.keyExist = false
+				opCtx.value = raft.NoKey
+			} else {
+				_, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
+				if err != nil {
+					fmt.Println("拿取value有问题")
+					panic(err)
+				}
+				opCtx.value = value
 			}
 		}
+	}
+
+	// 唤醒挂起的RPC
+	if existOp { // 如果等待apply的请求还没超时
+		// fmt.Printf("666")
+		close(opCtx.committed)
 	}
 }
 
@@ -1869,11 +1881,11 @@ func main() {
 		kvs.kvSeparation, kvs.gcEnabled = true, false
 		kvs.extraPersistence = true
 	case "lsm-raft":
-		// follower 侧才有差异，单节点跑不出与 original 的区别。
+		// Original plus SSTable shipping to followers (lsmraft.go).
 		kvs.kvSeparation, kvs.gcEnabled = false, false
+		kvs.lsm = newLSMRaft(dataDir, int64(*sstSpanMB_arg)<<20, time.Duration(*sstIdleMs_arg)*time.Millisecond, &kvs.mu)
 		if len(peers) <= 1 {
-			fmt.Println("[SYSTEM] 提示：lsm-raft 的差异全在 follower 侧，" +
-				"单节点下等价于 original，需多节点才有意义")
+			fmt.Println("[SYSTEM] lsm-raft differs from original only on followers; a single node behaves like original")
 		}
 	case "nezha-nogc":
 		kvs.kvSeparation, kvs.gcEnabled = true, false
@@ -2040,6 +2052,9 @@ func main() {
 	wg.Add(1 + 1)
 	raftStateFile := filepath.Join(dataDir, "data", "raft_state.json")
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, raftStateFile) // construct only; loops start below
+	if kvs.lsm != nil {
+		kvs.raft.SetSSTableInstaller(kvs.lsm.incomingDir, kvs.lsmInstall)
+	}
 	if kvs.extraPersistence {
 		// Dwisckey：value 在 Raft 日志之外再落一次盘。文件与 valuelog 同目录，
 		// 只写不读，纯粹为了把那一次持久化的代价计入测量。
@@ -2064,6 +2079,9 @@ func main() {
 	kvs.raft.Gap = gap
 	kvs.raft.SyncTime = syncTime
 	kvs.raft.StartLoops(ctx)
+	if kvs.lsm != nil {
+		go kvs.lsmTicker()
+	}
 	go kvs.RegisterKVServer(ctx, kvs.address)
 	if kvs.gcInProgress {
 		go kvs.resumeInterruptedGC()
