@@ -118,6 +118,10 @@ type Raft struct {
 
 	applyCh chan ApplyMsg // 应用层的提交队列
 	pools   []pool.Pool   // 用于日志同步的连接池
+	// LSM-Raft baseline: where incoming SSTable spans are assembled and who ingests them
+	// (see sstable.go). Nil installer = the RPC is refused.
+	sstIncomingDir string
+	sstInstaller   SSTableInstaller
 	// kvrpc.UnimplementedKVServer
 	raftrpc.UnimplementedRaftServer
 	LastAppendTime time.Time
@@ -263,6 +267,14 @@ func (rf *Raft) GetLeaderId() (leaderId int32) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	return int32(rf.leaderId)
+}
+
+// IsLeader reports whether this node currently holds the leader role. Prefer it over
+// comparing GetLeaderId with rf.me: leaderId 0 also stands for "unknown".
+func (rf *Raft) IsLeader() bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.role == ROLE_LEADER
 }
 
 func (rf *Raft) GetApplyIndex() (applyindex int) {
