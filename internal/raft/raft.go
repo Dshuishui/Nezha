@@ -135,6 +135,15 @@ type Raft struct {
 	SyncTime       int
 	SyncChans      []chan string
 
+	// replicaWake 唤醒 appendEntriesLoop：某个 peer 的一轮复制有了回执，或本节点刚当选。
+	// 容量 1，多次信号合并成一次唤醒即可——循环醒来后会把所有 SyncChans 排空。
+	replicaWake chan struct{}
+
+	// heardFromLeader 表示本节点曾收到过某个 leader 的 AppendEntries/心跳。
+	// 只用于 §4.2.3 的防打扰判据，一旦置真不再复位——它回答的是"这个集群里有没有过
+	// leader"，而"多久之前"由 LastAppendTime 回答。
+	heardFromLeader bool
+
 	// 两者都只在测试里赋值，且必须在 appendEntriesLoop 起来之前：
 	// sendAppend 替换 doAppendEntries，appendRoundBudget 覆盖看门狗时限（<=0 用默认值）。
 	sendAppend        func(peerId int)
@@ -296,6 +305,23 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 	reply.Term = int32(rf.currentTerm)
 	reply.VoteGranted = false
 
+	// Raft 论文 §4.2.3 的防打扰规则：最小选举超时之内确认过还有 leader 在工作，
+	// 就整个忽略这次拉票——既不更新任期，也不投票。
+	//
+	// 少了这条，一个刚从卡顿里回来的节点每次拉票都能把健康的 leader 拉下台：它自己
+	// 选不上（日志更旧，granted=false），却因为任期更高而迫使 leader 降级，leader 随后
+	// 超时重新当选，它再拉一次票……实测 GC 期间 7 秒内换届 4 次，全是这么来的。
+	//
+	// leader 用自己发出 AppendEntries 的时刻判断，follower 用收到的时刻；
+	// 刚启动、还没和任何 leader 打过交道的节点不适用本规则（heardFromLeader 为假），
+	// 否则首次选举会被各节点的启动时差平白推迟。
+	knowsLeader := rf.role == ROLE_LEADER || rf.heardFromLeader
+	if since := time.Since(rf.LastAppendTime); knowsLeader && since < minElectionTimeout {
+		util.DPrintf("RaftNode[%d] 忽略 [%d] 的拉票(term=%d)：%v 前刚与 leader 通过消息",
+			rf.me, args.CandidateId, args.Term, since.Round(time.Millisecond))
+		return reply, nil
+	}
+
 	// 任期不如我大，拒绝投票
 	if args.Term < int32(rf.currentTerm) {
 		return reply, nil
@@ -358,6 +384,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	logEntrys := args.Entries
 	// if len(logEntrys) != 0 { // 除去普通的心跳
 	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
+	rf.heardFromLeader = true      // §4.2.3 的判据之一：这个集群里确实有 leader 在工作
 	// fmt.Println("重置lastAppendTime")
 	// }
 
@@ -498,6 +525,7 @@ func (rf *Raft) HeartbeatInRaft(ctx context.Context, args *raftrpc.AppendEntries
 	reply.ConflictIndex = -1
 	reply.ConflictTerm = -1
 	rf.LastAppendTime = time.Now() // 检查有没有收到日志同步，是不是自己的连接断掉了
+	rf.heardFromLeader = true      // §4.2.3 的判据之一：这个集群里确实有 leader 在工作
 	if args.Term < int32(rf.currentTerm) {
 		return reply, nil
 	}
@@ -746,7 +774,7 @@ func (rf *Raft) electionLoop() {
 			defer rf.mu.Unlock()
 			// fmt.Println("释放electionLoop的锁1或者")
 			now := time.Now()
-			timeout := time.Duration(3000+rand.Int31n(150)) * time.Millisecond // 超时随机化 10s-10s150ms
+			timeout := minElectionTimeout + time.Duration(rand.Int31n(int32(electionTimeoutJitter/time.Millisecond)))*time.Millisecond
 			elapses := now.Sub(rf.lastActiveTime)
 			// follower -> candidates
 			if rf.role == ROLE_FOLLOWER {
@@ -849,6 +877,7 @@ func (rf *Raft) electionLoop() {
 				if voteCount > len(rf.peers)/2 {
 					rf.role = ROLE_LEADER
 					util.DPrintf("RaftNode[%d] Candidate -> Leader", rf.me)
+					rf.wakeReplication() // 立刻开工，不必等复制循环的兜底 tick
 
 					rf.leaderId = rf.me
 					rf.nextIndex = make([]int, len(rf.peers))
@@ -898,6 +927,22 @@ func (rf *Raft) updateCommitIndex() {
 	// util.DPrintf("RaftNode[%d] updateCommitIndex, newCommitIndex[%d] matchIndex[%v]", rf.me, rf.commitIndex, sortedMatchIndex)
 }
 
+// armSync 归还一轮复制的回执，并唤醒复制循环。
+// 所有写 SyncChans 的地方都走这里：漏掉唤醒只会让那个 peer 等到下一次兜底醒来，
+// 漏掉回执则会让它的复制链彻底熄火（见 appendEntriesLoop 的注释）。
+func (rf *Raft) armSync(peerId int, val string) {
+	rf.SyncChans[peerId] <- val
+	rf.wakeReplication()
+}
+
+// wakeReplication 叫醒 appendEntriesLoop。非阻塞：信号只表示"有活干"。
+func (rf *Raft) wakeReplication() {
+	select {
+	case rf.replicaWake <- struct{}{}:
+	default:
+	}
+}
+
 // 已兼容snapshot
 func (rf *Raft) doAppendEntries(peerId int) {
 	var buffer bytes.Buffer
@@ -931,7 +976,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 		util.DPrintf("RaftNode[%d] peer[%d] nextIndex[%d] 落后于已压缩点[%d]，跳过本轮日志同步",
 			rf.me, peerId, rf.nextIndex[peerId], rf.lastIncludedIndex)
 		rf.mu.Unlock()
-		go func(id int) { rf.SyncChans[id] <- strconv.Itoa(id) }(peerId)
+		go func(id int) { rf.armSync(id, strconv.Itoa(id)) }(peerId)
 		return
 	}
 
@@ -943,7 +988,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 			util.DPrintf("RaftNode[%d] peer[%d] PrevLogIndex[%d] 已压缩，跳过本轮日志同步",
 				rf.me, peerId, args.PrevLogIndex)
 			rf.mu.Unlock()
-			go func(id int) { rf.SyncChans[id] <- strconv.Itoa(id) }(peerId)
+			go func(id int) { rf.armSync(id, strconv.Itoa(id)) }(peerId)
 			return
 		}
 		args.PrevLogTerm = prevTerm
@@ -993,7 +1038,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 
 			// 如果不是rpc前的leader状态了，那么啥也别做了，可能遇到了term更大的server，因为rpc的时候是没有加锁的
 			if rf.currentTerm != int(args.Term) {
-				rf.SyncChans[peerId] <- "NotLeader"
+				rf.armSync(peerId, "NotLeader")
 				fmt.Printf("rf.currentTerm-%v,args.Term-%v\n", rf.currentTerm, args.Term)
 				return
 			}
@@ -1004,7 +1049,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				rf.votedFor = -1
 				rf.persistHardState() // Raft 要求 term/votedFor 落盘后再应答或发起 RPC
 				// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
-				rf.SyncChans[peerId] <- "NotLeader"
+				rf.armSync(peerId, "NotLeader")
 				fmt.Printf("reply.Term-%v,rf.currentTerm-%v\n", reply.Term, rf.currentTerm)
 				return
 			}
@@ -1047,10 +1092,10 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
 			}
 			// rf.SyncChans[peerId] <- rf.peers[peerId]
-			rf.SyncChans[peerId] <- strconv.Itoa(peerId)
+			rf.armSync(peerId, strconv.Itoa(peerId))
 		} else {
 			// rf.SyncChans[peerId] <- rf.peers[peerId]	// 同步日志失败也要重新发起日志同步
-			rf.SyncChans[peerId] <- strconv.Itoa(peerId)
+			rf.armSync(peerId, strconv.Itoa(peerId))
 		}
 	}(peerId)
 }
@@ -1149,6 +1194,17 @@ func (rf *Raft) GetReadIndex() (commitindex int, isleader bool) {
 	return -1, false // 表示失败，同时也不是合格的leader
 }
 
+// replicaIdleTick 是复制循环在没有任何回执时的兜底醒来间隔。
+// 有 replicaWake 唤醒时用不到它，它只防信号与检查错开导致的睡死。
+const replicaIdleTick = 20 * time.Millisecond
+
+// 选举超时：最小值加一段随机抖动，避免多个节点同时发起选举。
+// minElectionTimeout 同时是 Raft 论文 §4.2.3 防打扰规则的判据（见 RequestVote）。
+const (
+	minElectionTimeout    = 3000 * time.Millisecond
+	electionTimeoutJitter = 150 * time.Millisecond
+)
+
 // defaultAppendRoundBudget 是一轮复制在被判定为"卡住、需要重发"之前的时限。
 // 取得比 sendAppendEntries 的 5 秒 RPC 上限宽，好让正常的慢回复自己走完。
 const defaultAppendRoundBudget = 8 * time.Second
@@ -1206,10 +1262,12 @@ func (rf *Raft) appendEntriesLoop() {
 				}
 				wasLeader = false
 			}
+			rf.waitReplicaWake(replicaIdleTick)
 			continue
 		}
 		wasLeader = true
 		if empty {
+			rf.waitReplicaWake(replicaIdleTick)
 			continue
 		}
 
@@ -1241,6 +1299,21 @@ func (rf *Raft) appendEntriesLoop() {
 				send(i)
 			}
 		}
+
+		// 等回执，别空转。此前这里没有任何等待，循环每次迭代都要取一次 rf.mu，
+		// 与写入路径争同一把锁，白烧一个核；follower 上更是纯粹的空转。
+		// 回执一到就唤醒，所以复制延迟不受影响；兜底的 tick 只防信号错过。
+		rf.waitReplicaWake(replicaIdleTick)
+	}
+}
+
+// waitReplicaWake 等一次复制唤醒，最多等 d。
+func (rf *Raft) waitReplicaWake(d time.Duration) {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-rf.replicaWake:
+	case <-t.C:
 	}
 }
 
@@ -1443,6 +1516,7 @@ func Make(peers []string, me int,
 	for i := 0; i < len(peers); i++ {
 		rf.SyncChans = append(rf.SyncChans, make(chan string, 1000))
 	}
+	rf.replicaWake = make(chan struct{}, 1)
 
 	rf.role = ROLE_FOLLOWER
 	rf.leaderId = 0

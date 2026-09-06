@@ -36,6 +36,7 @@ func newLoopHarness(t *testing.T, peers int, budget time.Duration) *loopHarness 
 	for i := 0; i < peers; i++ {
 		h.rf.SyncChans = append(h.rf.SyncChans, make(chan string, 1000))
 	}
+	h.rf.replicaWake = make(chan struct{}, 1)
 	// lastIndex()>0 是循环开工的前提（lastIncludedIndex+len(log)），给一条日志占位。
 	h.rf.log = []*raftrpc.LogEntry{{Term: 1}}
 	h.rf.sendAppend = func(peerId int) { h.sends[peerId].Add(1) }
@@ -86,7 +87,7 @@ func TestChainSurvivesNotLeaderReply(t *testing.T) {
 	h.waitSends(t, 1, 0, "首轮点火")
 
 	before := h.sends[1].Load()
-	h.rf.SyncChans[1] <- "NotLeader"
+	h.rf.armSync(1, "NotLeader")
 	h.waitSends(t, 1, before, "收到 NotLeader 之后")
 }
 
@@ -100,8 +101,8 @@ func TestChainRestartsAfterReelection(t *testing.T) {
 
 	// 卸任，并模拟"回执迟到"：这些值属于上个任期，不能被下个任期当作已回执。
 	h.stepDown()
-	h.rf.SyncChans[1] <- "NotLeader"
-	h.rf.SyncChans[2] <- "2"
+	h.rf.armSync(1, "NotLeader")
+	h.rf.armSync(2, "2")
 	time.Sleep(50 * time.Millisecond)
 
 	b1, b2 := h.sends[1].Load(), h.sends[2].Load()
