@@ -32,3 +32,6 @@ tla/**/states/
 # Working log and session hand-off notes stay local (see notes/README.md)
 notes/
 CONTEXT-*.md
+
+# per-repo assistant notes stay local
+CLAUDE.md
