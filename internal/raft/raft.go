@@ -1219,6 +1219,10 @@ func (rf *Raft) GetReadIndex() (commitindex int, isleader bool) {
 	return -1, false // 表示失败，同时也不是合格的leader
 }
 
+// heartbeatInterval 是 leader 无条件向每个 peer 发心跳的间隔。
+// 必须远小于 minElectionTimeout：follower 的选举计时靠收到 leader 的消息来重置。
+const heartbeatInterval = 500 * time.Millisecond
+
 // replicaIdleTick 是复制循环在没有任何回执时的兜底醒来间隔。
 // 有 replicaWake 唤醒时用不到它，它只防信号与检查错开导致的睡死。
 const replicaIdleTick = 20 * time.Millisecond
@@ -1599,6 +1603,60 @@ func Make(peers []string, me int,
 
 // StartLoops starts the gRPC server and every background loop. Call it only after log
 // recovery has finished.
+// heartbeatLoop 按固定间隔发心跳，与日志复制分开。
+//
+// 复制链是"一轮回执触发下一轮"，同一个 peer 同时只有一轮在飞，心跳间隔因此等于
+// 一次 AppendEntries 的往返。三个节点同时 GC 时磁盘被打满，实测一次往返能到 5~6 秒，
+// 超过 3 秒的选举超时：follower 判定失联、升任期发起选举，leader 从回复里看到更高
+// 任期只能降级，白白换一次届。
+//
+// 日志复制慢是可以接受的——写入本来就在等磁盘；但"集群里还有没有 leader"这件事
+// 不该由磁盘快慢来回答。所以心跳走独立的定时器和独立的轻量 RPC：HeartbeatInRaft
+// 不带日志、不写盘，只刷新对方的选举计时。
+func (rf *Raft) heartbeatLoop() {
+	tick := time.NewTicker(heartbeatInterval)
+	defer tick.Stop()
+	for !rf.killed() {
+		<-tick.C
+
+		rf.mu.Lock()
+		if rf.role != ROLE_LEADER {
+			rf.mu.Unlock()
+			continue
+		}
+		args := raftrpc.AppendEntriesInRaftRequest{
+			Term:         int32(rf.currentTerm),
+			LeaderId:     int32(rf.me),
+			LeaderCommit: int32(rf.commitIndex),
+		}
+		// leader 自己的"最近与 leader 通过消息"就是它自己发出去的这一刻，
+		// §4.2.3 的判据要用（见 RequestVote）。复制链卡住时它不会被刷新，
+		// 那正是不该再拿它当"leader 健在"证据的时候。
+		rf.LastAppendTime = time.Now()
+		rf.mu.Unlock()
+
+		for peerId := 0; peerId < len(rf.peers); peerId++ {
+			if peerId == rf.me {
+				continue
+			}
+			go func(id int) {
+				reply, ok := rf.sendHeartbeat(rf.peers[id], &args, rf.pools[id])
+				if !ok {
+					return
+				}
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+				if reply.Term > int32(rf.currentTerm) { // 任期落后，退位
+					rf.role = ROLE_FOLLOWER
+					rf.currentTerm = int(reply.Term)
+					rf.votedFor = -1
+					rf.persistHardState()
+				}
+			}(peerId)
+		}
+	}
+}
+
 func (rf *Raft) StartLoops(ctx context.Context) {
 	rf.mu.Lock()
 	rf.lastActiveTime = time.Now() // recovery may have taken a while; do not time out immediately
@@ -1609,6 +1667,8 @@ func (rf *Raft) StartLoops(ctx context.Context) {
 	go rf.electionLoop()
 	// sync
 	go rf.appendEntriesLoop()
+	// 心跳：与复制分开，保证"还有没有 leader"这件事不受磁盘快慢影响
+	go rf.heartbeatLoop()
 	// apply
 	go rf.applyLogLoop()
 	// 检查有没有收到日志同步的消息，若没有则连接有问题
