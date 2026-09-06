@@ -31,9 +31,22 @@ start)
   GB=$(awk -v n="$N" -v v="$VS" 'BEGIN{printf "%.6f", n*(20+10+v)/1073741824/3}')
   echo "$PORT $IPORT $GB $SYSTEM $EXTRA" > "$D/args"   # restart 时原样复用
   # shellcheck disable=SC2086
-  nohup env ${GC_PAUSE_MS:+NEZHA_GC_PAUSE_MS=$GC_PAUSE_MS} "$EXE" -address "$SELF_IP:$PORT" -internalAddress "$SELF_IP:$IPORT" -peers "$PEERS" \
-      -data "$D" -gap 1000000 -system "$SYSTEM" -syncWAL -gcThresholdGB "$GB" -commitTimeoutS 60 $EXTRA \
-      > "$D/n.log" 2>&1 &
+  if [ "${TS:-0}" = 1 ]; then
+    # A FIFO, not process substitution: with >(...) the timestamper inherits the caller's
+    # stdout, so an ssh session that starts a node never returns (it printed STARTED and
+    # then hung for the life of the node). Here every fd of both processes is a file or the
+    # FIFO, so the SSH channel closes as soon as start does.
+    rm -f "$D/pipe"; mkfifo "$D/pipe"
+    nohup perl -MTime::HiRes=time -ne 'BEGIN{$|=1} my $n=time; my @t=localtime($n); printf "%02d:%02d:%02d.%03d %s",$t[2],$t[1],$t[0],($n-int($n))*1000,$_' \
+        < "$D/pipe" > "$D/n.log" 2>/dev/null &
+    nohup env ${GC_PAUSE_MS:+NEZHA_GC_PAUSE_MS=$GC_PAUSE_MS} "$EXE" -address "$SELF_IP:$PORT" -internalAddress "$SELF_IP:$IPORT" -peers "$PEERS" \
+        -data "$D" -gap 1000000 -system "$SYSTEM" -syncWAL -gcThresholdGB "$GB" -commitTimeoutS 60 $EXTRA \
+        < /dev/null > "$D/pipe" 2>&1 &
+  else
+    nohup env ${GC_PAUSE_MS:+NEZHA_GC_PAUSE_MS=$GC_PAUSE_MS} "$EXE" -address "$SELF_IP:$PORT" -internalAddress "$SELF_IP:$IPORT" -peers "$PEERS" \
+        -data "$D" -gap 1000000 -system "$SYSTEM" -syncWAL -gcThresholdGB "$GB" -commitTimeoutS 60 $EXTRA \
+        > "$D/n.log" 2>&1 &
+  fi
   echo $! > "$D/pid"; sleep 1
   kill -0 "$(cat "$D/pid")" 2>/dev/null && echo "STARTED node$IDX $SELF_IP:$PORT pid=$(cat "$D/pid") bin=$BIN" || { echo "START_FAIL node$IDX"; tail -3 "$D/n.log"; exit 1; }
   ;;
@@ -59,17 +72,30 @@ kill9) kill -9 "$(cat "$D/pid")" 2>/dev/null; sleep 1; kill -0 "$(cat "$D/pid")"
 stop)  kill "$(cat "$D/pid")" 2>/dev/null; sleep 1; kill -9 "$(cat "$D/pid")" 2>/dev/null; echo "STOPPED node$IDX" ;;
 report)
   alive=no; kill -0 "$(cat "$D/pid")" 2>/dev/null && alive=yes
-  gc=$(cat "$D"/n*.log | grep -c '垃圾回收完成') || gc=0
+  # "轮垃圾回收完成", not "垃圾回收完成": the latter also matches the banner line that
+  # precedes it, so a single round used to be reported as two.
+  gc=$(cat "$D"/n*.log | grep -c '轮垃圾回收完成') || gc=0
   races=$(cat "$D"/n*.log | grep -c 'WARNING: DATA RACE') || races=0
   err=$(errlines | wc -l | tr -d ' ')
   cand=$(cat "$D"/n*.log | grep -c 'Candidate\|3秒没有收到') || cand=0
+  silent=$(cat "$D"/n*.log | grep -c '3秒没有收到') || silent=0
+  elect=$(cat "$D"/n*.log | grep -c 'Follower -> Candidate') || elect=0
+  won=$(cat "$D"/n*.log | grep -c 'Candidate -> Leader') || won=0
+  stalls=$(cat "$D"/n*.log | grep -c 'LOCK-STALL') || stalls=0
+  term=$(cat "$D"/n*.log | grep -o 'currentTerm\[[0-9]*\]' | tail -1 | grep -o '[0-9]*'); term=${term:-0}
   # LSM-Raft: spans cut as leader / ingested as follower, with the last index of each
   cut=$(cat "$D"/n*.log | grep -c 'LSM-Raft\] span \[.*\] cut') || cut=0
   lastcut=$(cat "$D"/n*.log | grep -o 'LSM-Raft\] span \[[0-9]*,[0-9]*\] cut' | tail -1 | grep -o ',[0-9]*' | tr -d ,); lastcut=${lastcut:-0}
   ing=$(cat "$D"/n*.log | grep -c 'LSM-Raft\] ingested span') || ing=0
   lasting=$(cat "$D"/n*.log | grep -o 'LSM-Raft\] ingested span \[[0-9]*,[0-9]*\]' | tail -1 | grep -o ',[0-9]*' | tr -d ,); lasting=${lasting:-0}
   replay=$(cat "$D"/n*.log | grep -c 'LSM-Raft\].*replaying') || replay=0
-  echo "REPORT node$IDX alive=$alive gc_done=$gc races=$races err_lines=$err silent_leader_msgs=$cand lsm_cut=$cut lsm_lastcut=$lastcut lsm_ingested=$ing lsm_lastingested=$lasting lsm_replays=$replay"
+  echo "REPORT node$IDX alive=$alive gc_done=$gc races=$races err_lines=$err silent_leader_msgs=$cand silent=$silent elections=$elect won=$won lock_stalls=$stalls term=$term lsm_cut=$cut lsm_lastcut=$lastcut lsm_ingested=$ing lsm_lastingested=$lasting lsm_replays=$replay"
   errlines | grep -v "DATA RACE" | head -3 | cut -c1-160
+  ;;
+timeline)
+  # GC start/end, heartbeat silence, and every role change, in log order. Needs TS=1 at
+  # start for the fmt.Printf lines (GC, "3秒没有收到") to carry a time of their own.
+  cat "$D"/n*.log | grep -E 'Starting garbage collection|垃圾回收完成|垃圾回收出现了错误|GC-PHASE|LOCK-STALL|3秒没有收到|Follower -> Candidate|Candidate -> Leader' \
+    | sed "s/^/node$IDX /"
   ;;
 esac

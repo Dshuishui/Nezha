@@ -308,13 +308,23 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 
 	// fsync after Flush: the caller deletes the source log on nil, so the merged file must be
 	// on disk first (same reasoning as in GC.go for round one).
+	//
+	// Each step is timed and reported: a GC round that stalls the node long enough for
+	// followers to call an election has to be pinned to one step, and the merge progress
+	// lines alone cannot separate "still merging" from "blocked in fsync".
+	tMerge := time.Since(startTime)
+	tStep := time.Now()
 	err = writer.Flush()
 	if err != nil {
 		return fmt.Errorf("failed to flush writer: %v", err)
 	}
+	tFlush := time.Since(tStep)
+	tStep = time.Now()
 	if err := mergedFile.Sync(); err != nil {
 		return fmt.Errorf("failed to fsync merged file: %v", err)
 	}
+	tSync := time.Since(tStep)
+	tStep = time.Now()
 
 	// ============= 直接构建SortedFileIndex对象，避免AnotherCreateIndex =============
 
@@ -332,6 +342,8 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 	// 预热缓存
 	// kvs.warmupCache(mergedSortedFilePath)
 
+	tIndex := time.Since(tStep)
+	tStep = time.Now()
 	fmt.Println("建立了索引，得到了针对已排序文件的完整索引")
 	kvs.filePool, err = NewFileDescriptorPool(mergedSortedFilePath, 50)
 	if err != nil {
@@ -339,6 +351,10 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 		panic("创建文件描述符池失败")
 	}
 	fmt.Println("创建文件描述符池成功")
+	fmt.Printf("[GC-PHASE] round=%d merge=%v flush=%v fsync=%v index=%v filepool=%v bytes=%d\n",
+		kvs.numGC, tMerge.Round(time.Millisecond), tFlush.Round(time.Millisecond),
+		tSync.Round(time.Millisecond), tIndex.Round(time.Millisecond),
+		time.Since(tStep).Round(time.Millisecond), currentOffset)
 
 	kvs.anotherEndGC = true
 	kvs.switchedPersister = nil // 本轮已完整结束，重入标记随之作废
