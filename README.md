@@ -331,22 +331,28 @@ Nezha/
 ├── go.mod / go.sum            # Go module
 │
 ├── cmd/                       # Executables
-│   ├── nezha/                 # The KV server (Raft + key-value separation)
-│   │   ├── FlexSync.go        # gRPC service, Raft integration, apply loop
-│   │   ├── GC.go              # First garbage-collection round (value-log rewrite)
-│   │   ├── AnotherGC.go       # Subsequent GC rounds (merge into the sorted file)
-│   │   ├── recovery.go        # Crash recovery: state file, log replay, GC resume
-│   │   ├── inlinecache.go     # Inline small-value cache (AVP)
-│   │   ├── sparseindex.go     # Sparse index over the sorted value file
-│   │   └── filePool.go        # File handle pool
+│   ├── nezha/                 # The node binary: flags -> kvstore.Config, run until SIGTERM
 │   ├── bench/                 # Benchmark tools, one main per directory (see bench/README.md)
 │   └── ycsb/                  # YCSB workloads A, D, E, F and load scripts
 │
 ├── internal/                  # Libraries private to this module
+│   ├── kvstore/               # The node: Raft-replicated KV store with key-value separation
+│   │   ├── server.go          # KVServer, Config wiring (New), lifecycle (Run)
+│   │   ├── config.go          # Config and the -system presets
+│   │   ├── service.go         # Client-facing gRPC service (Put/Get/Scan)
+│   │   ├── apply.go           # Apply loop: committed entries -> store rows
+│   │   ├── read.go            # Read paths over store, value log and sorted files
+│   │   ├── gcloop.go          # GC trigger
+│   │   ├── gc_first.go        # First GC round (value-log rewrite into a sorted file)
+│   │   ├── gc_merge.go        # Later GC rounds (merge into the sorted file)
+│   │   ├── recovery.go        # Crash recovery: state file, log replay, GC resume
+│   │   ├── lsmraft.go         # LSM-Raft baseline (SSTable shipping to followers)
+│   │   ├── inlinecache.go     # Inline small-value cache (AVP)
+│   │   └── sparseindex.go     # Sparse index over the sorted value file
 │   ├── raft/                  # Raft: election, replication, value log as Raft log,
-│   │                          #   compaction, persistence, recovery
+│   │                          #   compaction, persistence, recovery, SSTable transport
 │   ├── pool/                  # gRPC connection pool
-│   └── util/                  # Logging and helpers
+│   └── util/                  # Logging and random key/value generators
 │
 ├── api/                       # gRPC protocol definitions and generated code
 │   ├── kvrpc/                 # Client-server RPC (Put/Get/Scan)

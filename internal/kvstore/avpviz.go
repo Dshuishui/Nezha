@@ -1,4 +1,4 @@
-package main
+package kvstore
 
 // AVP placement 的可视化。
 //

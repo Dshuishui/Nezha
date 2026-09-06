@@ -1,4 +1,4 @@
-package main
+package kvstore
 
 // 可视化页面。内联在二进制里、不引用任何外部资源——实验机器通常没有出站网络，
 // 从 CDN 取 JS 只会得到一个空白页。
