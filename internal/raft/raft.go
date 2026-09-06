@@ -134,9 +134,14 @@ type Raft struct {
 	shotOffset     int
 	SyncTime       int
 	SyncChans      []chan string
-	batchLog       []*Entry
-	currentLog     string // 存储value的磁盘文件的描述符
-	originalLog    string // dwisckey
+
+	// 两者都只在测试里赋值，且必须在 appendEntriesLoop 起来之前：
+	// sendAppend 替换 doAppendEntries，appendRoundBudget 覆盖看门狗时限（<=0 用默认值）。
+	sendAppend        func(peerId int)
+	appendRoundBudget time.Duration
+	batchLog          []*Entry
+	currentLog        string // 存储value的磁盘文件的描述符
+	originalLog       string // dwisckey
 
 	// 日志压缩基址：rf.log[0] 对应的日志 index 为 lastIncludedIndex+1。
 	// 已压缩的条目从内存中物理删除，其内容仍保留在 rf.currentLog 磁盘文件中。
@@ -1144,55 +1149,98 @@ func (rf *Raft) GetReadIndex() (commitindex int, isleader bool) {
 	return -1, false // 表示失败，同时也不是合格的leader
 }
 
+// defaultAppendRoundBudget 是一轮复制在被判定为"卡住、需要重发"之前的时限。
+// 取得比 sendAppendEntries 的 5 秒 RPC 上限宽，好让正常的慢回复自己走完。
+const defaultAppendRoundBudget = 8 * time.Second
+
+// appendEntriesLoop 在本节点是 leader 期间，持续向每个 peer 复制日志/心跳。
+//
+// 复制靠一条自续的链：一轮 doAppendEntries 的回复协程把 peer 号写回
+// SyncChans[peer]，本循环收到后发起下一轮。心跳间隔因此等于一次 RPC 往返，
+// 没有独立的定时器。
+//
+// 这条链此前只被点火一次：一个进程级的 First 标志在本节点第一次成为 leader 时
+// 给每个 peer 发一轮，随后置 false 且再不复位。可是 RPC 在飞行途中若 term 变了，
+// 回复协程写回的是 "NotLeader" 而非 peer 号，循环见到它就退出本轮——该 peer 的
+// 链就此熄火。等这个节点再次当选，First 早已用掉，链不会重新点火，于是它虽然是
+// leader 却一条 AppendEntries 都发不出去。follower 每 3 秒选举超时一次，选出的
+// 还是这个发不出心跳的节点，集群就永久卡在换届里。
+//
+// 实测：三节点、4KB value、GC 阈值 2GB，第一轮 GC 造成一次 term 变动之后，
+// node0 日志里 "leaving the replication loop" 恰好两条（两个 peer 各一条），
+// 此后它连任 108 次而没有任何复制。GC 只是触发器，任何造成 term 变动的抖动都够。
+//
+// 改为按 peer 记录"有没有一轮在飞"：链断了就在下一次循环里自动补发，降级再当选
+// 也会从头点火。inFlight 只在本 goroutine 里读写，不需要额外的锁。
 func (rf *Raft) appendEntriesLoop() {
-	First := true
+	// 测试用 sendAppend 顶掉真正的复制调用，以便在不起 gRPC 的前提下驱动本循环；
+	// 生产路径上它是 nil，直接走 doAppendEntries。
+	send := rf.sendAppend
+	if send == nil {
+		send = rf.doAppendEntries
+	}
+	// 两个字段都只在起循环之前赋值（生产路径上不赋值），这里各读一次存成局部量，
+	// 之后不再碰它们——单测调小预算时才不会与本 goroutine 形成竞态。
+	budget := rf.appendRoundBudget
+	if budget <= 0 {
+		budget = defaultAppendRoundBudget
+	}
+	inFlight := make([]bool, len(rf.peers))
+	sentAt := make([]time.Time, len(rf.peers))
+	wasLeader := false
 	for !rf.killed() {
-		// time.Sleep(time.Duration(rf.SyncTime) * time.Millisecond) // 间隔10ms
+		rf.mu.Lock()
+		isLeader := rf.role == ROLE_LEADER
+		empty := rf.lastIndex() == 0
+		rf.mu.Unlock()
 
-		func() {
-			rf.mu.Lock() // 这里可以用读锁
-			// defer rf.mu.Unlock()
-
-			// 只有leader才向外广播心跳
-			if rf.role != ROLE_LEADER {
-				rf.mu.Unlock()
-				return
-			}
-			if rf.lastIndex() == 0 {
-				rf.mu.Unlock()
-				return
-			}
-			rf.mu.Unlock()
-			if First {
-				for peerId := 0; peerId < len(rf.peers); peerId++ { // 先固定，避免访问rf的属性，涉及到死锁问题
-					if peerId == rf.me {
-						continue
+		if !isLeader {
+			if wasLeader {
+				// 卸任：丢掉本任期的记账，并排空channel里迟到的回执，
+				// 免得下个任期把它们错当成"这一轮已经回来了"。
+				for i := range inFlight {
+					inFlight[i] = false
+					for len(rf.SyncChans[i]) > 0 {
+						<-rf.SyncChans[i]
 					}
-					// rf.doHeartBeat(peerId)
-					rf.doAppendEntries(peerId)
 				}
-				First = false
+				wasLeader = false
 			}
+			continue
+		}
+		wasLeader = true
+		if empty {
+			continue
+		}
 
-			for i := 0; i < len(rf.peers); i++ {
-				if i == rf.me {
-					continue
-				}
-
+		for i := 0; i < len(rf.peers); i++ {
+			if i == rf.me {
+				continue
+			}
+			// 先收回执。"NotLeader" 与 peer 号一样都表示这一轮已经结束，
+			// 区别只在于要不要继续发——那由上面的 isLeader 决定，不在这里判断。
+			for done := false; !done; {
 				select {
-				case val := <-rf.SyncChans[i]:
-					if val == "NotLeader" {
-						util.DPrintf("RaftNode[%d] peer %d reports we are not the leader; leaving the replication loop", rf.me, i)
-						return
-					}
-					// 收到信号，触发日志同步
-					rf.doAppendEntries(i)
+				case <-rf.SyncChans[i]:
+					inFlight[i] = false
 				default:
-					// 通道为空，非阻塞跳过
+					done = true
 				}
 			}
-
-		}()
+			// 看门狗：一轮最多占 appendRoundBudget，超时就重发。RPC 自己有 5 秒上限，
+			// 所以正常情况下轮不到它；它防的是"某条路径忘了写回执"这类漏洞——本函数
+			// 注释里那个 bug 正是这一类，而链一旦熄火，代价是集群不再有 leader。
+			// AppendEntries 是幂等的，多发一轮不会有副作用。
+			if inFlight[i] && time.Since(sentAt[i]) > budget {
+				util.DPrintf("RaftNode[%d] peer %d 的复制轮次超过 %v 未回执，重发", rf.me, i, budget)
+				inFlight[i] = false
+			}
+			if !inFlight[i] {
+				inFlight[i] = true
+				sentAt[i] = time.Now()
+				send(i)
+			}
+		}
 	}
 }
 

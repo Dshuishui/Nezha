@@ -1,6 +1,17 @@
-[16:22:13] === 1. start three nodes (BIN=normal, gcThresholdGB=2, TS=1) ===
-STARTED node0 192.168.1.240:3099 pid=1608167 bin=normal
-STARTED node1 192.168.1.241:3099 pid=1286051 bin=normal
-STARTED node2 192.168.1.241:3100 pid=1286230 bin=normal
-[16:22:36] === 2. write 2500000 x 4096B (~9 GB) through 100 clients ===
-[16:22:36]     (this is the long step; GC should fire once the value log passes 2 GB)
+[17:09:04] === 1. start three nodes (BIN=normal, gcThresholdGB=2, TS=1) ===
+STARTED node0 192.168.1.240:3099 pid=1659743 bin=normal
+STARTED node1 192.168.1.241:3099 pid=1303007 bin=normal
+STARTED node2 192.168.1.241:3100 pid=1303183 bin=normal
+[17:09:27] === 2. write 2500000 x 4096B (~9 GB) through 100 clients ===
+[17:09:27]     GC fires each time the value log passes 2 GB; rounds are capped at two, so
+[17:09:27]     the run stops 60s after round 2 rather than writing all 2500000 records.
+WRITER 1660523
+[17:12:12]     gc rounds so far: node0=0 node1=0 node2=0
+[17:14:55]     gc rounds so far: node0=0 node1=0 node2=0
+[17:17:43]     gc rounds so far: node0=0 node1=0 node2=0
+[17:20:26]     gc rounds so far: node0=0 node1=0 node2=0
+[17:23:11]     gc rounds so far: node0=0 node1=0 node2=0
+[17:25:55]     gc rounds so far: node0=0 node1=0 node2=0
+[17:28:39]     gc rounds so far: node0=0 node1=0 node2=0
+[17:31:24]     gc rounds so far: node0=1 node1=1 node2=1
+[17:34:06]     gc rounds so far: node0=1 node1=1 node2=1
