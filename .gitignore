@@ -29,8 +29,9 @@ tla/**/states/
 # Paper drafts are reference material, not repository content
 *.pdf
 
-# Working log and session hand-off notes stay local (see notes/README.md)
+# Working log, design notes and session hand-off files stay local (see notes/README.md)
 notes/
+docs/
 CONTEXT-*.md
 
 # per-repo assistant notes stay local

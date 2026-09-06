@@ -80,7 +80,7 @@ type KVServer struct {
 	// 落到新库的写入不能丢。
 	switchedPersister *raft.Persister
 
-	// ---- crash recovery (see docs/crash-recovery.md and recovery.go) ----
+	// ---- crash recovery (see recovery.go) ----
 	dataDir                string
 	currentDBPath          string // RocksDB directory opened by kvs.persister
 	oldDBPath              string // directory of kvs.oldPersister while a GC round is in flight
