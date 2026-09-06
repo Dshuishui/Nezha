@@ -202,13 +202,21 @@ func (kvs *KVServer) firstGCMigrate(sortedFile *os.File, firstSortedFilePath str
 	// function returns nil, so the sorted file must be on disk first; otherwise a power loss
 	// leaves "source deleted, destination still in the page cache" and everything this round
 	// moved is gone. The write path fsyncs every entry; GC is no exception.
+	// Timed per step, like round two: a stall long enough to cost the node its leadership
+	// has to be attributable to one step rather than inferred from the progress cadence.
+	tMigrate := time.Since(startTime)
+	tStep := time.Now()
 	err = writer.Flush()
 	if err != nil {
 		return fmt.Errorf("failed to flush sorted file: %v", err)
 	}
+	tFlush := time.Since(tStep)
+	tStep = time.Now()
 	if err := sortedFile.Sync(); err != nil {
 		return fmt.Errorf("failed to fsync sorted file: %v", err)
 	}
+	tSync := time.Since(tStep)
+	tStep = time.Now()
 
 	// ============= 直接构建SortedFileIndex对象 =============
 
@@ -226,6 +234,8 @@ func (kvs *KVServer) firstGCMigrate(sortedFile *os.File, firstSortedFilePath str
 	// 预热缓存
 	// kvs.warmupCache(firstSortedFilePath)
 
+	tIndex := time.Since(tStep)
+	tStep = time.Now()
 	fmt.Println("建立了索引，得到了针对已排序文件的完整索引")
 	kvs.filePool, err = NewFileDescriptorPool(firstSortedFilePath, 50)
 	if err != nil {
@@ -233,6 +243,10 @@ func (kvs *KVServer) firstGCMigrate(sortedFile *os.File, firstSortedFilePath str
 		panic("创建文件描述符池失败")
 	}
 	fmt.Println("创建文件描述符池成功")
+	fmt.Printf("[GC-PHASE] round=%d migrate=%v flush=%v fsync=%v index=%v filepool=%v bytes=%d\n",
+		kvs.numGC, tMigrate.Round(time.Millisecond), tFlush.Round(time.Millisecond),
+		tSync.Round(time.Millisecond), tIndex.Round(time.Millisecond),
+		time.Since(tStep).Round(time.Millisecond), currentOffset)
 
 	fmt.Printf("First garbage collection completed in %v, processed %d entries\n", time.Since(startTime), writeNum)
 	return nil

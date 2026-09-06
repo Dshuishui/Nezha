@@ -325,8 +325,20 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 }
 
 // 已兼容snapshot
+// lockStall reports an rf.mu acquisition slow enough to matter for the election timeout.
+// The replication loop and the AppendEntries handler both have to take rf.mu, and
+// lastActiveTime is only refreshed inside the handler: whoever holds the lock for more
+// than the 3 s timeout costs the cluster its leader. Only outliers print.
+func lockStall(who string, me int, start time.Time) {
+	if d := time.Since(start); d > time.Second {
+		fmt.Printf("[LOCK-STALL] RaftNode[%d] %s waited %v for rf.mu\n", me, who, d.Round(time.Millisecond))
+	}
+}
+
 func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEntriesInRaftRequest) (*raftrpc.AppendEntriesInRaftResponse, error) {
+	tLock := time.Now()
 	rf.mu.Lock()
+	lockStall("AppendEntries handler", rf.me, tLock)
 	defer rf.mu.Unlock()
 
 	// util.DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
@@ -735,7 +747,7 @@ func (rf *Raft) electionLoop() {
 			if rf.role == ROLE_FOLLOWER {
 				if elapses >= timeout {
 					rf.role = ROLE_CANDIDATES
-					util.DPrintf("RaftNode[%d] Follower -> Candidate", rf.me)
+					util.DPrintf("RaftNode[%d] Follower -> Candidate (silent for %v)", rf.me, elapses.Round(time.Millisecond))
 				}
 			}
 			// 请求vote，当变成candidate后，等待10ms才进入到该if语句
@@ -898,7 +910,9 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// outside it, so Start is not slowed down.
 	args := raftrpc.AppendEntriesInRaftRequest{}
 	var candidates []*raftrpc.LogEntry
+	tLock := time.Now()
 	rf.mu.Lock()
+	lockStall("doAppendEntries", rf.me, tLock)
 	args.Term = int32(rf.currentTerm)
 	args.LeaderId = int32(rf.me)
 	args.LeaderCommit = int32(rf.commitIndex)

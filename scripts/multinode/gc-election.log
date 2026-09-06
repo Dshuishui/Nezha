@@ -1,0 +1,6 @@
+[16:22:13] === 1. start three nodes (BIN=normal, gcThresholdGB=2, TS=1) ===
+STARTED node0 192.168.1.240:3099 pid=1608167 bin=normal
+STARTED node1 192.168.1.241:3099 pid=1286051 bin=normal
+STARTED node2 192.168.1.241:3100 pid=1286230 bin=normal
+[16:22:36] === 2. write 2500000 x 4096B (~9 GB) through 100 clients ===
+[16:22:36]     (this is the long step; GC should fire once the value log passes 2 GB)
