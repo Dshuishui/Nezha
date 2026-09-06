@@ -1,4 +1,4 @@
-package main
+package kvstore
 
 import (
 	"bufio"
@@ -179,4 +179,15 @@ func (kvs *KVServer) BuildSparseIndex(filePath string, blockBytes int64) ([]Spar
 		offset += size
 	}
 	return builder.Build(), offset, nil
+}
+
+type SortedFileIndex struct {
+	// Sparse 是按 key 升序的稀疏块索引，每约 indexBlockBytes 一项。
+	// 查找时二分定位到块，再在块内顺序扫描，内存从 O(key 数) 降为 O(块数)。
+	Sparse   []SparseEntry
+	FileSize int64 // sortedFile 总长度，用于界定最后一块的右边界
+	// InlineValues 是小值的有界缓存，纯读加速层，命中则免去一次文件 seek。
+	// 它可以为 nil、可以随时淘汰任何条目，都不影响正确性——value 始终在 sortedFile 里。
+	InlineValues *InlineCache
+	FilePath     string
 }
