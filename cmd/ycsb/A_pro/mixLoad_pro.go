@@ -1,11 +1,8 @@
 package main
 
 import (
-	"context"
-	crand "crypto/rand"
 	"flag"
 	"fmt"
-	"math/big"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -13,12 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"gitee.com/dong-shuishui/FlexSync/api/kvrpc"
-	"gitee.com/dong-shuishui/FlexSync/internal/pool"
-	"gitee.com/dong-shuishui/FlexSync/internal/raft"
+	"gitee.com/dong-shuishui/FlexSync/internal/client"
 	"gitee.com/dong-shuishui/FlexSync/internal/util"
 )
 
@@ -34,12 +28,8 @@ var (
 )
 
 type KVClient struct {
+	c         *client.Client
 	Kvservers []string
-	mu        sync.Mutex
-	clientId  int64
-	seqId     int64
-	leaderId  int
-	pools     []pool.Pool
 }
 
 type WorkloadStats struct {
@@ -53,12 +43,6 @@ type WorkloadStats struct {
 	maxThreadDur    time.Duration
 }
 
-func nrand() int64 {
-	max := big.NewInt(int64(1) << 62)
-	bigx, _ := crand.Int(crand.Reader, max)
-	return bigx.Int64()
-}
-
 func generateUniqueRandomInts(min, max int) []int {
 	nums := make([]int, max-min+1)
 	for i := range nums {
@@ -69,111 +53,6 @@ func generateUniqueRandomInts(min, max int) []int {
 }
 
 // ========== RPC ==========
-
-func (kvc *KVClient) changeToLeader(id int) int {
-	kvc.mu.Lock()
-	defer kvc.mu.Unlock()
-	kvc.leaderId = id
-	return kvc.leaderId
-}
-
-func (kvc *KVClient) InitPool() {
-	DesignOptions := pool.Options{
-		Dial:                 pool.Dial,
-		MaxIdle:              150,
-		MaxActive:            300,
-		MaxConcurrentStreams: 800,
-		Reuse:                true,
-	}
-
-	for i := 0; i < len(kvc.Kvservers); i++ {
-		peer := []string{kvc.Kvservers[i]}
-		p, err := pool.New(peer, DesignOptions)
-		if err != nil {
-			util.EPrintf("failed to new pool: %v", err)
-		}
-		kvc.pools = append(kvc.pools, p)
-	}
-}
-
-func (kvc *KVClient) Get(key string) (string, bool, error) {
-	args := &kvrpc.GetInRaftRequest{
-		Key:      key,
-		ClientId: kvc.clientId,
-		SeqId:    atomic.AddInt64(&kvc.seqId, 1),
-	}
-	targetId := kvc.leaderId
-
-	for {
-		reply, err := kvc.SendGetInRaft(targetId, args)
-		if err != nil {
-			return "", false, err
-		}
-
-		if reply.Err == raft.OK {
-			return reply.Value, true, nil
-		} else if reply.Err == raft.ErrNoKey {
-			return reply.Value, false, nil
-		} else if reply.Err == raft.ErrWrongLeader {
-			targetId = int(reply.LeaderId)
-			time.Sleep(1 * time.Millisecond)
-		}
-	}
-}
-
-func (kvc *KVClient) SendGetInRaft(targetId int, request *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
-	p := kvc.pools[targetId]
-	conn, err := p.Get()
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-
-	client := kvrpc.NewKVClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
-	defer cancel()
-
-	return client.GetInRaft(ctx, request)
-}
-
-func (kvc *KVClient) PutInRaft(key, value string) (*kvrpc.PutInRaftResponse, error) {
-	request := &kvrpc.PutInRaftRequest{
-		Key:      key,
-		Value:    value,
-		Op:       "Put",
-		ClientId: kvc.clientId,
-		SeqId:    atomic.AddInt64(&kvc.seqId, 1),
-	}
-
-	for {
-		p := kvc.pools[kvc.leaderId]
-		conn, err := p.Get()
-		if err != nil {
-			util.EPrintf("failed to get conn: %v", err)
-			// 这里直接返回更合理，避免空转
-			return nil, err
-		}
-
-		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
-		reply, callErr := client.PutInRaft(ctx, request)
-		cancel()
-		conn.Close()
-
-		if callErr != nil {
-			return nil, callErr
-		}
-
-		if reply.Err == raft.OK {
-			return reply, nil
-		} else if reply.Err == raft.ErrWrongLeader {
-			kvc.changeToLeader(int(reply.LeaderId))
-			continue
-		} else if reply.Err == "defeat" {
-			return reply, nil
-		}
-	}
-}
 
 // ========== workload ==========
 
@@ -233,7 +112,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 				opStart := time.Now()
 
 				if isWrite {
-					reply, err := kvc.PutInRaft(key, value)
+					reply, err := kvc.c.Put(key, value)
 					lat := time.Since(opStart)
 					ok := err == nil && reply != nil && reply.Err != "defeat"
 
@@ -248,7 +127,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 					randKey := rand.Intn(baga)
 					randStrKey := strconv.Itoa(randKey)
 
-					v, exists, err := kvc.Get(randStrKey)
+					v, exists, err := kvc.c.Get(randStrKey)
 					lat := time.Since(opStart)
 					ok := err == nil && exists && v != "ErrNoKey"
 
@@ -334,6 +213,11 @@ func writeLine(f *os.File, s string) {
 	}
 }
 
+// InitPool builds the shared cluster client (one connection pool per server).
+func (kvc *KVClient) InitPool() {
+	kvc.c = client.MustNew(kvc.Kvservers, client.Options{})
+}
+
 func main() {
 	flag.Parse()
 
@@ -364,10 +248,6 @@ func main() {
 	for round := 1; round <= *rounds; round++ {
 		kvc := new(KVClient)
 		kvc.Kvservers = servers
-		kvc.clientId = nrand()
-		kvc.seqId = 0
-		kvc.leaderId = 0
-		kvc.pools = nil
 
 		fmt.Printf("\n[Round %d/%d] InitPool...\n", round, *rounds)
 		writeLine(f, fmt.Sprintf("[Round %d/%d] %s", round, *rounds, time.Now().Format("2006-01-02 15:04:05")))
@@ -404,9 +284,7 @@ func main() {
 		writeLine(f, "----")
 
 		// cleanup (每轮完整关闭)
-		for _, p := range kvc.pools {
-			p.Close()
-		}
+		kvc.c.Close()
 		fmt.Printf("[Round %d/%d] Done.\n", round, *rounds)
 	}
 

@@ -1,21 +1,15 @@
 package main
 
 import (
-	"context"
-	crand "crypto/rand"
 	"flag"
 	"fmt"
-	"math/big"
 	"math/rand"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"gitee.com/dong-shuishui/FlexSync/api/kvrpc"
-	"gitee.com/dong-shuishui/FlexSync/internal/pool"
-	"gitee.com/dong-shuishui/FlexSync/internal/raft"
+	"gitee.com/dong-shuishui/FlexSync/internal/client"
 	"gitee.com/dong-shuishui/FlexSync/internal/util"
 )
 
@@ -28,12 +22,8 @@ var (
 )
 
 type KVClient struct {
+	c         *client.Client
 	Kvservers []string
-	mu        sync.Mutex
-	clientId  int64
-	seqId     int64
-	leaderId  int
-	pools     []pool.Pool
 }
 
 type OperationResult struct {
@@ -170,7 +160,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 				var result OperationResult
 
 				if isWrite {
-					reply, err := kvc.PutInRaft(key, value)
+					reply, err := kvc.c.Put(key, value)
 					result = OperationResult{
 						isWrite:   true,
 						latency:   time.Since(startTime),
@@ -178,7 +168,7 @@ func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadSt
 						valueSize: len(value),
 					}
 				} else {
-					value, exists, err := kvc.Get(key)
+					value, exists, err := kvc.c.Get(key)
 					result = OperationResult{
 						isWrite:   false,
 						latency:   time.Since(startTime),
@@ -223,113 +213,6 @@ func min(a, b int) int {
 	return b
 }
 
-// Get方法实现
-func (kvc *KVClient) Get(key string) (string, bool, error) {
-	args := &kvrpc.GetInRaftRequest{
-		Key:      key,
-		ClientId: kvc.clientId,
-		SeqId:    atomic.AddInt64(&kvc.seqId, 1),
-	}
-	targetId := kvc.leaderId
-	for {
-		reply, err := kvc.SendGetInRaft(targetId, args)
-		if err != nil {
-			return "", false, err
-		}
-		if reply.Err == raft.OK {
-			return reply.Value, true, nil
-		} else if reply.Err == raft.ErrNoKey {
-			return reply.Value, false, nil
-		} else if reply.Err == raft.ErrWrongLeader {
-			targetId = int(reply.LeaderId)
-			time.Sleep(1 * time.Millisecond)
-		}
-	}
-}
-
-// SendGetInRaft方法实现
-func (kvc *KVClient) SendGetInRaft(targetId int, request *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
-	p := kvc.pools[targetId]
-	conn, err := p.Get()
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-
-	client := kvrpc.NewKVClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
-
-	reply, err := client.GetInRaft(ctx, request)
-	if err != nil {
-		return nil, err
-	}
-	return reply, nil
-}
-
-// PutInRaft方法实现
-func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftResponse, error) {
-	request := &kvrpc.PutInRaftRequest{
-		Key:      key,
-		Value:    value,
-		Op:       "Put",
-		ClientId: kvc.clientId,
-		SeqId:    atomic.AddInt64(&kvc.seqId, 1),
-	}
-
-	for {
-		p := kvc.pools[kvc.leaderId]
-		conn, err := p.Get()
-		if err != nil {
-			util.EPrintf("failed to get conn: %v", err)
-		}
-		defer conn.Close()
-
-		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-		defer cancel()
-
-		reply, err := client.PutInRaft(ctx, request)
-		if err != nil {
-			return nil, err
-		}
-
-		if reply.Err == raft.OK {
-			return reply, nil
-		} else if reply.Err == raft.ErrWrongLeader {
-			kvc.changeToLeader(int(reply.LeaderId))
-		} else if reply.Err == "defeat" {
-			return reply, nil
-		}
-	}
-}
-
-func (kvc *KVClient) InitPool() {
-	DesignOptions := pool.Options{
-		Dial:                 pool.Dial,
-		MaxIdle:              150,
-		MaxActive:            300,
-		MaxConcurrentStreams: 800,
-		Reuse:                true,
-	}
-
-	for i := 0; i < len(kvc.Kvservers); i++ {
-		peers_single := []string{kvc.Kvservers[i]}
-		p, err := pool.New(peers_single, DesignOptions)
-		if err != nil {
-			util.EPrintf("failed to new pool: %v", err)
-		}
-		kvc.pools = append(kvc.pools, p)
-	}
-}
-
-func (kvc *KVClient) changeToLeader(Id int) int {
-	kvc.mu.Lock()
-	defer kvc.mu.Unlock()
-	kvc.leaderId = Id
-	return kvc.leaderId
-}
-
 func generateUniqueRandomInts(min, max int) []int {
 	nums := make([]int, max-min+1)
 	for i := range nums {
@@ -339,10 +222,9 @@ func generateUniqueRandomInts(min, max int) []int {
 	return nums
 }
 
-func nrand() int64 {
-	max := big.NewInt(int64(1) << 62)
-	bigx, _ := crand.Int(crand.Reader, max)
-	return bigx.Int64()
+// InitPool builds the shared cluster client (one connection pool per server).
+func (kvc *KVClient) InitPool() {
+	kvc.c = client.MustNew(kvc.Kvservers, client.Options{})
 }
 
 func main() {
@@ -351,7 +233,6 @@ func main() {
 	servers := strings.Split(*ser, ",")
 	kvc := new(KVClient)
 	kvc.Kvservers = servers
-	kvc.clientId = nrand()
 
 	value := util.GenerateLargeValue(*vsize)
 	kvc.InitPool()
@@ -383,7 +264,5 @@ func main() {
 	fmt.Printf("Total throughput: %.2f MB/s\n", stats.throughput)
 
 	// 清理资源
-	for _, pool := range kvc.pools {
-		pool.Close()
-	}
+	kvc.c.Close()
 }
