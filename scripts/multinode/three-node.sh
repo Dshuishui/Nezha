@@ -82,6 +82,7 @@ report)
   elect=$(cat "$D"/n*.log | grep -c 'Follower -> Candidate') || elect=0
   won=$(cat "$D"/n*.log | grep -c 'Candidate -> Leader') || won=0
   stalls=$(cat "$D"/n*.log | grep -c 'LOCK-STALL') || stalls=0
+  slow=$(cat "$D"/n*.log | grep -c 'SLOW-APPEND') || slow=0
   term=$(cat "$D"/n*.log | grep -o 'currentTerm\[[0-9]*\]' | tail -1 | grep -o '[0-9]*'); term=${term:-0}
   # LSM-Raft: spans cut as leader / ingested as follower, with the last index of each
   cut=$(cat "$D"/n*.log | grep -c 'LSM-Raft\] span \[.*\] cut') || cut=0
@@ -89,13 +90,13 @@ report)
   ing=$(cat "$D"/n*.log | grep -c 'LSM-Raft\] ingested span') || ing=0
   lasting=$(cat "$D"/n*.log | grep -o 'LSM-Raft\] ingested span \[[0-9]*,[0-9]*\]' | tail -1 | grep -o ',[0-9]*' | tr -d ,); lasting=${lasting:-0}
   replay=$(cat "$D"/n*.log | grep -c 'LSM-Raft\].*replaying') || replay=0
-  echo "REPORT node$IDX alive=$alive gc_done=$gc races=$races err_lines=$err silent_leader_msgs=$cand silent=$silent elections=$elect won=$won lock_stalls=$stalls term=$term lsm_cut=$cut lsm_lastcut=$lastcut lsm_ingested=$ing lsm_lastingested=$lasting lsm_replays=$replay"
+  echo "REPORT node$IDX alive=$alive gc_done=$gc races=$races err_lines=$err silent_leader_msgs=$cand silent=$silent elections=$elect won=$won lock_stalls=$stalls slow_appends=$slow term=$term lsm_cut=$cut lsm_lastcut=$lastcut lsm_ingested=$ing lsm_lastingested=$lasting lsm_replays=$replay"
   errlines | grep -v "DATA RACE" | head -3 | cut -c1-160
   ;;
 timeline)
   # GC start/end, heartbeat silence, and every role change, in log order. Needs TS=1 at
   # start for the fmt.Printf lines (GC, "3秒没有收到") to carry a time of their own.
-  cat "$D"/n*.log | grep -E 'Starting garbage collection|垃圾回收完成|垃圾回收出现了错误|GC-PHASE|LOCK-STALL|3秒没有收到|Follower -> Candidate|Candidate -> Leader' \
+  cat "$D"/n*.log | grep -E 'Starting garbage collection|垃圾回收完成|垃圾回收出现了错误|GC-PHASE|LOCK-STALL|SLOW-APPEND|忽略.*拉票|3秒没有收到|Follower -> Candidate|Candidate -> Leader' \
     | sed "s/^/node$IDX /"
   ;;
 esac

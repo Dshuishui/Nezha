@@ -372,6 +372,30 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	lockStall("AppendEntries handler", rf.me, tLock)
 	defer rf.mu.Unlock()
 
+	// 选举超时衡量的是"多久没收到 leader 的消息"，不是"这次处理花了多久"。
+	//
+	// 只在进门时刷新 lastActiveTime 是不够的：本函数持着 rf.mu 把日志写进磁盘，
+	// 而节点自身跑 GC 时磁盘被打满，一次调用可能耗上几秒。electionLoop 要等这把锁，
+	// 拿到后算出的 elapses 正好是这次的处理耗时，于是节点把自己判成"收不到心跳"，
+	// 升任期发起选举；leader 从 AppendEntries 的回复里看到更高任期只能降级——
+	// §4.2.3 的防打扰规则管不到这条路径，因为打扰不是从投票进来的。
+	// 实测第二轮 GC 期间 node1 就这样 "silent for 3.33s" 了一次。
+	//
+	// 离开时再刷新一次，把处理耗时排除在外。fromLeader 只在确认对方确实是当前任期的
+	// leader 之后才置真，任期更旧的请求不该重置本节点的选举计时。
+	tHandler := time.Now()
+	fromLeader := false
+	defer func() {
+		if fromLeader {
+			now := time.Now()
+			rf.lastActiveTime = now
+			rf.LastAppendTime = now
+		}
+		if d := time.Since(tHandler); d > time.Second {
+			fmt.Printf("[SLOW-APPEND] RaftNode[%d] AppendEntries 处理耗时 %v（持锁全程）\n", rf.me, d.Round(time.Millisecond))
+		}
+	}()
+
 	// util.DPrintf("RaftNode[%d] Handle AppendEntries, LeaderId[%d] Term[%d] CurrentTerm[%d] role=[%s] logIndex[%d] prevLogIndex[%d] prevLogTerm[%d] commitIndex[%d] Entries[%v]",
 	// rf.me, rf.leaderId, args.Term, rf.currentTerm, rf.role, rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.commitIndex, args.Entries)
 	reply := &raftrpc.AppendEntriesInRaftResponse{}
@@ -408,8 +432,9 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 
 	// 认识新的leader
 	rf.leaderId = int(args.LeaderId)
-	// 刷新活跃时间
+	// 刷新活跃时间。离开时还会再刷一次，见函数开头的 defer。
 	rf.lastActiveTime = time.Now()
+	fromLeader = true
 	if len(logEntrys) == 0 {
 		reply.Success = true                           // 成功心跳
 		if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
