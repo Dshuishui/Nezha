@@ -36,3 +36,6 @@ CONTEXT-*.md
 
 # per-repo assistant notes stay local
 CLAUDE.md
+
+# Driver run logs from scripts/multinode/*.sh
+scripts/multinode/*.log
