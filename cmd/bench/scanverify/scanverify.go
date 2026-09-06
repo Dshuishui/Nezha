@@ -8,21 +8,14 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"gitee.com/dong-shuishui/FlexSync/api/kvrpc"
-	"gitee.com/dong-shuishui/FlexSync/internal/pool"
-	"gitee.com/dong-shuishui/FlexSync/internal/raft"
-	"gitee.com/dong-shuishui/FlexSync/internal/util"
-
-	crand "crypto/rand"
-	"math/big"
+	"gitee.com/dong-shuishui/FlexSync/internal/client"
 )
 
 var (
@@ -48,91 +41,6 @@ func expectedValue(key string, size int) string {
 	return b.String()[:size]
 }
 
-type KVClient struct {
-	Kvservers []string
-	clientId  int64
-	seqId     int64
-	leaderId  int
-	pools     []pool.Pool
-}
-
-func nrand() int64 {
-	max := big.NewInt(int64(1) << 62)
-	bigx, _ := crand.Int(crand.Reader, max)
-	return bigx.Int64()
-}
-
-func (kvc *KVClient) InitPool() {
-	opts := pool.Options{Dial: pool.Dial, MaxIdle: 16, MaxActive: 32, MaxConcurrentStreams: 64, Reuse: true}
-	for i := range kvc.Kvservers {
-		p, err := pool.New([]string{kvc.Kvservers[i]}, opts)
-		if err != nil {
-			util.EPrintf("failed to new pool: %v", err)
-		}
-		kvc.pools = append(kvc.pools, p)
-	}
-}
-
-func (kvc *KVClient) put(key, value string) error {
-	req := &kvrpc.PutInRaftRequest{
-		Key: key, Value: value, Op: "Put",
-		ClientId: kvc.clientId, SeqId: atomic.AddInt64(&kvc.seqId, 1),
-	}
-	for {
-		conn, err := kvc.pools[kvc.leaderId].Get()
-		if err != nil {
-			return err
-		}
-		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), 70*time.Second)
-		reply, err := client.PutInRaft(ctx, req)
-		cancel()
-		conn.Close()
-		if err != nil {
-			return err
-		}
-		if reply.Err == raft.ErrWrongLeader {
-			kvc.leaderId = int(reply.LeaderId)
-			continue
-		}
-		return nil
-	}
-}
-
-func (kvc *KVClient) get(key string) (string, error) {
-	req := &kvrpc.GetInRaftRequest{Key: key, ClientId: kvc.clientId, SeqId: atomic.AddInt64(&kvc.seqId, 1)}
-	conn, err := kvc.pools[kvc.leaderId].Get()
-	if err != nil {
-		return "", err
-	}
-	defer conn.Close()
-	client := kvrpc.NewKVClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	reply, err := client.GetInRaft(ctx, req)
-	if err != nil {
-		return "", err
-	}
-	return reply.Value, nil
-}
-
-func (kvc *KVClient) scan(k1, k2 string) (map[string]string, string, error) {
-	req := &kvrpc.ScanRangeRequest{StartKey: k1, EndKey: k2}
-	conn, err := kvc.pools[kvc.leaderId].Get()
-	if err != nil {
-		return nil, "", err
-	}
-	defer conn.Close()
-	client := kvrpc.NewKVClient(conn.Value())
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	reply, err := client.ScanRangeInRaft(ctx, req)
-	if err != nil {
-		return nil, "", err
-	}
-	return reply.KeyValuePairs, reply.Err, nil
-}
-
 // trunc 让错误样例在终端里可读：垃圾 value 往往含不可打印字节。
 func trunc(s string) string {
 	if len(s) > 40 {
@@ -143,14 +51,18 @@ func trunc(s string) string {
 
 func main() {
 	flag.Parse()
-	kvc := &KVClient{Kvservers: strings.Split(*ser, ","), clientId: nrand(), leaderId: *leader}
-	kvc.InitPool()
+	kvc, err := client.New(strings.Split(*ser, ","), client.Options{Leader: *leader, PoolMaxIdle: 16, PoolMaxActive: 32, PoolMaxConcurrentStreams: 64, PutTimeout: 70 * time.Second, GetTimeout: 10 * time.Second, ScanTimeout: 30 * time.Second})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer kvc.Close()
 
 	fmt.Printf("写入 %d 条 (value=%dB)...\n", *dnums, *vsize)
 	for i := 0; i < *dnums; i++ {
 		k := strconv.Itoa(i)
-		if err := kvc.put(k, expectedValue(k, *vsize)); err != nil {
-			fmt.Printf("put %s 失败: %v\n", k, err)
+		if reply, err := kvc.Put(k, expectedValue(k, *vsize)); err != nil || reply.Err != kvrpc.OK {
+			fmt.Printf("put %s 失败: %v %s\n", k, err, reply.GetErr())
 			return
 		}
 	}
@@ -159,7 +71,7 @@ func main() {
 	var getOK, getBad int
 	for i := 0; i < *dnums && i < 200; i++ {
 		k := strconv.Itoa(i)
-		v, err := kvc.get(k)
+		v, _, err := kvc.Get(k)
 		if err != nil {
 			continue
 		}
@@ -182,13 +94,13 @@ func main() {
 		if lo >= *dnums {
 			break
 		}
-		pairs, rerr, err := kvc.scan(strconv.Itoa(lo), strconv.Itoa(hi))
-		if err != nil || rerr != raft.OK {
+		reply, err := kvc.Scan(strconv.Itoa(lo), strconv.Itoa(hi))
+		if err != nil || reply.Err != kvrpc.OK {
 			scanErr++
-			fmt.Printf("  SCAN [%d,%d] 失败: err=%v reply.Err=%q\n", lo, hi, err, rerr)
+			fmt.Printf("  SCAN [%d,%d] 失败: err=%v reply.Err=%q\n", lo, hi, err, reply.GetErr())
 			continue
 		}
-		for k, v := range pairs {
+		for k, v := range reply.KeyValuePairs {
 			total++
 			if v == expectedValue(k, *vsize) {
 				ok++

@@ -5,24 +5,13 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
-
-	"context"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	// kvc "gitee.com/dong-shuishui/FlexSync/kvstore/kvclient"
-	"gitee.com/dong-shuishui/FlexSync/internal/pool"
-	"gitee.com/dong-shuishui/FlexSync/internal/raft"
-
-	// raftrpc "gitee.com/dong-shuishui/FlexSync/rpc/Raftrpc"
-	"gitee.com/dong-shuishui/FlexSync/api/kvrpc"
+	"gitee.com/dong-shuishui/FlexSync/internal/client"
 	"gitee.com/dong-shuishui/FlexSync/internal/util"
-
-	crand "crypto/rand"
-	"math/big"
 )
 
 var (
@@ -36,12 +25,8 @@ var (
 
 type KVClient struct {
 	Kvservers []string
-	mu        sync.Mutex
-	clientId  int64 // 客户端唯一标识
-	seqId     int64 // 该客户端单调递增的请求id
-	leaderId  int
+	c         *client.Client
 
-	pools   []pool.Pool
 	goodPut int // 有效吞吐量
 	// totalLatency time.Duration // 添加总延迟字段
 }
@@ -73,7 +58,7 @@ type putResult struct {
 //             rand.Seed(time.Now().UnixNano())
 //             for j := 0; j < base; j++ {
 //                 key := util.GenerateFixedSizeKey(5)
-//                 reply, err := kvc.PutInRaft(key, value)
+//                 reply, err := kvc.c.Put(key, value)
 //                 if err == nil && reply != nil && reply.Err != "defeat" {
 //                     localGoodPut++
 //                 }
@@ -130,7 +115,7 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 			for j := 0; j < len(keys); j++ {
 				key := strconv.Itoa(keys[j])
 				reqStart := time.Now()
-				reply, err := kvc.PutInRaft(key, value)
+				reply, err := kvc.c.Put(key, value)
 				// 失败的请求也要记：它们正是尾部
 				localResult.latencies = append(localResult.latencies, time.Since(reqStart))
 				if err == nil && reply != nil && reply.Err != "defeat" {
@@ -182,10 +167,7 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 	}
 	// avgLatency := totalAvgLatency / time.Duration(goroutineCount)
 
-	for _, pool := range kvc.pools {
-		pool.Close()
-		util.DPrintf("The raft pool has been closed")
-	}
+	kvc.c.Close()
 
 	// 百分位。平均值掩盖尾部：几个 60 秒超时能把总耗时拉长数百秒、吞吐腰斩，
 	// 而平均延迟几乎不动——它们被摊进二十万个请求里。吞吐由最慢的 goroutine
@@ -212,88 +194,9 @@ func generateUniqueRandomInts(min, max int) []int {
 	return nums
 }
 
-// Method of Send RPC of PutInRaft
-func (kvc *KVClient) PutInRaft(key string, value string) (*kvrpc.PutInRaftResponse, error) {
-	request := &kvrpc.PutInRaftRequest{
-		Key:      key,
-		Value:    value,
-		Op:       "Put",
-		ClientId: kvc.clientId,
-		SeqId:    atomic.AddInt64(&kvc.seqId, 1),
-	}
-	for {
-		// conn, err := grpc.Dial(kvc.Kvservers[kvc.leaderId], grpc.WithInsecure(), grpc.WithBlock())
-		// if err != nil {
-		// 	util.EPrintf("failed to get conn: %v", err)
-		// }
-		// defer conn.Close()
-		p := kvc.pools[kvc.leaderId] // 拿到leaderid对应的那个连接池
-		// fmt.Printf("拿出连接池对应的地址为%v",p.GetAddress())
-		conn, err := p.Get()
-		if err != nil {
-			util.EPrintf("failed to get conn: %v", err)
-		}
-		defer conn.Close()
-		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*120) // 设置60秒定时往下传
-		defer cancel()
-
-		reply, err := client.PutInRaft(ctx, request)
-		if err != nil {
-			// fmt.Println("客户端调用PutInRaft有问题")
-			// util.EPrintf("err in PutInRaft-调用了服务器的put方法: %v", err)
-			// util.EPrintf("seqid：%v, err in PutInRaft-调用了服务器的put方法: %v",request.SeqId, err)
-			// 这里防止服务器是宕机了，所以要change leader
-			return nil, err
-		}
-		if reply.Err == raft.OK {
-			// fmt.Printf("找到了leader %v\n",kvc.leaderId)
-			return reply, nil
-		} else if reply.Err == raft.ErrWrongLeader {
-			kvc.changeToLeader(int(reply.LeaderId))
-			// fmt.Printf("等待leader的出现,更改后的leaderid是%v\n",kvc.leaderId)
-			// time.Sleep(6 * time.Millisecond)
-		} else if reply.Err == "defeat" {
-			return reply, nil
-		}
-	}
-}
-
+// InitPool builds the shared cluster client (one connection pool per server).
 func (kvc *KVClient) InitPool() {
-	// 这就是自己修改grpc线程池option参数的做法
-	DesignOptions := pool.Options{
-		Dial:                 pool.Dial,
-		MaxIdle:              150,
-		MaxActive:            300,
-		MaxConcurrentStreams: 800,
-		Reuse:                true,
-	}
-	fmt.Printf("servers:%v\n", kvc.Kvservers)
-	// 根据servers的地址，创建了一一对应server地址的grpc连接池
-	for i := 0; i < len(kvc.Kvservers); i++ {
-		// fmt.Println("进入到生成连接池的for循环")
-		peers_single := []string{kvc.Kvservers[i]}
-		p, err := pool.New(peers_single, DesignOptions)
-		if err != nil {
-			util.EPrintf("failed to new pool: %v", err)
-		}
-		// grpc连接池组
-		kvc.pools = append(kvc.pools, p)
-	}
-}
-
-func (kvc *KVClient) changeToLeader(Id int) (leaderId int) {
-	kvc.mu.Lock()
-	defer kvc.mu.Unlock()
-	kvc.leaderId = Id
-	return kvc.leaderId
-}
-
-func nrand() int64 { //随机生成clientId
-	max := big.NewInt(int64(1) << 62)
-	bigx, _ := crand.Int(crand.Reader, max)
-	x := bigx.Int64()
-	return x
+	kvc.c = client.MustNew(kvc.Kvservers, client.Options{})
 }
 
 func main() {
@@ -302,7 +205,6 @@ func main() {
 	servers := strings.Split(*ser, ",")
 	kvc := new(KVClient)
 	kvc.Kvservers = servers
-	kvc.clientId = nrand()
 
 	value := util.GenerateLargeValue(valueSize)
 	kvc.InitPool()

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"math/rand"
@@ -14,12 +13,7 @@ import (
 	"time"
 
 	"gitee.com/dong-shuishui/FlexSync/api/kvrpc"
-	"gitee.com/dong-shuishui/FlexSync/internal/pool"
-	"gitee.com/dong-shuishui/FlexSync/internal/raft"
-	"gitee.com/dong-shuishui/FlexSync/internal/util"
-
-	crand "crypto/rand"
-	"math/big"
+	"gitee.com/dong-shuishui/FlexSync/internal/client"
 )
 
 var (
@@ -37,12 +31,8 @@ var (
 
 type KVClient struct {
 	Kvservers []string
-	mu        sync.Mutex
-	clientId  int64
-	seqId     int64
-	leaderId  int
+	c         *client.Client
 
-	pools        []pool.Pool
 	goodPut      int
 	valuesize    int
 	totalLatency time.Duration
@@ -181,7 +171,7 @@ func (kvc *KVClient) rangeGetWithPagination(startKey string, endKey string, tota
 
 	// 如果范围小于等于batchSize，直接执行单次scan
 	if totalRange <= *batchSize {
-		return kvc.rangeGet(startKey, endKey)
+		return kvc.c.Scan(startKey, endKey)
 	}
 
 	// 否则进行分页scan
@@ -195,7 +185,7 @@ func (kvc *KVClient) rangeGetWithPagination(startKey string, endKey string, tota
 		}
 
 		// 执行单次scan
-		reply, err := kvc.rangeGet(strconv.Itoa(currentStart), strconv.Itoa(currentEnd))
+		reply, err := kvc.c.Scan(strconv.Itoa(currentStart), strconv.Itoa(currentEnd))
 		if err != nil {
 			return nil, err
 		}
@@ -213,72 +203,9 @@ func (kvc *KVClient) rangeGetWithPagination(startKey string, endKey string, tota
 
 	// 返回合并后的结果
 	return &kvrpc.ScanRangeResponse{
-		Err:           raft.OK,
+		Err:           kvrpc.OK,
 		KeyValuePairs: allResults,
 	}, nil
-}
-
-// 原有的rangeGet函数保持不变，但现在只处理单个批次
-func (kvc *KVClient) rangeGet(key1 string, key2 string) (*kvrpc.ScanRangeResponse, error) {
-	args := &kvrpc.ScanRangeRequest{
-		StartKey: key1,
-		EndKey:   key2,
-	}
-	for {
-		p := kvc.pools[kvc.leaderId]
-		conn, err := p.Get()
-		if err != nil {
-			util.EPrintf("failed to get conn: %v", err)
-		}
-		defer conn.Close()
-		client := kvrpc.NewKVClient(conn.Value())
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*600)
-		defer cancel()
-		reply, err := client.ScanRangeInRaft(ctx, args)
-		if err != nil {
-			return nil, err
-		}
-		if reply.Err == raft.ErrWrongLeader {
-			kvc.changeToLeader(int(reply.LeaderId))
-			continue
-		}
-		if reply.Err == raft.OK {
-			return reply, nil
-		}
-	}
-}
-
-func (kvc *KVClient) InitPool() {
-	DesignOptions := pool.Options{
-		Dial:                 pool.Dial,
-		MaxIdle:              150,
-		MaxActive:            300,
-		MaxConcurrentStreams: 800,
-		Reuse:                true,
-	}
-	fmt.Printf("servers:%v\n", kvc.Kvservers)
-	for i := 0; i < len(kvc.Kvservers); i++ {
-		peers_single := []string{kvc.Kvservers[i]}
-		p, err := pool.New(peers_single, DesignOptions)
-		if err != nil {
-			util.EPrintf("failed to new pool: %v", err)
-		}
-		kvc.pools = append(kvc.pools, p)
-	}
-}
-
-func (kvc *KVClient) changeToLeader(Id int) (leaderId int) {
-	kvc.mu.Lock()
-	defer kvc.mu.Unlock()
-	kvc.leaderId = Id
-	return kvc.leaderId
-}
-
-func nrand() int64 {
-	max := big.NewInt(int64(1) << 62)
-	bigx, _ := crand.Int(crand.Reader, max)
-	x := bigx.Int64()
-	return x
 }
 
 // 保存测试结果到文件
@@ -349,6 +276,11 @@ func saveSummaryToFile(filePath string, numTests int, avgThroughput float64, avg
 	return nil
 }
 
+// InitPool builds the shared cluster client (one connection pool per server).
+func (kvc *KVClient) InitPool() {
+	kvc.c = client.MustNew(kvc.Kvservers, client.Options{})
+}
+
 func main() {
 	flag.Parse()
 
@@ -359,7 +291,6 @@ func main() {
 	servers := strings.Split(*ser, ",")
 	kvc := new(KVClient)
 	kvc.Kvservers = servers
-	kvc.clientId = nrand()
 
 	kvc.InitPool()
 
@@ -435,8 +366,5 @@ func main() {
 		fmt.Printf("汇总信息已保存到 %s\n", resultFilePath)
 	}
 
-	for _, pool := range kvc.pools {
-		pool.Close()
-		util.DPrintf("The raft pool has been closed")
-	}
+	kvc.c.Close()
 }
