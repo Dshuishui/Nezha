@@ -14,7 +14,7 @@ orchestration runs from the driving machine.
 | `failover.sh` | driver | kill the leader, wait for the election, read both survivors, write through the new leader, read again |
 | `failover-loop.sh` | driver | run `failover.sh` N times |
 | `recover.sh` | driver | crash recovery: `MODE=restart` restarts a killed follower and a killed leader; `MODE=midgc` kills a follower inside the GC window and restarts it |
-| `lsmraft.sh` | driver | LSM-Raft baseline (`-system lsm-raft`): followers fed only by ingested spans are read directly, then leader kill, write through the new leader, restart of the killed node; see `docs/lsm-raft-baseline.md` |
+| `lsmraft.sh` | driver | LSM-Raft baseline (`-system lsm-raft`): followers fed only by ingested spans are read directly, then leader kill, write through the new leader, restart of the killed node |
 
 Deploy the server-side scripts with `scp three-node.sh tikv240:~/ && ssh tikv240 chmod +x
 ~/three-node.sh` (and the same for `tikv241` and `rep-node.sh`). The drivers call them as

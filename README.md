@@ -368,7 +368,6 @@ Nezha/
 │
 ├── deploy/docker/             # Dockerfile, docker-compose.yml, manage.sh
 ├── .github/workflows/         # CI: build and push the Docker image
-├── docs/                      # Design documents (e.g. crash recovery)
 └── tla/                       # TLA+ specifications of the KVS-Raft protocol
 ```
 
