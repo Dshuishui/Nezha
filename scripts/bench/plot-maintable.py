@@ -56,11 +56,12 @@ def load(path):
 
 
 def stat(rows, key, col):
+    """返回 (中位数, 最小, 最大, 全部样本)。样本要原样带出来画到图上。"""
     rs = rows.get(key, [])
     vals = [float(r[col]) for r in rs if r[col] not in ("NA", "")]
     if not vals:
         return None
-    return st.median(vals), min(vals), max(vals)
+    return st.median(vals), min(vals), max(vals), vals
 
 
 def plot(data, out_dir, metric):
@@ -75,12 +76,16 @@ def plot(data, out_dir, metric):
         "ytick.labelsize": 8,
         "legend.fontsize": 9,
         "legend.frameon": False,
+        # 纹理调细调浅：默认的粗黑斜线会把细误差棒淹掉，而纹理只是给黑白打印用的
+        # 冗余编码，不该抢主体。
+        "hatch.linewidth": 0.55,
+        "hatch.color": "#33333366",
         # 论文图不留多余边距，交给 LaTeX 排版
         "figure.constrained_layout.use": True,
     })
 
     # 上方留出图例的高度，否则图例会压住子图标题
-    fig, axes = plt.subplots(1, 3, figsize=(9.6, 3.0))
+    fig, axes = plt.subplots(1, 3, figsize=(9.8, 3.1))
 
     def thousands(x, _):
         """10 万写成 100k：论文图的纵轴不该占掉半个子图的宽度。"""
@@ -94,19 +99,32 @@ def plot(data, out_dir, metric):
     for ax, op in zip(axes, OPS):
         xs = range(len(VSIZES))
         for si, sysname in enumerate(SYSTEMS):
-            meds, los, his = [], [], []
+            meds, los, his, samples = [], [], [], []
             for v in VSIZES:
                 s = stat(data, (sysname, op, v), col)
                 if s is None:
-                    meds.append(0); los.append(0); his.append(0)
+                    meds.append(0); los.append(0); his.append(0); samples.append([])
                 else:
-                    m, lo, hi = s
-                    meds.append(m); los.append(m - lo); his.append(hi - m)
+                    m, lo, hi, vals = s
+                    meds.append(m); los.append(m - lo); his.append(hi - m); samples.append(vals)
             pos = [x + (si - 1.5) * width for x in xs]
             ax.bar(pos, meds, width, yerr=[los, his],
                    color=COLORS[si], hatch=HATCHES[si], edgecolor="black",
-                   linewidth=0.6, error_kw=dict(lw=0.7, capsize=2, capthick=0.7),
+                   linewidth=0.6, zorder=2,
+                   error_kw=dict(lw=1.1, capsize=3.2, capthick=1.1,
+                                 ecolor="#111111", zorder=4),
                    label=LABELS[sysname])
+            # 三轮的原始值直接画上去。轮间方差不到 2%，误差棒本身几乎看不见；
+            # 把样本点画出来既说明 n=3，也让读者自己判断离散程度——
+            # 这比放大误差棒诚实（放大会让"很稳"看起来像"有波动"）。
+            for p, vals in zip(pos, samples):
+                if len(vals) < 2:
+                    continue
+                spread = width * 0.16
+                offs = [(k - (len(vals) - 1) / 2) * spread for k in range(len(vals))]
+                ax.plot([p + o for o in offs], vals, linestyle="none", marker="o",
+                        markersize=2.6, markerfacecolor="white",
+                        markeredgecolor="#111111", markeredgewidth=0.6, zorder=5)
 
         ax.set_xticks(list(xs))
         ax.set_xticklabels([f"{v}B" for v in VSIZES])
