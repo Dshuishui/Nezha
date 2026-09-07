@@ -52,7 +52,7 @@ cat > "$DIR/meta.txt" <<EOF
 experiment  $CAT
 date        $DATE
 label       $LABEL
-commit      $RSHORT   （服务器 $HOST 上仓库的 HEAD；$SAME）
+commit      ${RSHORT}   （服务器 ${HOST} 上仓库的 HEAD；${SAME}）
 host        $HOST
 command     ${CMD:-（未记录——请补上完整命令行）}
 params      ${PARAMS:-（未记录）}

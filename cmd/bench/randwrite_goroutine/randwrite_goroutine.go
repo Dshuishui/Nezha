@@ -21,6 +21,12 @@ var (
 	dnums = flag.Int("dnums", 1000000, "data num")
 	// getratio = flag.Int("getratio", 1, "Get Times per Put Times")
 	vsize = flag.Int("vsize", 64, "value size in type")
+	// keyspace>0 把本次跑从"装载"变成"覆盖写"：键从 [0, keyspace) 有放回地抽，
+	// 而不是 0..dnums-1 的一个排列。装载阶段每个键只写一次、不产生任何垃圾，
+	// 而写放大与空间放大在文献里量的是回收垃圾的代价（Scavenger+/HashKV/Titan
+	// 都是"装载→update 制造垃圾→触发 GC→再测"），没有覆盖写就测不到那件事。
+	keyspace = flag.Int("keyspace", 0, "overwrite mode: draw keys from [0,keyspace) with repetition (0 = unique load)")
+	dist     = flag.String("dist", "zipf", "overwrite key distribution: zipf|uniform（仅 keyspace>0 时有效）")
 )
 
 type KVClient struct {
@@ -96,7 +102,12 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 	wg.Add(*cnums)
 	kvc.goodPut = 0
 
-	allKeys := generateUniqueRandomInts(0, *dnums-1)
+	// 装载模式下键是 0..dnums-1 的排列（每键一次，零垃圾）；覆盖写模式下每个
+	// goroutine 自己按分布抽键，见下方 keysFor。
+	var allKeys []int
+	if *keyspace <= 0 {
+		allKeys = generateUniqueRandomInts(0, *dnums-1)
+	}
 	results := make(chan putResult, *cnums)
 
 	for i := 0; i < *cnums; i++ {
@@ -109,7 +120,7 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 			if i == *cnums-1 {
 				end = *dnums
 			}
-			keys := allKeys[start:end]
+			keys := keysFor(allKeys, start, end, i)
 
 			startTime := time.Now()
 			for j := 0; j < len(keys); j++ {
@@ -180,6 +191,29 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 	fmt.Println(lat.Stats().Line("PUT"))
 	fmt.Println(bench.ThroughputLine("PUT", totalGoodPut, int64(totalDataSize*1e6), maxTotalLatency))
 	return avgThroughput, avgLatency
+}
+
+// keysFor 给第 i 个 goroutine 挑出它要写的键。
+// 装载模式直接切排列；覆盖写模式按 -dist 抽样，Zipf 参数与 zipf_read 保持一致，
+// 这样"写热点"与"读热点"是同一批键，垃圾的分布才与真实负载相符。
+func keysFor(allKeys []int, start, end, worker int) []int {
+	if *keyspace <= 0 {
+		return allKeys[start:end]
+	}
+	n := end - start
+	out := make([]int, n)
+	rnd := rand.New(rand.NewSource(time.Now().UnixNano() + int64(worker)))
+	if *dist == "uniform" {
+		for j := range out {
+			out[j] = rnd.Intn(*keyspace)
+		}
+		return out
+	}
+	z := rand.NewZipf(rnd, 1.01, 1, uint64(*keyspace-1))
+	for j := range out {
+		out[j] = int(z.Uint64())
+	}
+	return out
 }
 
 func generateUniqueRandomInts(min, max int) []int {
