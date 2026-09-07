@@ -41,7 +41,11 @@ OPS = ["PUT", "GET", "SCAN"]
 VSIZES = [64, 256, 1024]
 
 METRIC = {
+    # 两种吞吐口径都保留：ops/s 是请求速率，MB/s 是数据速率。
+    # 同样的 ops/s 在 1024B 档搬运的数据是 64B 档的 16 倍，只看 ops/s 会低估大 value；
+    # 反过来只看 MB/s 又会掩盖小 value 下的请求处理能力。论文里通常两者并列。
     "throughput": ("ops_per_s", "Throughput (ops/s)", "higher is better"),
+    "mbps": ("mb_per_s", "Throughput (MB/s)", "higher is better"),
     "p50": ("p50_ms", "Median latency (ms)", "lower is better"),
     "p99": ("p99_ms", "99th-percentile latency (ms)", "lower is better"),
 }
@@ -64,7 +68,7 @@ def stat(rows, key, col):
     return st.median(vals), min(vals), max(vals), vals
 
 
-def plot(data, out_dir, metric):
+def plot(data, out_dir, metric, logy=False):
     col, ylabel, direction = METRIC[metric]
     plt.rcParams.update({
         "font.family": "serif",
@@ -134,8 +138,13 @@ def plot(data, out_dir, metric):
         ax.set_axisbelow(True)
         ax.spines[["top", "right"]].set_visible(False)
         ax.margins(x=0.06)
-        if metric == "throughput":
+        if metric == "throughput" and not logy:
             ax.yaxis.set_major_formatter(FuncFormatter(thousands))
+        if logy:
+            # MB/s 跨 value 档相差一个数量级以上（每次操作搬的数据量差 16 倍），
+            # 线性轴下小 value 那组被压扁，而要比的恰恰是同一档内四个系统的差别。
+            ax.set_yscale("log")
+            ax.grid(axis="y", which="both", linewidth=0.4, alpha=0.3)
 
     axes[0].set_ylabel(f"{ylabel}\n({direction})")
 
@@ -144,8 +153,9 @@ def plot(data, out_dir, metric):
     fig.legend(handles=handles, loc="upper center", ncol=4,
                bbox_to_anchor=(0.5, 1.10), columnspacing=1.6, handlelength=1.6)
 
+    suffix = "-log" if logy else ""
     for ext in ("pdf", "png"):
-        p = f"{out_dir}/maintable-{metric}.{ext}"
+        p = f"{out_dir}/maintable-{metric}{suffix}.{ext}"
         fig.savefig(p, dpi=200, bbox_inches="tight")
         print(p)
     plt.close(fig)
@@ -159,8 +169,10 @@ def main():
     csv_path = args[0]
     out_dir = args[1] if len(args) > 1 else "."
     data = load(csv_path)
-    for m in (metrics or ["throughput", "p50", "p99"]):
+    for m in (metrics or ["throughput", "mbps", "p50", "p99"]):
         plot(data, out_dir, m)
+    if not metrics:
+        plot(data, out_dir, "mbps", logy=True)
 
 
 if __name__ == "__main__":
