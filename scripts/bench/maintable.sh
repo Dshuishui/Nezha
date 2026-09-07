@@ -19,7 +19,7 @@
 #   VSIZES="64 256 1024"
 #   SYSTEMS="baseline nezha-nogc nezha nezha-avp"
 #   SYNC_WAL=0        1 则加 -syncWAL（每条一次 fsync）
-#   PUT_CLIENTS=50 GET_CLIENTS=20 GET_OPS=20000 SCAN_TESTS=20 SCAN_GAP=1000
+#   PUT_CLIENTS=50 GET_CLIENTS=20 GET_OPS=20000 SCAN_DNUMS=250 SCAN_TESTS=20 SCAN_GAP=1000
 #   OUT=/tmp/maintable-<标签>.csv
 set -u
 GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
@@ -40,6 +40,10 @@ SYNC_WAL="${SYNC_WAL:-0}"
 PUT_CLIENTS="${PUT_CLIENTS:-50}"
 GET_CLIENTS="${GET_CLIENTS:-20}"
 GET_OPS="${GET_OPS:-20000}"
+# SCAN 的样本数 = SCAN_DNUMS × SCAN_TESTS。冒烟时用 4×20=80 个查询，p99 与 p999
+# 双双落在最大值上——最近秩下 80 个样本的 p99 就是第 80 个，即 max，这个分位数没有意义。
+# 5000 个查询（每个约 3.7ms，合计约 18s）才让 p99 有 50 个样本垫底。
+SCAN_DNUMS="${SCAN_DNUMS:-250}"
 SCAN_TESTS="${SCAN_TESTS:-20}"
 SCAN_GAP="${SCAN_GAP:-1000}"
 OUT="${OUT:-/tmp/maintable-$LABEL.csv}"
@@ -112,7 +116,9 @@ for sys in $SYSTEMS; do
     info "[$done_n/$total] $sys value=${vs}B entries=$N round=$round"
     start_node "$sys" "$GCGB" "$DATA"
     W0=$(write_bytes "$PID")
-    RSSF="$DATA/rss.txt"; ( while kill -0 "$PID" 2>/dev/null; do awk '/^VmRSS:/{print $2}' "/proc/$PID/status" 2>/dev/null; sleep 3; done > "$RSSF" ) & SAMPLER=$!
+    RSSF="$DATA/rss.txt"
+    ( while kill -0 "$PID" 2>/dev/null; do awk '/^VmRSS:/{print $2}' "/proc/$PID/status" 2>/dev/null; sleep 3; done > "$RSSF" ) & SAMPLER=$!
+    disown "$SAMPLER" 2>/dev/null || true   # 否则 kill 之后 shell 会往 stderr 打一行 Terminated
 
     # ---- PUT ----
     /tmp/mt-randwrite_goroutine -cnums "$PUT_CLIENTS" -dnums "$N" -vsize "$vs" -servers "$ADDR" > "$DATA/put.out" 2>&1
@@ -147,7 +153,7 @@ for sys in $SYSTEMS; do
     [ -n "$GETL" ] || { tail -20 "$DATA/get.out"; die "GET 无分位数输出 ($sys/$vs/$round)"; }
 
     # ---- SCAN ----
-    /tmp/mt-scan_pro -cnums 1 -dnums 4 -tests "$SCAN_TESTS" -gapkey "$SCAN_GAP" -keyspace "$N" -servers "$ADDR" > "$DATA/scan.out" 2>&1
+    /tmp/mt-scan_pro -cnums 1 -dnums "$SCAN_DNUMS" -tests "$SCAN_TESTS" -gapkey "$SCAN_GAP" -keyspace "$N" -servers "$ADDR" > "$DATA/scan.out" 2>&1
     SCANL=$(grep '^\[LATENCY\]' "$DATA/scan.out" | tail -1)
     SCANT=$(grep '^\[THROUGHPUT\]' "$DATA/scan.out" | tail -1)
     YIELD=$(grep '^\[SCANYIELD\]' "$DATA/scan.out" | tail -1)
