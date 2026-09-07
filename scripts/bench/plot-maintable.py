@@ -68,8 +68,14 @@ def stat(rows, key, col):
     return st.median(vals), min(vals), max(vals), vals
 
 
-def plot(data, out_dir, metric, logy=False):
+def plot(data, out_dir, metric, logy=False, norm=False):
     col, ylabel, direction = METRIC[metric]
+    if norm:
+        # 归一化到 baseline：每格除以该 (操作, value 档) 下 baseline 的中位数。
+        # 好处是把"绝对值差一个数量级"的三个面板放到同一把尺子上，读者一眼看到
+        # 的是倍数而不是刻度；代价是丢掉绝对性能，所以它是绝对值图的补充而非替代。
+        ylabel = f"Normalized {ylabel.split(' (')[0].lower()}"
+        direction = "baseline = 1.0; " + ("higher is better" if metric in ("throughput", "mbps") else "lower is better")
     plt.rcParams.update({
         "font.family": "serif",
         "font.serif": ["Times New Roman", "DejaVu Serif"],
@@ -108,9 +114,17 @@ def plot(data, out_dir, metric, logy=False):
                 s = stat(data, (sysname, op, v), col)
                 if s is None:
                     meds.append(0); los.append(0); his.append(0); samples.append([])
-                else:
-                    m, lo, hi, vals = s
-                    meds.append(m); los.append(m - lo); his.append(hi - m); samples.append(vals)
+                    continue
+                m, lo, hi, vals = s
+                if norm:
+                    b = stat(data, ("baseline", op, v), col)
+                    if b is None or b[0] == 0:
+                        meds.append(0); los.append(0); his.append(0); samples.append([])
+                        continue
+                    d = b[0]
+                    m, lo, hi = m / d, lo / d, hi / d
+                    vals = [x / d for x in vals]
+                meds.append(m); los.append(m - lo); his.append(hi - m); samples.append(vals)
             pos = [x + (si - 1.5) * width for x in xs]
             ax.bar(pos, meds, width, yerr=[los, his],
                    color=COLORS[si], hatch=HATCHES[si], edgecolor="black",
@@ -138,6 +152,9 @@ def plot(data, out_dir, metric, logy=False):
         ax.set_axisbelow(True)
         ax.spines[["top", "right"]].set_visible(False)
         ax.margins(x=0.06)
+        if norm:
+            # baseline 的参考线要压在柱子下面，否则会在柱面上划一道
+            ax.axhline(1.0, color="#111111", linewidth=0.8, linestyle=(0, (4, 3)), zorder=1)
         if metric == "throughput" and not logy:
             ax.yaxis.set_major_formatter(FuncFormatter(thousands))
         if logy:
@@ -153,7 +170,7 @@ def plot(data, out_dir, metric, logy=False):
     fig.legend(handles=handles, loc="upper center", ncol=4,
                bbox_to_anchor=(0.5, 1.10), columnspacing=1.6, handlelength=1.6)
 
-    suffix = "-log" if logy else ""
+    suffix = ("-norm" if norm else "") + ("-log" if logy else "")
     for ext in ("pdf", "png"):
         p = f"{out_dir}/maintable-{metric}{suffix}.{ext}"
         fig.savefig(p, dpi=200, bbox_inches="tight")
@@ -173,6 +190,8 @@ def main():
         plot(data, out_dir, m)
     if not metrics:
         plot(data, out_dir, "mbps", logy=True)
+        plot(data, out_dir, "throughput", norm=True)
+        plot(data, out_dir, "p99", norm=True)
 
 
 if __name__ == "__main__":
