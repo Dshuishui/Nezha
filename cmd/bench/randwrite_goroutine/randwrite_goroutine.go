@@ -4,12 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"gitee.com/dong-shuishui/FlexSync/internal/bench"
 	"gitee.com/dong-shuishui/FlexSync/internal/client"
 	"gitee.com/dong-shuishui/FlexSync/internal/util"
 )
@@ -172,16 +172,13 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 	// 百分位。平均值掩盖尾部：几个 60 秒超时能把总耗时拉长数百秒、吞吐腰斩，
 	// 而平均延迟几乎不动——它们被摊进二十万个请求里。吞吐由最慢的 goroutine
 	// 决定，所以它测的是本轮撞上几次超时，不是系统快慢。
-	if len(allLatencies) > 0 {
-		sort.Slice(allLatencies, func(i, j int) bool { return allLatencies[i] < allLatencies[j] })
-		pct := func(p float64) time.Duration {
-			return allLatencies[int(float64(len(allLatencies)-1)*p)]
-		}
-		ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
-		fmt.Printf("latency percentiles: p50=%.3fms p90=%.3fms p99=%.3fms p999=%.3fms max=%.3fms samples=%d\n",
-			ms(pct(0.50)), ms(pct(0.90)), ms(pct(0.99)), ms(pct(0.999)),
-			ms(allLatencies[len(allLatencies)-1]), len(allLatencies))
-	}
+	//
+	// 统计改用 internal/bench，与 GET/SCAN 同一套字段和同一种分位数定义，
+	// 采集脚本才能用一个解析器读三种负载。
+	var lat bench.Latencies
+	lat.Append(allLatencies)
+	fmt.Println(lat.Stats().Line("PUT"))
+	fmt.Println(bench.ThroughputLine("PUT", totalGoodPut, int64(totalDataSize*1e6), maxTotalLatency))
 	return avgThroughput, avgLatency
 }
 

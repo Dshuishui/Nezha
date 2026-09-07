@@ -10,8 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"gitee.com/dong-shuishui/FlexSync/internal/bench"
 	"gitee.com/dong-shuishui/FlexSync/internal/client"
 	"gitee.com/dong-shuishui/FlexSync/internal/pool"
 )
@@ -96,6 +98,9 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 			// var totalDataSize float64
 			// var totalActualLatency time.Duration
 
+			// 每次范围查询单独计时，攒在本地切片里，本 goroutine 跑完一次性交出去。
+			samples := make([]time.Duration, 0, base)
+
 			for j := 0; j < base; j++ {
 				// 起点上界要留出一个 gapkey，否则区间尾部越过数据末端，
 				// 扫回来的条数比 gapkey 少，吞吐被系统性低估。
@@ -115,6 +120,7 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 				start := time.Now()
 				reply, err := kvc.c.Scan(startKey, endKey)
 				duration := time.Since(start)
+				samples = append(samples, duration)
 				if err != nil {
 					fmt.Printf("有问题：%v\n", err)
 				}
@@ -146,6 +152,8 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 						totalAvgLatency += avgItemLatency
 						localResult.totalDataSize += scanDataSize
 						localResult.totalLatency += duration
+						scanPairs.Add(int64(count))
+						scanBytes.Add(int64(count * localResult.valueSize))
 					}
 				}
 				if reply == nil {
@@ -155,6 +163,7 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 				}
 			}
 
+			scanLatencies.Append(samples)
 			if localResult.scanCount > 0 {
 				localResult.avgLatency = totalAvgLatency / time.Duration(localResult.scanCount)
 				// localResult.throughput = localResult.totalDataSize / totalActualLatency.Seconds() // 计算吞吐量还是得用实际读取这些数据所花费的时间
@@ -292,6 +301,13 @@ func (kvc *KVClient) InitPool() {
 	kvc.c = client.MustNew(kvc.Kvservers, client.Options{})
 }
 
+// 跨全部测试轮次收集，单轮的样本数不足以让 p999 有意义。
+var (
+	scanLatencies bench.Latencies
+	scanPairs     atomic.Int64 // 扫回来的键值对总数
+	scanBytes     atomic.Int64 // 扫回来的 value 字节数
+)
+
 func main() {
 	flag.Parse()
 	gapkey := *gapkeyArg
@@ -320,6 +336,7 @@ func main() {
 
 	var totalThroughput float64
 	var totalAvgLatency time.Duration
+	var benchElapsed time.Duration // 只累计测试本身，不含轮次之间的等待
 	numTests := *numTestsFlag
 
 	for i := 0; i < numTests; i++ {
@@ -355,6 +372,7 @@ func main() {
 
 		fmt.Printf("Test %d: elapse:%v, throught:%.4fMB/S, avg latency:%v, total %v, goodPut %v, client %v, valuesize %vB, Size %.2fMB\n",
 			i+1, elapsedTime, throughput, avgLatency, *dnums, kvc.goodPut, *cnums, kvc.valuesize, sum_Size_MB)
+		benchElapsed += elapsedTime
 
 		if i < numTests-1 {
 			if *restSecFlag > 0 {
@@ -369,6 +387,13 @@ func main() {
 	// 打印汇总信息到控制台
 	fmt.Printf("\nAverage throughput over %d tests: %.4fMB/S\n", numTests, avgThroughput)
 	fmt.Printf("Average latency over %d tests: %v\n", numTests, avgLatency)
+
+	// 采集脚本读下面这两行。SCAN 的一次操作是一次范围查询，所以 ops 是范围查询数，
+	// 另单列扫回来的键值对数——两者的比值就是每次查询的平均返回条数。
+	fmt.Println(scanLatencies.Stats().Line("SCAN"))
+	fmt.Println(bench.ThroughputLine("SCAN", scanLatencies.Len(), scanBytes.Load(), benchElapsed))
+	fmt.Printf("[SCANYIELD] op=SCAN queries=%d pairs=%d pairs_per_query=%.1f\n",
+		scanLatencies.Len(), scanPairs.Load(), float64(scanPairs.Load())/float64(max(scanLatencies.Len(), 1)))
 
 	// 保存汇总信息到文件
 	if err := saveSummaryToFile(resultFilePath, numTests, avgThroughput, avgLatency, gapkey); err != nil {

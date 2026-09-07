@@ -10,9 +10,19 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"gitee.com/dong-shuishui/FlexSync/internal/bench"
 	"gitee.com/dong-shuishui/FlexSync/internal/client"
+)
+
+// getLatencies 收集全部测试轮次的每请求延迟。分布报在进程结束时，跨轮合并——
+// 单轮的样本数（cnums × dnums）可能不足以让 p999 有意义。
+var (
+	getLatencies bench.Latencies
+	getFound     atomic.Int64 // 命中的请求数
+	getBytes     atomic.Int64 // 命中请求返回的 value 字节数
 )
 
 var (
@@ -101,16 +111,23 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 				return
 			}
 
+			// 每个请求单独计时，攒在本地切片里，跑完一次性交给收集器：
+			// 原先只记录整个循环的总耗时再除以次数，那样只有平均值，没有分布。
+			samples := make([]time.Duration, 0, base)
 			startTime := time.Now()
 			for j := 0; j < base; j++ {
 				// 使用 Zipf 分布生成键
 				keyNum := zipf.Uint64()%uint64(ks) + 1 // 确保键在有效范围内
 				targetKey := strconv.FormatUint(keyNum, 10)
 
+				reqStart := time.Now()
 				value, keyExist, err := kvc.c.Get(targetKey)
+				samples = append(samples, time.Since(reqStart))
 				if err == nil && keyExist && value != "ErrNoKey" {
 					localResult.count++
 					localResult.valueSize = len([]byte(value))
+					getFound.Add(1)
+					getBytes.Add(int64(localResult.valueSize))
 					// fmt.Printf("找到key:%v\n",targetKey)
 					continue
 				}
@@ -123,6 +140,7 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 			}
 
 			localResult.duration = time.Since(startTime)
+			getLatencies.Append(samples)
 			if localResult.count > 0 {
 				localResult.avgLatency = localResult.duration / time.Duration(localResult.count)
 				localResult.totalDataSize = float64(localResult.count*localResult.valueSize) / 1000000
@@ -305,9 +323,12 @@ func main() {
 	fmt.Printf("测试结果将保存到: %s\n", resultFilePath)
 	fmt.Printf("开始运行 %d 次测试...\n\n", numTests)
 
+	var benchElapsed time.Duration // 只累计测试本身，不含轮次之间的等待
 	for i := 0; i < numTests; i++ {
 		fmt.Printf("\n运行测试 %d / %d\n", i+1, numTests)
+		t0 := time.Now()
 		throughput, averageLatency := runTest(i+1, resultFilePath)
+		benchElapsed += time.Since(t0)
 		totalThroughput += throughput
 		totalAverageLatency += averageLatency
 
@@ -325,6 +346,12 @@ func main() {
 	// 打印汇总信息到控制台
 	fmt.Printf("\n%d 次测试的平均吞吐量: %.4f MB/S\n", numTests, averageThroughput)
 	fmt.Printf("%d 次测试的总平均延迟: %v\n", numTests, overallAverageLatency)
+
+	// 采集脚本读的是下面两行；上面那两个平均值保留，供与历史结果对照。
+	fmt.Println(getLatencies.Stats().Line("GET"))
+	fmt.Println(bench.ThroughputLine("GET", int(getFound.Load()), getBytes.Load(), benchElapsed))
+	fmt.Printf("[HITRATE] op=GET found=%d requested=%d ratio=%.4f\n",
+		getFound.Load(), getLatencies.Len(), float64(getFound.Load())/float64(max(getLatencies.Len(), 1)))
 
 	// 保存汇总信息到文件
 	if err := saveSummaryToFile(resultFilePath, numTests, averageThroughput, overallAverageLatency); err != nil {
