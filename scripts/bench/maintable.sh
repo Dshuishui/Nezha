@@ -20,6 +20,7 @@
 #   SYSTEMS="baseline nezha-nogc nezha nezha-avp"
 #   SYNC_WAL=0        1 则加 -syncWAL（每条一次 fsync）
 #   PUT_CLIENTS=50 GET_CLIENTS=20 GET_OPS=20000 SCAN_DNUMS=250 SCAN_TESTS=20 SCAN_GAP=1000
+#   GC_STABLE_CHECKS=4  读之前要求 GC 轮数连续几次检查不变（见 GC 一节的注释）
 #   OUT=/tmp/maintable-<标签>.csv
 set -u
 GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
@@ -46,6 +47,8 @@ GET_OPS="${GET_OPS:-20000}"
 SCAN_DNUMS="${SCAN_DNUMS:-250}"
 SCAN_TESTS="${SCAN_TESTS:-20}"
 SCAN_GAP="${SCAN_GAP:-1000}"
+# 连续这么多次（每次间隔 5s）检查 GC 轮数不变，才认为布局已稳定、可以开始读
+GC_STABLE_CHECKS="${GC_STABLE_CHECKS:-4}"
 OUT="${OUT:-/tmp/maintable-$LABEL.csv}"
 ADDR=127.0.0.1:3088
 IADDR=127.0.0.1:30881
@@ -128,13 +131,28 @@ for sys in $SYSTEMS; do
 
     # ---- GC ----
     # 只有 nezha / nezha-avp 会回收；另外两个恒为 0，是设计不是失败。
+    #
+    # 必须等到轮数**稳定**，不能只等"至少一轮"。GC 每 5 秒检查一次阈值，第一轮搬完后
+    # 新 valuelog 会继续增长、可能再触发一轮；写得越慢，GC 越有时间多跑。实测
+    # no-fsync 组多数格子停在 1 轮，而 fsync 组（写入慢 50 倍、PUT 阶段几十分钟）
+    # 全部跑满 2 轮——于是两组的读性能是在**不同的存储布局**上测的，
+    # "fsync 的影响"里混进了"GC 轮数的影响"，SCAN 那几列因此不可比。
+    # 等到连续 GC_STABLE_CHECKS 次检查轮数不变，读取时的布局才是确定的。
     GC=0
     case "$sys" in nezha|nezha-avp)
-      for _ in $(seq 1 30); do
+      prev=-1; stable=0
+      for _ in $(seq 1 60); do
         GC=$(grep -c '轮垃圾回收完成' "$DATA/n.log") || GC=0
-        [ "$GC" -ge 1 ] && break; sleep 5
+        if [ "$GC" = "$prev" ] && [ "$GC" -ge 1 ]; then
+          stable=$((stable+1))
+          [ "$stable" -ge "$GC_STABLE_CHECKS" ] && break
+        else
+          stable=0; prev=$GC
+        fi
+        sleep 5
       done
       [ "$GC" -ge 1 ] || { ls -l "$DATA"/data/valuelog/ 2>/dev/null | tail -3; die "GC 未触发（阈值 ${GCGB}GB）——读路径不走 sortedFile，这一格测的不是要测的东西"; }
+      [ "$stable" -ge "$GC_STABLE_CHECKS" ] || warn "GC 轮数在 300s 内未稳定（当前 $GC 轮），本格的读数据与其它格可能不可比"
       ;;
     esac
     kill -0 "$PID" 2>/dev/null || { tail -30 "$DATA/n.log"; die "节点在 GC 中崩溃 ($sys/$vs/$round)"; }
