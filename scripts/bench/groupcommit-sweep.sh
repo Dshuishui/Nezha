@@ -88,8 +88,9 @@ for w in $WINDOWS; do
       [ -n "$P" ] && break
       sleep 16
     done
-    # 关闭攒批时没有 [GROUP-COMMIT] 行，那不是失败——avg_batch 记 1 才是事实
-    if [ "$w" = 0 ] && [ -z "${G:-}" ]; then G="batches=NA entries=NA avg_batch=1 max_batch=1 fsync_saved=0"; fi
+    # 关闭攒批时批大小要记 1，不是 0 或空：每条日志各自一次写入 + 一次 fsync，
+    # 那就是"每批一条"。记 0 会让饱和点的增幅计算除零，也不符合事实。
+    if [ "$w" = 0 ]; then G="batches=NA entries=NA avg_batch=1 max_batch=1 fsync_saved=0"; fi
     [ -n "${P:-}" ] || warn "window=$w round=$round 没拿到 [PUT-BREAKDOWN]，该行相关列为 NA"
 
     printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
