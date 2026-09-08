@@ -10,9 +10,10 @@
 #  1. 分子以**设备级**计数器为准（/sys/block/<dev>/<part>/stat 第 7 字段 = 写扇区数 ×512），
 #     它是真正落到块设备的字节。/proc/PID/io 的 write_bytes 按内核文档是"页被弄脏时"
 #     计数，被覆盖后从未落盘的脏页也算，只能作交叉验证。跑时必须独占该磁盘。
-#  2. 取数前**等静默**：轮询到设备写入连续若干秒不再增长才读终值。否则 LSM 里还没跑完的
-#     compaction 不被计入，而 baseline 把完整 value 存在 LSM 里、这部分恰恰最重——
-#     不等的话 baseline 被系统性低估。
+#  2. 取数前 sync + **等静默**：判据看被测进程的写入速率降到阈值以下（不是设备计数不变——
+#     数据目录在整机根文件系统上，系统守护进程一直在写，那个条件永远不成立）。
+#     不等的话 LSM 里还没跑完的 compaction 不被计入，而 baseline 把完整 value 存在 LSM 里、
+#     这部分恰恰最重，会被系统性低估。
 #  3. 分母分两个口径：write_amp_total 用"装载+覆盖"的全部用户字节；
 #     write_amp_gc 只用覆盖阶段的用户字节，量的是"每写入一字节新数据、GC 连带写了多少"。
 #     空间放大的分母是**活数据**（覆盖之后仍是 N 个键），不是累计写入量。
@@ -45,7 +46,8 @@ DIST="${DIST:-zipf}"
 DEV="${DEV:-sdc/sdc3}"
 SYNC_WAL="${SYNC_WAL:-0}"
 PUT_CLIENTS="${PUT_CLIENTS:-50}"
-QUIET_SECS="${QUIET_SECS:-10}"     # 连续这么多秒设备写入不增长才算静默
+QUIET_SECS="${QUIET_SECS:-10}"     # 连续这么多秒进程写入低于阈值才算静默
+QUIET_BYTES="${QUIET_BYTES:-1048576}"  # 每 2 秒写入低于这个字节数即视为已停止
 QUIET_MAX="${QUIET_MAX:-180}"      # 等静默的上限，超时记 NA 而不是硬等
 OUT="${OUT:-/tmp/amplification-$LABEL.csv}"
 ADDR=127.0.0.1:3088
@@ -64,18 +66,26 @@ dev_written(){ awk '{printf "%.0f", $7*512}' "$DEVSTAT"; }
 proc_written(){ awk '/^write_bytes:/{print $2}' "/proc/$1/io" 2>/dev/null || echo 0; }
 dir_bytes(){ du -sb "$1" 2>/dev/null | awk '{print $1}'; }
 
-# wait_quiet：等到设备写入连续 QUIET_SECS 秒不变。返回 0 表示确实静默，1 表示超时。
+# wait_quiet <被测进程pid>：等本进程不再写。返回 0 表示已静默，1 表示超时。
+#
+# 判据看**进程级**计数而非设备级：数据目录在整机的根文件系统上，系统日志与守护进程
+# 一直在写，"设备计数完全不变"这个条件永远不可能满足——第一版就是这么写的，
+# 36 格全部白等 180 秒后标记超时。
+#
+# 而且判据是"速率低于阈值"而不是"完全不变"：回写是分批的，偶尔几十 KB 的尾巴
+# 不该让整个等待失败。
 wait_quiet(){
-  local last cur stable=0 waited=0
-  last=$(dev_written)
+  local pid="$1" last cur delta stable=0 waited=0
+  last=$(proc_written "$pid")
   while [ "$waited" -lt "$QUIET_MAX" ]; do
     sleep 2; waited=$((waited+2))
-    cur=$(dev_written)
-    if [ "$cur" = "$last" ]; then
+    cur=$(proc_written "$pid")
+    delta=$((cur-last)); last=$cur
+    if [ "$delta" -lt "$QUIET_BYTES" ]; then
       stable=$((stable+2))
       [ "$stable" -ge "$QUIET_SECS" ] && return 0
     else
-      stable=0; last=$cur
+      stable=0
     fi
   done
   return 1
@@ -137,7 +147,10 @@ for sys in $SYSTEMS; do
     D0=$(dev_written)
     P0=$(proc_written "$PID")
     /tmp/amp-randwrite -cnums "$PUT_CLIENTS" -dnums "$N" -vsize "$vs" -servers "$ADDR" > "$D/load.out" 2>&1
-    wait_quiet; QL=$?
+    # 先 sync 再等静默：不强制落盘的话，装载阶段弄脏的页会在覆盖阶段才被写下去，
+    # 两个阶段的设备字节划分就是错的（实测 load/upd 会整个颠倒而合计不变）。
+    sync
+    wait_quiet "$PID"; QL=$?
     D1=$(dev_written)
 
     # ---- 覆盖写：从 [0,N) 按 $DIST 抽键，制造垃圾 ----
@@ -145,18 +158,27 @@ for sys in $SYSTEMS; do
         -keyspace "$N" -dist "$DIST" -servers "$ADDR" > "$D/update.out" 2>&1
 
     # ---- 等 GC ----
+    # 等轮数稳定而非"至少一轮"，理由同 maintable.sh：写得慢的配置 GC 会多跑几轮，
+    # 不等的话不同格子的回收量不可比。
     GC=0
     case "$sys" in nezha|nezha-avp)
-      for _ in $(seq 1 40); do
+      prev=-1; stable=0
+      for _ in $(seq 1 60); do
         GC=$(grep -c '轮垃圾回收完成' "$D/n.log") || GC=0
-        [ "$GC" -ge 1 ] && break; sleep 5
+        if [ "$GC" = "$prev" ] && [ "$GC" -ge 1 ]; then
+          stable=$((stable+1)); [ "$stable" -ge 4 ] && break
+        else
+          stable=0; prev=$GC
+        fi
+        sleep 5
       done
       ;;
     esac
     kill -0 "$PID" 2>/dev/null || { tail -30 "$D/n.log"; die "节点崩溃 ($sys/$vs/$pct)"; }
 
     # ---- 静默后取终值 ----
-    wait_quiet; QU=$?
+    sync
+    wait_quiet "$PID"; QU=$?
     D2=$(dev_written); P1=$(proc_written "$PID"); DIRB=$(dir_bytes "$D")
     QUIESCED=$([ "$QL" = 0 ] && [ "$QU" = 0 ] && echo yes || echo "no(超时${QUIET_MAX}s)")
 
