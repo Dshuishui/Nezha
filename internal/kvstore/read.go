@@ -184,31 +184,12 @@ func (kvs *KVServer) firstGCScan(startKey, endKey string) (map[string]string, er
 	sortedChan := make(chan scanResult, 1)
 	newChan := make(chan scanResult, 1)
 
-	if kvs.startGC && !kvs.endGC {
+	if kvs.startGC {
 		// 并发查询旧文件
 		go func() {
 			defer wg.Done()
 			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.oldPersister, kvs.oldLog)
 			sortedChan <- scanResultOf(result)
-		}()
-
-		// 并发查询新文件
-		go func() {
-			defer wg.Done()
-			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister, kvs.currentLog)
-			// if err != nil {
-			//     newChan <- scanResult{data: nil, err: err}
-			//     return
-			// }
-			newChan <- scanResultOf(result)
-		}()
-	}
-	if kvs.startGC && kvs.endGC {
-		// 并发查询排序文件
-		go func() {
-			defer wg.Done()
-			result, err := kvs.scanFromPartitions(startKey, endKey, kvs.firstPartitions)
-			sortedChan <- scanResult{data: result, err: err}
 		}()
 
 		// 并发查询新文件
@@ -432,7 +413,7 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 		err   error
 	}
 
-	if kvs.startGC && !kvs.endGC {
+	if kvs.startGC {
 		// 创建用于接收结果的通道
 		newFileResult := make(chan searchResult, 1)
 		oldFileResult := make(chan searchResult, 1)
@@ -508,65 +489,6 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 		}
 	}
 
-	if kvs.startGC && kvs.endGC {
-		// 创建用于接收结果的通道
-		newFileResult := make(chan searchResult, 1)
-		sortedFileResult := make(chan searchResult, 1)
-
-		// 并行搜索新文件
-		go func() {
-			positionBytes, err := kvs.persister.Get_opt(key)
-			if err != nil {
-				newFileResult <- searchResult{false, "", err}
-				return
-			}
-			if positionBytes == -1 {
-				newFileResult <- searchResult{false, "", nil}
-				return
-			}
-			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
-			if err != nil {
-				newFileResult <- searchResult{false, "", err}
-				return
-			}
-			if read_key == kvs.persister.PadKey(key) {
-				newFileResult <- searchResult{true, value, nil}
-			} else {
-				newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
-			}
-		}()
-
-		// 并行搜索排序文件
-		go func() {
-			value, err := kvs.getFromPartitions(key, kvs.firstPartitions)
-			if err != nil {
-				sortedFileResult <- searchResult{false, "", err}
-				return
-			}
-			sortedFileResult <- searchResult{true, value, nil}
-		}()
-
-		// 首先检查新文件的结果
-		select {
-		case result := <-newFileResult:
-			if result.err != nil {
-				panic("去新的rocksdb中拿取key对应的index有问题")
-			}
-			if result.found {
-				reply.Value = result.value
-				return reply
-			}
-			// 如果新文件没找到，等待排序文件的结果
-			result = <-sortedFileResult
-			if result.err == nil {
-				reply.Value = result.value
-			} else {
-				reply.Err = raft.ErrNoKey
-				reply.Value = raft.NoKey
-			}
-			return reply
-		}
-	}
 	return reply
 }
 

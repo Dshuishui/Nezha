@@ -57,8 +57,7 @@ type KVServer struct {
 	currentLog          string          // 排序后
 	oldLog              string          // 排序前
 	oldPersister        *raft.Persister // 排序前
-	startGC             bool            // GC是否开始
-	endGC               bool            // GC是否结束
+	startGC             bool            // 第一轮 GC 是否已经切换过文件
 	// currentPersister *raft.Persister
 	// getFromFile     func(string) (string, error)			// 对应与垃圾分离前后的两种查询方法。
 	// scanFromFile    func(string, string) (map[string]string, error)

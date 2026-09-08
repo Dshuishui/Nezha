@@ -24,16 +24,30 @@ import (
 //
 // var anotherSortedFilePath = "/home/DYC/Gitee/FlexSync/raft/valuelog/RaftState_anotherSorted.log"
 
-// 修改这些全局变量的路径，需要在运行时根据用户指定的data目录动态设置
+// 归并轮产物的**基名**，运行时按 data 目录设置。每轮的实际路径由 mergeRoundPaths 派生，
+// 这两个变量本身不再被改写。
+//
+// 原先是每轮就地累加：anotherNewRaftStateLogPath = fmt.Sprintf("%s_%d", 自己, numGC+1)。
+// 第 2 轮得到 newRaftState_1_2，第 3 轮就成了 newRaftState_1_2_3，第 4 轮 _1_2_3_4 ——
+// 名字随轮数越滚越长，而恢复逻辑按固定规则去猜路径，对不上就找不到文件。
+// 这个坑一直被 `numGC >= 2` 的两轮上限盖着，**放开轮数上限（P2）就会立刻踩到**。
 var (
-	anotherNewRaftStateLogPath string
-	anotherNewPersisterPath    string
+	anotherNewRaftStateLogBase string
+	anotherNewPersisterBase    string
 )
 
 // 在main函数中或者适当的地方初始化这些路径（添加到之前的InitGCPaths函数中）
 func InitAnotherGCPaths(dataDir string) {
-	anotherNewRaftStateLogPath = filepath.Join(dataDir, "data", "valuelog", "newRaftState_1")
-	anotherNewPersisterPath = filepath.Join(dataDir, "data", "dbfile", "newKeyIndex_1")
+	anotherNewRaftStateLogBase = filepath.Join(dataDir, "data", "valuelog", "newRaftState")
+	anotherNewPersisterBase = filepath.Join(dataDir, "data", "dbfile", "newKeyIndex")
+}
+
+// mergeRoundPaths 给出第 round 轮归并要用的新日志与新存储引擎路径。
+// 基名固定，只按轮号加一个后缀，因此第 N 轮永远是 <基名>_N，与轮数无关地可预测——
+// 崩溃恢复要按同样的规则重新算出这两个路径。
+func mergeRoundPaths(round int) (logPath, dbPath string) {
+	return fmt.Sprintf("%s_%d", anotherNewRaftStateLogBase, round),
+		fmt.Sprintf("%s_%d", anotherNewPersisterBase, round)
 }
 
 // ensurePathExists 检查路径是否存在，如果不存在则创建它
@@ -98,23 +112,24 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 		return kvs.mergeIntoSortedFile(startTime)
 	}
 
+	// 本轮的路径由基名加轮号派生，不再就地改写全局变量——见 InitAnotherGCPaths 的注释。
+	newLogPath, newDBPath := mergeRoundPaths(kvs.numGC + 1)
+
 	// 创建新的RocksDB实例===========
 	persister_new, err := kvs.NewPersister() // 创建一个新的用于保存key和index的persister
 	if err != nil {
 		return fmt.Errorf("failed to create new persister: %v", err)
 	}
-	anotherNewPersisterPath = fmt.Sprintf("%s_%d", anotherNewPersisterPath, kvs.numGC+1)
-	newPersister, err := persister_new.Init(anotherNewPersisterPath, true)
+	newPersister, err := persister_new.Init(newDBPath, true)
 	if err != nil {
 		return fmt.Errorf("failed to initialize new RocksDB: %v", err)
 	}
 
 	// 创建新的RaftState日志文件=============
-	anotherNewRaftStateLogPath = fmt.Sprintf("%s_%d", anotherNewRaftStateLogPath, kvs.numGC+1)
-	if _, err := os.Stat(anotherNewRaftStateLogPath); err == nil {
+	if _, err := os.Stat(newLogPath); err == nil {
 		fmt.Println("New RaftState log file already exists. Skipping creation.")
 	} else if os.IsNotExist(err) {
-		newRaftStateLog, err := os.Create(anotherNewRaftStateLogPath)
+		newRaftStateLog, err := os.Create(newLogPath)
 		if err != nil {
 			return fmt.Errorf("failed to create new RaftState log: %v", err)
 		}
@@ -126,7 +141,7 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 	kvs.anotherStartGC = true
 
 	// 切换到新的文件和RocksDB
-	kvs.AnotherSwitchToNewFiles(anotherNewRaftStateLogPath, newPersister, anotherNewPersisterPath)
+	kvs.AnotherSwitchToNewFiles(newLogPath, newPersister, newDBPath)
 	kvs.waitOldVersionApplied(int32(kvs.numGC - 1)) // see the function's comment in GC.go
 	kvs.switchedPersister = newPersister
 
