@@ -232,7 +232,17 @@ for sys in $SYSTEMS; do
       fi
     fi
 
-    # 放大率在写入与 GC 都结束后采一次
+    # 放大率在写入与 GC 都结束后采一次。
+    #
+    # **采样前必须先 sync。** /proc/PID/io 的 write_bytes 记的是"已经交给块层的字节"，
+    # 关掉 fsync 时脏页可以在内存里躺很久。旧版脚本每格空等约 10 分钟（bench 客户端的轮间
+    # 静置），内核趁那段时间把脏页刷了，这一列才有非零值——测到的其实是"这十分钟里恰好回写
+    # 了多少"。把空等去掉之后同样的代码就恒为 0，才暴露出它一直依赖的是运气。
+    # 加上 sync，采到的才是"本格确实落盘了多少"。
+    #
+    # 即便如此这一列仍是**进程级**口径，与 Titan/Scavenger 的引擎级不同；正式的放大率数据
+    # 走 scripts/bench/amplification.sh（设备级计数器 + 阶段边界 sync + 等静默）。
+    sync
     W1=$(write_bytes "$PID"); DIRB=$(dir_bytes "$DATA")
     WAMP=$(awk -v a="$W0" -v b="$W1" -v l="$LOGICAL" 'BEGIN{ if(l>0) printf "%.4f", (b-a)/l; else print "NA" }')
     SAMP=$(awk -v d="$DIRB" -v l="$LOGICAL" 'BEGIN{ if(l>0 && d!="") printf "%.4f", d/l; else print "NA" }')
