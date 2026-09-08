@@ -23,7 +23,11 @@
 #                     "改进前"的基线二进制不认识它，传了会直接退出。
 #                     100MiB 数据配 128MB 默认值只会切出一个分区，路由代码根本不被执行，
 #                     跑出来的"无退化"是假的；验收要显式调小（如 16）。
-#   PUT_CLIENTS=50 GET_CLIENTS=20 GET_OPS=20000 SCAN_DNUMS=250 SCAN_TESTS=20 SCAN_GAP=1000
+#   PUT_CLIENTS=100 GET_CLIENTS=100   并发度（用户 2026-09-09 定：PUT/GET 100，SCAN 单线程）
+#   GET_OPS=20000                     GET 总请求 = GET_OPS × 100 轮（-cnums 只改并发，不改总量）
+#   SCAN_DNUMS=50 SCAN_TESTS=20       总扫描次数 = 两者之积（默认 1000）
+#   SCAN_FRAC=4                       单次扫描覆盖 记录总数/SCAN_FRAC 条，即数据量的 1/4
+#   SCAN_GAP=                         直接指定 gapkey，非空时覆盖 SCAN_FRAC
 #   GC_STABLE_CHECKS=4  读之前要求 GC 轮数连续几次检查不变（见 GC 一节的注释）
 #   OUT=/tmp/maintable-<标签>.csv
 set -u
@@ -47,15 +51,24 @@ VSIZES="${VSIZES:-64 256 1024}"
 SYSTEMS="${SYSTEMS:-baseline nezha-nogc nezha nezha-avp}"
 SYNC_WAL="${SYNC_WAL:-0}"
 PARTITION_MB="${PARTITION_MB:-}"
-PUT_CLIENTS="${PUT_CLIENTS:-50}"
-GET_CLIENTS="${GET_CLIENTS:-20}"
+PUT_CLIENTS="${PUT_CLIENTS:-100}"
+GET_CLIENTS="${GET_CLIENTS:-100}"
 GET_OPS="${GET_OPS:-20000}"
-# SCAN 的样本数 = SCAN_DNUMS × SCAN_TESTS。冒烟时用 4×20=80 个查询，p99 与 p999
-# 双双落在最大值上——最近秩下 80 个样本的 p99 就是第 80 个，即 max，这个分位数没有意义。
-# 5000 个查询（每个约 3.7ms，合计约 18s）才让 p99 有 50 个样本垫底。
-SCAN_DNUMS="${SCAN_DNUMS:-250}"
+# 总扫描次数 = SCAN_DNUMS × SCAN_TESTS，默认 1000。
+# 下限由分位数的样本量定：最近秩下 N 个样本的 p99 就是第 N 个，样本太少时 p99 直接等于最大值。
+# 冒烟曾用 80 个查询，p99 与 p999 双双落在 max 上，那个分位数没有任何意义。
+# 1000 次让 p99 有 10 个样本垫底，是能报出去的最低线（用户 2026-09-09 定）。
+# 之所以不取更高：gapkey 改为数据量的 1/4 之后单次扫描涨到约 25MB，5000 次会让
+# 整套实验的 SCAN 部分从约 3 小时涨到约 14 小时，而 p99 的轮间噪声本就有 5~13%，
+# 主判据是 p50，为 p99 多花 11 小时不划算。
+SCAN_DNUMS="${SCAN_DNUMS:-50}"
 SCAN_TESTS="${SCAN_TESTS:-20}"
-SCAN_GAP="${SCAN_GAP:-1000}"
+# gapkey 按"单次扫描覆盖数据量的 1/SCAN_FRAC"派生，而不是写死一个绝对条数：
+# 写死的话，同样的 gapkey 在 64B 档只覆盖数据集的百分之几、在 1024B 档却覆盖一大片，
+# 三档测的根本不是同一件事。按比例派生才让"范围查询的规模"在三档之间可比。
+# 曾经这个值写死成 400 万，等于每轮扫全库——那是另一个方向的同类错误。
+SCAN_FRAC="${SCAN_FRAC:-4}"
+SCAN_GAP="${SCAN_GAP:-}"
 # 连续这么多次（每次间隔 5s）检查 GC 轮数不变，才认为布局已稳定、可以开始读
 GC_STABLE_CHECKS="${GC_STABLE_CHECKS:-4}"
 OUT="${OUT:-/tmp/maintable-$LABEL.csv}"
@@ -182,7 +195,11 @@ for sys in $SYSTEMS; do
     [ -n "$GETL" ] || { tail -20 "$DATA/get.out"; die "GET 无分位数输出 ($sys/$vs/$round)"; }
 
     # ---- SCAN ----
-    /tmp/mt-scan_pro -cnums 1 -dnums "$SCAN_DNUMS" -tests "$SCAN_TESTS" -gapkey "$SCAN_GAP" -keyspace "$N" -servers "$ADDR" > "$DATA/scan.out" 2>&1
+    # SCAN 单线程是刻意的：一次范围查询本身读取量就大，再叠并发只会让各 goroutine 的
+    # 随机起点互相冲刷缓存，结果不稳定且难以归因。
+    GAP="${SCAN_GAP:-$((N / SCAN_FRAC))}"
+    [ "$GAP" -ge 1 ] || die "gapkey 算出来是 $GAP（N=$N SCAN_FRAC=$SCAN_FRAC）"
+    /tmp/mt-scan_pro -cnums 1 -dnums "$SCAN_DNUMS" -tests "$SCAN_TESTS" -gapkey "$GAP" -keyspace "$N" -servers "$ADDR" > "$DATA/scan.out" 2>&1
     SCANL=$(grep '^\[LATENCY\]' "$DATA/scan.out" | tail -1)
     SCANT=$(grep '^\[THROUGHPUT\]' "$DATA/scan.out" | tail -1)
     YIELD=$(grep '^\[SCANYIELD\]' "$DATA/scan.out" | tail -1)
