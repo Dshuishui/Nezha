@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -85,13 +84,18 @@ func (wt *WALTest) getWALSize() (int64, error) {
 	var totalSize int64
 
 	walDir := wt.DBPath
-	files, err := ioutil.ReadDir(walDir)
+	entries, err := os.ReadDir(walDir)
 	if err != nil {
 		return 0, err
 	}
 
 	fmt.Printf("检查目录 %s 中的文件:\n", walDir)
-	for _, file := range files {
+	for _, entry := range entries {
+		// os.ReadDir 给的是 DirEntry，不带大小，要大小得再 stat 一次
+		file, err := entry.Info()
+		if err != nil {
+			continue
+		}
 		fmt.Printf("  %s (大小: %d bytes)\n", file.Name(), file.Size())
 		// RocksDB的WAL文件通常以.log结尾，或者是CURRENT、MANIFEST等文件
 		if strings.HasSuffix(file.Name(), ".log") ||

@@ -38,7 +38,6 @@ func (kvc *KVClient) batchRawPut(value string) {
 		go func(i int) {
 			defer wg.Done()
 			num := 0
-			rand.Seed(time.Now().Unix())
 			for j := 0; j < base; j++ {
 				// k := rand.Intn(dnums)
 				//k := basei + j

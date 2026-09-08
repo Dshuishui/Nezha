@@ -92,7 +92,6 @@ func (kvc *KVClient) scan(gapkey int) (float64, time.Duration, float64) {
 		go func(i int) {
 			defer wg.Done()
 			localResult := scanResult{}
-			rand.Seed(time.Now().UnixNano() + int64(i))
 
 			var totalAvgLatency time.Duration
 			// var totalDataSize float64
@@ -283,7 +282,7 @@ func saveSummaryToFile(filePath string, numTests int, avgThroughput float64, avg
 	defer file.Close()
 
 	// 添加空行和汇总信息
-	summary := fmt.Sprintf("\n汇总信息\n")
+	summary := "\n汇总信息\n"
 	summary += fmt.Sprintf("%d 次测试的平均吞吐量: %.4f MB/S\n", numTests, avgThroughput)
 	summary += fmt.Sprintf("%d 次测试的总平均延迟: %.2f ms\n", numTests, float64(avgLatency.Microseconds())/1000)
 	summary += fmt.Sprintf("测试完成时间: %s\n", time.Now().Format("2006-01-02 15:04:05"))

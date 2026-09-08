@@ -17,7 +17,6 @@ var (
 	ser   = flag.String("servers", "", "the Server, Client Connects to")
 	cnums = flag.Int("cnums", 1, "Client Threads Number")
 	dnums = flag.Int("dnums", 1000000, "data num")
-	key   = flag.Int("key", 6, "target key")
 )
 
 type KVClient struct {
@@ -48,7 +47,6 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 		go func(i int) {
 			defer wg.Done()
 			localResult := getResult{}
-			rand.Seed(time.Now().UnixNano())
 			startTime := time.Now()
 			for j := 0; j < base; j++ {
 				key := rand.Intn(125000)

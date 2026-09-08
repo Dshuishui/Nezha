@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -112,7 +111,7 @@ func (wt *WALTest) getWALSize() (int64, error) {
 	var walFileSize int64
 
 	walDir := wt.DBPath
-	files, err := ioutil.ReadDir(walDir)
+	entries, err := os.ReadDir(walDir)
 	if err != nil {
 		wt.logfToFile("读取目录失败: %v\n", err)
 		return 0, err
@@ -405,9 +404,9 @@ func main() {
 	fmt.Printf("详细日志将保存到: %s\n", logFileName)
 	fmt.Printf("测试文件将保留，不会自动删除\n\n")
 
-	logFile.WriteString(fmt.Sprintf("=== RocksDB WAL 大小恢复性能测试 ===\n"))
+	logFile.WriteString("=== RocksDB WAL 大小恢复性能测试 ===\n")
 	logFile.WriteString(fmt.Sprintf("测试时间: %s\n", time.Now().Format("2006-01-02 15:04:05")))
-	logFile.WriteString(fmt.Sprintf("测试文件将保留在对应目录中\n\n"))
+	logFile.WriteString("测试文件将保留在对应目录中\n\n")
 
 	// 测试不同的WAL大小
 	walSizes := []uint64{

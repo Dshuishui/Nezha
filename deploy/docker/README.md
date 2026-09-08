@@ -8,7 +8,7 @@ This guide covers building and running Nezha using Docker on a single host.
 
 ```
 deploy/docker/
-├── Dockerfile.ubuntu24      # Image definition (Ubuntu 24.04)
+├── Dockerfile      # Image definition (Ubuntu 24.04)
 ├── docker-compose.yml       # Single-node orchestration
 ├── manage.sh                # Management script
 ├── build.sh                 # Image build script

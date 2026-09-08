@@ -18,8 +18,6 @@ var (
 	cnums = flag.Int("cnums", 1, "Client Threads Number")
 	dnums = flag.Int("dnums", 1000000, "data num")
 	// getratio = flag.Int("getratio", 1, "Get Times per Put Times")
-	k1 = flag.Int("startkey", 0, "first key")
-	k2 = flag.Int("endkey", 20, "last key")
 )
 
 type KVClient struct {

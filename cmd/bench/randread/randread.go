@@ -19,7 +19,6 @@ var (
 	cnums = flag.Int("cnums", 1, "Client Threads Number")
 	dnums = flag.Int("dnums", 1000000, "data num")
 	// getratio = flag.Int("getratio", 1, "Get Times per Put Times")
-	key = flag.Int("key", 6, "target key")
 )
 
 type KVClient struct {
@@ -41,7 +40,6 @@ func (kvc *KVClient) randRead() {
 		go func(i int) {
 			defer wg.Done()
 			num := 0
-			rand.Seed(time.Now().Unix())
 			for j := 0; j < base; j++ {
 				key := rand.Intn(100000000)
 				//k := base*i + j
@@ -51,7 +49,9 @@ func (kvc *KVClient) randRead() {
 				// time.Sleep(100 * time.Millisecond)
 				_, keyExist, err := kvc.c.Get(targetkey) // 先随机传入一个地址的连接池
 				// fmt.Println("after putinraft , j:",j)
-				if err == nil {
+				// keyExist 必须判：查不到的 key 也计成 goodPut 的话，
+				// 键空间取得越大命中率越低、而"成功数"不变，测出来的是查不存在的键有多快。
+				if err == nil && keyExist {
 					kvc.goodPut++
 					// fmt.Println("点查询key为：",key)
 				}

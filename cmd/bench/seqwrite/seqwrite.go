@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"math/rand"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,7 +47,6 @@ func (kvc *KVClient) batchRawPut(value string) {
 	for i := 0; i < *cnums; i++ {
 		go func(i int) {
 			defer wg.Done()
-			rand.Seed(time.Now().UnixNano())
 			for j := 0; j < base; j++ {
 				key := i*base + j
 				strkey := strconv.Itoa(key)

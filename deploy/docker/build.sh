@@ -29,8 +29,8 @@ if [ ! -f "libgflags.so.2" ]; then
     exit 1
 fi
 
-if [ ! -f "Dockerfile.ubuntu24" ]; then
-    echo "❌ 错误: Dockerfile.ubuntu24 不存在"
+if [ ! -f "Dockerfile" ]; then
+    echo "❌ 错误: Dockerfile 不存在"
     exit 1
 fi
 
@@ -39,13 +39,13 @@ echo "✓ 所有必要文件检查通过"
 # 显示文件信息
 echo ""
 echo "构建文件列表:"
-ls -lh nezha librocksdb.so.5.18 libgflags.so.2 Dockerfile.ubuntu24
+ls -lh nezha librocksdb.so.5.18 libgflags.so.2 Dockerfile
 
 echo ""
 echo "开始构建 Docker 镜像..."
 
 # 构建 Ubuntu 24.04 版本
-docker build -f Dockerfile.ubuntu24 -t nezha-multigc:latest .
+docker build -f Dockerfile -t nezha-multigc:latest .
 
 if [ $? -eq 0 ]; then
     echo ""
