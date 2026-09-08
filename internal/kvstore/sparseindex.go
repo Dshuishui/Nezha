@@ -181,6 +181,7 @@ func (kvs *KVServer) BuildSparseIndex(filePath string, blockBytes int64) ([]Spar
 	return builder.Build(), offset, nil
 }
 
+// SortedFileIndex 描述一个有序文件——GC 改造后即一个分区（见 partition.go）。
 type SortedFileIndex struct {
 	// Sparse 是按 key 升序的稀疏块索引，每约 indexBlockBytes 一项。
 	// 查找时二分定位到块，再在块内顺序扫描，内存从 O(key 数) 降为 O(块数)。
@@ -188,6 +189,24 @@ type SortedFileIndex struct {
 	FileSize int64 // sortedFile 总长度，用于界定最后一块的右边界
 	// InlineValues 是小值的有界缓存，纯读加速层，命中则免去一次文件 seek。
 	// 它可以为 nil、可以随时淘汰任何条目，都不影响正确性——value 始终在 sortedFile 里。
+	// 同一组分区里的每个分区都指向同一个实例，见 PartitionSet.inline。
 	InlineValues *InlineCache
 	FilePath     string
+
+	// Lo、Hi 是本文件内最小与最大的 padded key，即它覆盖的 key 区间（闭区间）。
+	// 同一组分区里各区间互不重叠且按 Lo 升序，读路径的二分路由完全建立在这个前提上。
+	Lo string
+	Hi string
+
+	// pool 缓存本文件的只读描述符。改造前它是 KVServer 上的一个全局单例，而
+	// scanFromSortedFile 又不看传进来的 index.FilePath——两者恰好总指向同一个文件才没出事。
+	// 分区化之后一个进程同时持有多个有序文件，描述符必须跟着文件走。
+	pool *FileDescriptorPool
+}
+
+func (sfi *SortedFileIndex) closePool() {
+	if sfi != nil && sfi.pool != nil {
+		sfi.pool.Close()
+		sfi.pool = nil
+	}
 }

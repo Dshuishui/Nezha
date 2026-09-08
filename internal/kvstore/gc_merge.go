@@ -138,25 +138,22 @@ func (kvs *KVServer) MergedGarbageCollection() error {
 // 从 MergedGarbageCollection 拆出来，好让搬运失败后的重试能直接重入这一步，
 // 而不必再走一遍已经生效的切换。
 func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
-	// Create a temporary file for the merged sorted entries  1
-	mergedSortedFilePath := fmt.Sprintf("%s_merged_%d", kvs.lastSortedFileIndex.FilePath, kvs.numGC)
+	// 归并产物同样是一组分区，基名由上一组的基名派生  1
+	mergedSortedFilePath := fmt.Sprintf("%s_merged_%d", kvs.lastPartitions.Base(), kvs.numGC)
 	kvs.anotherSortedFilePath = mergedSortedFilePath
-	if _, err := os.Stat(mergedSortedFilePath); err == nil {
+	if _, err := os.Stat(partitionPath(mergedSortedFilePath, 0)); err == nil {
 		fmt.Println("Sorted file already exists. Skipping garbage collection.")
 		return nil
 	}
-	mergedFile, err := os.Create(mergedSortedFilePath)
-	if err != nil {
-		return fmt.Errorf("failed to create merged file: %v", err)
-	}
-	defer mergedFile.Close()
 
-	// Open the existing sorted file  2
-	existingSortedFile, err := os.Open(kvs.lastSortedFileIndex.FilePath)
+	// 按 key 序读出上一组分区的全部 entry  2
+	// 各分区内部有序、区间又互不重叠，顺次拼接即得一条全局有序流，归并逻辑因此不必关心
+	// 上一轮的产物被切成了几个文件。
+	existingReader, closeExisting, err := kvs.lastPartitions.openStream()
 	if err != nil {
-		return fmt.Errorf("failed to open existing sorted file: %v", err)
+		return fmt.Errorf("failed to open existing partitions: %v", err)
 	}
-	defer existingSortedFile.Close()
+	defer closeExisting()
 
 	// Open the original RaftState.log file  3
 	oldFile, err := os.Open(kvs.oldLog)
@@ -167,13 +164,8 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 
 	// ============= 优化开始：边写边构建索引 =============
 
-	// 初始化索引数据结构和偏移量跟踪
-	sparse := NewSparseIndexBuilder(kvs.indexBlockBytes)
-	inlineCache := NewInlineCache(kvs.inlineCacheBytes)
-	var currentOffset int64 = 0
-
-	// Create buffered writer for the merged file   2 + 3 -> 1   =============
-	writer := bufio.NewWriter(mergedFile)
+	// 归并输出按 key 升序产出，正是 partitionWriter 要求的调用顺序   2 + 3 -> 1   =============
+	pw := kvs.newPartitionWriter(mergedSortedFilePath)
 
 	// Create a channel for entries from the old database
 	oldEntryChan := make(chan *raft.Entry, 1000)
@@ -214,12 +206,11 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 		}
 	}()
 
-	// Start goroutine to read from existing sorted file
+	// Start goroutine to read from the existing partitions (a single ordered stream)
 	go func() {
 		defer close(existingEntryChan)
-		reader := bufio.NewReader(existingSortedFile)
 		for {
-			entry, _, err := ReadEntry(reader, 0)
+			entry, _, err := ReadEntry(existingReader, 0)
 			if err != nil {
 				if err == io.EOF {
 					break // 正常读完
@@ -266,31 +257,11 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 		}
 
 		if entryToWrite != nil {
-			// ============= 关键优化：记录写入前的偏移量 =============
-			beforeWriteOffset := currentOffset
-
-			// Write the entry to the sorted file
-			err := kvs.WriteEntryToSortedFile(writer, entryToWrite)
-			if err != nil {
+			// 稀疏索引、内联缓存预热、分区滚动都在 Add 里
+			if err := pw.Add(entryToWrite); err != nil {
+				pw.Abort()
 				return fmt.Errorf("failed to write merged entry: %v", err)
 			}
-
-			// 计算entry的大小（与WriteEntryToSortedFile的格式一致）
-			keySize := uint32(len(entryToWrite.Key))
-			valueSize := uint32(len(entryToWrite.Value))
-			entrySize := int64(20 + keySize + valueSize) // 20字节头部 + key + value
-
-			// 每约 indexBlockBytes 记录一个块起点
-			unpadKey := kvs.persister.UnpadKey(entryToWrite.Key)
-			sparse.Observe(entryToWrite.Key, beforeWriteOffset, entrySize)
-
-			// AVP: 小值在预算内预热进内联缓存
-			if len(entryToWrite.Value) < kvs.inlineThreshold {
-				inlineCache.Add(unpadKey, entryToWrite.Value)
-			}
-
-			// 更新当前偏移量
-			currentOffset += entrySize
 
 			writeCount++
 			if writeCount%100000 == 0 {
@@ -299,62 +270,46 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 		}
 	}
 
-	// 读取端出过错就不能往下走：合并文件此刻是不完整的，而调用方在本函数返回 nil
+	// 读取端出过错就不能往下走：合并产物此刻是不完整的，而调用方在本函数返回 nil
 	// 之后会删掉源文件。宁可整轮失败、留着源文件等下一轮重试，也不能拿一份缺数据的
 	// 排序文件顶替它。
 	if e := readErr.Load(); e != nil {
+		pw.Abort()
 		return fmt.Errorf("合并中止，源文件保持不动: %v", e.(error))
 	}
 
-	// fsync after Flush: the caller deletes the source log on nil, so the merged file must be
-	// on disk first (same reasoning as in GC.go for round one).
+	// 每个分区在封口时 Flush + fsync：调用方在本函数返回 nil 之后会删掉源文件，产物必须先
+	// 真正落盘（与第一轮同理，见 gc_first.go）。
 	//
 	// Each step is timed and reported: a GC round that stalls the node long enough for
 	// followers to call an election has to be pinned to one step, and the merge progress
 	// lines alone cannot separate "still merging" from "blocked in fsync".
 	tMerge := time.Since(startTime)
 	tStep := time.Now()
-	err = writer.Flush()
+	parts, err := pw.Finish()
 	if err != nil {
-		return fmt.Errorf("failed to flush writer: %v", err)
+		pw.Abort()
+		return err
 	}
-	tFlush := time.Since(tStep)
-	tStep = time.Now()
-	if err := mergedFile.Sync(); err != nil {
-		return fmt.Errorf("failed to fsync merged file: %v", err)
-	}
-	tSync := time.Since(tStep)
+	tSeal := time.Since(tStep)
 	tStep = time.Now()
 
-	// ============= 直接构建SortedFileIndex对象，避免AnotherCreateIndex =============
+	// ============= 直接构建分区清单，避免事后重扫 =============
 
 	// 使用加锁保护索引更新
 	kvs.mu.Lock()
 	kvs.anotherSortedFilePath = mergedSortedFilePath
-	kvs.anothersortedFileIndex = &SortedFileIndex{
-		Sparse:       sparse.Build(),
-		FileSize:     currentOffset,
-		InlineValues: inlineCache,
-		FilePath:     mergedSortedFilePath,
-	}
+	kvs.anotherPartitions = parts
 	kvs.mu.Unlock()
 
 	// 预热缓存
 	// kvs.warmupCache(mergedSortedFilePath)
 
-	tIndex := time.Since(tStep)
-	tStep = time.Now()
-	fmt.Println("建立了索引，得到了针对已排序文件的完整索引")
-	kvs.filePool, err = NewFileDescriptorPool(mergedSortedFilePath, 50)
-	if err != nil {
-		fmt.Printf("Failed to create file descriptor pool: %v\n", err)
-		panic("创建文件描述符池失败")
-	}
-	fmt.Println("创建文件描述符池成功")
-	fmt.Printf("[GC-PHASE] round=%d merge=%v flush=%v fsync=%v index=%v filepool=%v bytes=%d\n",
-		kvs.numGC, tMerge.Round(time.Millisecond), tFlush.Round(time.Millisecond),
-		tSync.Round(time.Millisecond), tIndex.Round(time.Millisecond),
-		time.Since(tStep).Round(time.Millisecond), currentOffset)
+	fmt.Printf("建立了索引，得到了针对 %d 个分区的完整索引\n", parts.Len())
+	fmt.Printf("[GC-PHASE] round=%d merge=%v flush=%v fsync=%v seal=%v index=%v partitions=%d bytes=%d\n",
+		kvs.numGC, tMerge.Round(time.Millisecond), pw.flushTime.Round(time.Millisecond),
+		pw.syncTime.Round(time.Millisecond), tSeal.Round(time.Millisecond),
+		time.Since(tStep).Round(time.Millisecond), parts.Len(), pw.total)
 
 	kvs.anotherEndGC = true
 	kvs.switchedPersister = nil // 本轮已完整结束，重入标记随之作废
@@ -362,39 +317,6 @@ func (kvs *KVServer) mergeIntoSortedFile(startTime time.Time) error {
 	fmt.Printf("Merged garbage collection completed in %v - round %v, processed %d entries\n",
 		time.Since(startTime), kvs.numGC, writeCount)
 	return nil
-}
-
-func (kvs *KVServer) AnotherCreateIndex(SortedFilePath string) error {
-	kvs.mu.Lock()
-	defer kvs.mu.Unlock()
-
-	// 创建索引，假设每1个条目记录一次索引，稀疏索引，间隔一部分创建一个索引，找到第一个合适的，再进行线性查询
-	index, err := kvs.CreateSortedFileIndex(SortedFilePath)
-	if err != nil {
-		// 处理错误
-		return err
-	}
-
-	// index:=&SortedFileIndex{Entries: nil, FilePath: SortedFilePath}		//	测试
-
-	kvs.anothersortedFileIndex = index
-
-	// // 预热缓存
-	// kvs.warmupCache(SortedFilePath)
-
-	fmt.Println("建立了索引，得到了针对已排序文件的稀疏索引")
-	kvs.filePool, err = NewFileDescriptorPool(SortedFilePath, 50)
-	if err != nil {
-		fmt.Printf("Failed to create file descriptor pool: %v\n", err)
-		panic("创建文件描述符池失败")
-	}
-	fmt.Println("创建文件描述符池成功")
-	// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
-
-	return nil
-
-	// kvs.getFromFile = kvs.getFromSortedOrNew
-	// kvs.scanFromFile = kvs.scanFromSortedOrNew
 }
 
 // 更新 GC 后合并的过程，之前的合并方式有问题，问题如下：

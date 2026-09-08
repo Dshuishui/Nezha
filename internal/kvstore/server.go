@@ -52,17 +52,16 @@ type KVServer struct {
 	kvrpc.UnimplementedKVServer
 	// resultCh  chan *kvrpc.PutInRaftResponse
 
-	firstSortedFilePath  string // 用于存储已排序文件的位置
-	firstSortedFileIndex *SortedFileIndex
-	currentLog           string          // 排序后
-	oldLog               string          // 排序前
-	oldPersister         *raft.Persister // 排序前
-	startGC              bool            // GC是否开始
-	endGC                bool            // GC是否结束
+	firstSortedFilePath string // 第一轮 GC 产物的基名，分区文件是 <基名>.p0、.p1 …
+	firstPartitions     *PartitionSet
+	currentLog          string          // 排序后
+	oldLog              string          // 排序前
+	oldPersister        *raft.Persister // 排序前
+	startGC             bool            // GC是否开始
+	endGC               bool            // GC是否结束
 	// currentPersister *raft.Persister
 	// getFromFile     func(string) (string, error)			// 对应与垃圾分离前后的两种查询方法。
 	// scanFromFile    func(string, string) (map[string]string, error)
-	filePool *FileDescriptorPool
 
 	// multiGC
 	numGC          int
@@ -81,16 +80,17 @@ type KVServer struct {
 	switchedPersister *raft.Persister
 
 	// ---- crash recovery (see recovery.go) ----
-	dataDir                string
-	currentDBPath          string // RocksDB directory opened by kvs.persister
-	oldDBPath              string // directory of kvs.oldPersister while a GC round is in flight
-	gcInProgress           bool   // switch done, migration not yet finished
-	sortedFilePath         string // latest completed sorted file; empty until the first GC
-	anotherSortedFilePath  string // 用于存储已排序文件的位置
-	anothersortedFileIndex *SortedFileIndex
-	lastSortedFileIndex    *SortedFileIndex
-	InitialRaftStateLog    string
-	lastGCFinish           bool
+	dataDir               string
+	currentDBPath         string // RocksDB directory opened by kvs.persister
+	oldDBPath             string // directory of kvs.oldPersister while a GC round is in flight
+	gcInProgress          bool   // switch done, migration not yet finished
+	sortedFilePath        string // 最近一轮完成的分区组基名；第一轮 GC 之前为空
+	anotherSortedFilePath string // 归并轮产物的基名
+	anotherPartitions     *PartitionSet
+	// lastPartitions 是当前对外可读的那组分区，读路径与下一轮归并的输入都取自它。
+	lastPartitions      *PartitionSet
+	InitialRaftStateLog string
+	lastGCFinish        bool
 
 	// AVP: adaptive value placement
 	kvSeparation bool // false 时退化为 standard Raft+RocksDB 基线
@@ -103,9 +103,11 @@ type KVServer struct {
 	extraPersistence bool
 	inlinePlacement  bool    // 写入时按大小分流放置，而非仅做读缓存
 	inlineThreshold  int     // values smaller than this (bytes) are eligible for the inline cache
-	inlineCacheBytes int64   // memory budget for each SortedFileIndex's inline cache
+	inlineCacheBytes int64   // memory budget for one partition set's shared inline cache
 	gcThresholdGB    float64 // value log size in GB that triggers GC
 	indexBlockBytes  int64   // sparse index granularity: one index entry per this many bytes
+	// partitionTargetBytes 是 GC 产物中单个分区的目标大小，见 partition.go 的取舍说明。
+	partitionTargetBytes int64
 }
 
 func (kv *KVServer) Kill() {
@@ -214,6 +216,8 @@ func New(cfg Config) (*KVServer, error) {
 		gcThresholdGB:    cfg.GCThresholdGB,
 		FirstGC:          true,
 		dataDir:          cfg.DataDir,
+
+		partitionTargetBytes: int64(cfg.PartitionTargetMB) << 20,
 	}
 	// PASV switches off the storage engine's WAL. RocksDB reads that option once, when
 	// the store is opened, so it must be set before recoverOrInit.

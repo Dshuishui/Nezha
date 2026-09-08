@@ -29,7 +29,7 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 		// GC前：并行查询上一轮新文件，上一轮排序文件
 		go func() {
 			defer wg.Done()
-			result, err := kvs.scanFromSortedFile(startKey, endKey, kvs.lastSortedFileIndex)
+			result, err := kvs.scanFromPartitions(startKey, endKey, kvs.lastPartitions)
 			sortedChan <- scanResult{data: result, err: err}
 		}()
 
@@ -83,7 +83,7 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 		// 查询已排序文件
 		go func() {
 			defer wg.Done()
-			result, err := kvs.scanFromSortedFile(startKey, endKey, kvs.lastSortedFileIndex)
+			result, err := kvs.scanFromPartitions(startKey, endKey, kvs.lastPartitions)
 			sortedChan <- scanResult{data: result, err: err}
 		}()
 
@@ -137,7 +137,7 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 		// 查询已排序文件
 		go func() {
 			defer wg.Done()
-			result, err := kvs.scanFromSortedFile(startKey, endKey, kvs.anothersortedFileIndex)
+			result, err := kvs.scanFromPartitions(startKey, endKey, kvs.anotherPartitions)
 			sortedChan <- scanResult{data: result, err: err}
 		}()
 
@@ -207,7 +207,7 @@ func (kvs *KVServer) firstGCScan(startKey, endKey string) (map[string]string, er
 		// 并发查询排序文件
 		go func() {
 			defer wg.Done()
-			result, err := kvs.scanFromSortedFile(startKey, endKey, kvs.firstSortedFileIndex)
+			result, err := kvs.scanFromPartitions(startKey, endKey, kvs.firstPartitions)
 			sortedChan <- scanResult{data: result, err: err}
 		}()
 
@@ -538,7 +538,7 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 
 		// 并行搜索排序文件
 		go func() {
-			value, err := kvs.getFromSortedFile(key, kvs.firstSortedFileIndex)
+			value, err := kvs.getFromPartitions(key, kvs.firstPartitions)
 			if err != nil {
 				sortedFileResult <- searchResult{false, "", err}
 				return
@@ -607,7 +607,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 
 		// 并行搜索排序文件，这个排序文件在第一轮GC完就已经切换，所以下面的不用改
 		go func() {
-			value, err := kvs.getFromSortedFile(key, kvs.lastSortedFileIndex)
+			value, err := kvs.getFromPartitions(key, kvs.lastPartitions)
 			if err != nil {
 				lastSortedFileResult <- searchResult{false, "", err}
 				return
@@ -691,7 +691,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 
 		// 并行搜索排序文件
 		go func() {
-			value, err := kvs.getFromSortedFile(key, kvs.lastSortedFileIndex)
+			value, err := kvs.getFromPartitions(key, kvs.lastPartitions)
 			if err != nil {
 				lastSortedFileResult <- searchResult{false, "", err}
 				return
@@ -758,7 +758,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 
 	// 并行搜索排序文件
 	go func() {
-		value, err := kvs.getFromSortedFile(key, kvs.anothersortedFileIndex)
+		value, err := kvs.getFromPartitions(key, kvs.anotherPartitions)
 		if err != nil {
 			anotherSortedFileResult <- searchResult{false, "", err}
 			return
@@ -786,6 +786,56 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 		}
 		return reply
 	}
+}
+
+// getFromPartitions 把一次点查路由到唯一可能含有该 key 的分区。
+//
+// 分区区间互不重叠，候选因此只有一个，查找本身仍是原来的"稀疏索引二分 + 块内顺序扫描"。
+// 相对改造前的单个大文件，索引更小、局部性更好。
+func (kvs *KVServer) getFromPartitions(key string, ps *PartitionSet) (string, error) {
+	if ps == nil {
+		return "", errors.New("invalid partition set: set is nil")
+	}
+	part := ps.find(kvs.persister.PadKey(key))
+	if part == nil {
+		// key 比所有分区都小，或落在两个分区之间的空隙里——都等价于这组分区里没有它。
+		// 内联缓存不必在这里查：缓存只由写进某个分区的 entry 填充，被缓存的 key 必然落在
+		// 某个分区的区间内，走不到这个分支。计一次 miss 以保持与改造前一致的命中率口径。
+		avpRecordMiss()
+		return "", errors.New(raft.ErrNoKey)
+	}
+	return kvs.getFromSortedFile(key, part)
+}
+
+// scanFromPartitions 把一次范围查询路由到与 [startKey, endKey] 有交集的那些分区，
+// 按 key 序依次扫描并拼接。
+//
+// 分区内部仍是一段连续读——范围查询的最优路径没有变，变的只是它可能横跨若干个文件。
+// 窄范围通常只落在一个分区里，走单分区快路径；全范围扫描会触及全部分区，多出的代价是
+// 每个分区一次打开与 mmap。
+func (kvs *KVServer) scanFromPartitions(startKey, endKey string, ps *PartitionSet) (map[string]string, error) {
+	if ps == nil {
+		return nil, nil
+	}
+	parts := ps.overlapping(kvs.persister.PadKey(startKey), kvs.persister.PadKey(endKey))
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	if len(parts) == 1 {
+		return kvs.scanFromSortedFile(startKey, endKey, parts[0])
+	}
+	result := make(map[string]string)
+	for _, part := range parts {
+		m, err := kvs.scanFromSortedFile(startKey, endKey, part)
+		if err != nil {
+			return nil, err
+		}
+		// 分区区间互不重叠，同一个 key 不会出现在两个分区里，合并是纯并集
+		for k, v := range m {
+			result[k] = v
+		}
+	}
+	return result, nil
 }
 
 // getFromSortedFile looks a key up in a sorted file: inline cache first, then the sparse index and a block scan.
@@ -890,12 +940,16 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string, index *SortedFi
 	// 	return nil, err
 	// }
 	// defer file.Close()
-	// 由直接打开文件替换为从池中获取文件描述符
-	file, err := kvs.filePool.Get()
-	if err != nil {
-		return nil, errors.New("获取文件描述符失败！")
+	// 由直接打开文件替换为从池中获取文件描述符。池跟着 index 走而不是挂在 KVServer 上：
+	// 分区化之后一个进程同时持有多个有序文件，全局单例会读错文件。
+	if index.pool == nil {
+		return nil, fmt.Errorf("sorted file %s has no descriptor pool", index.FilePath)
 	}
-	defer kvs.filePool.Put(file) // 使用完毕后归还到池中
+	file, err := index.pool.Get()
+	if err != nil {
+		return nil, fmt.Errorf("获取文件描述符失败（%s）: %v", index.FilePath, err)
+	}
+	defer index.pool.Put(file) // 使用完毕后归还到池中
 
 	// 获取文件信息
 	fileInfo, err := file.Stat()

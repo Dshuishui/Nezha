@@ -38,6 +38,10 @@ type Config struct {
 	CommitTimeoutS int    // how long a Put waits for its apply before giving up
 	VizAddr        string // AVP placement visualiser listen address, "" = off
 
+	// PartitionTargetMB is the target size of one GC output partition (partition.go).
+	// It trades read cost against reclamation granularity; 0 takes the default.
+	PartitionTargetMB int
+
 	// LSM-Raft baseline (lsmraft.go): span size and idle cut.
 	SSTSpanMB int
 	SSTIdleMs int

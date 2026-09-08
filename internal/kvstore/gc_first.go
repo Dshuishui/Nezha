@@ -69,15 +69,12 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 		// 提取下划线之前的部分，并追加新的 kvs.numGC
 		firstSortedFilePath = fmt.Sprintf("%s_%d", firstSortedFilePath[:lastUnderscoreIndex], kvs.numGC+1)
 	}
-	if _, err := os.Stat(firstSortedFilePath); err == nil {
+	// 产物是一组分区文件 <firstSortedFilePath>.p0 .p1 …，基名本身不是文件。
+	// 第一个分区已存在就说明这一轮跑过了。
+	if _, err := os.Stat(partitionPath(firstSortedFilePath, 0)); err == nil {
 		fmt.Println("Sorted file already exists. Skipping garbage collection.")
 		return nil
 	}
-	sortedFile, err := os.Create(firstSortedFilePath)
-	if err != nil {
-		return fmt.Errorf("failed to create sorted file: %v", err)
-	}
-	defer sortedFile.Close()
 
 	// 赋值旧文件变量
 	kvs.oldPersister = kvs.persister     // 给old 数据库文件赋初始值
@@ -125,23 +122,18 @@ func (kvs *KVServer) FirstGarbageCollection() error {
 	kvs.SwitchToNewFiles(firstNewRaftStateLogPath, newPersister, firstNewPersisterPath)
 	kvs.waitOldVersionApplied(int32(kvs.numGC - 1))
 
-	return kvs.firstGCMigrate(sortedFile, firstSortedFilePath, oldFile, startTime)
+	return kvs.firstGCMigrate(firstSortedFilePath, oldFile, startTime)
 }
 
 // firstGCMigrate is the migration and index-building part of round one, after the file
 // switch. It is a separate function so that recovery can redo it directly when the switch
 // was durable but the migration never finished.
-func (kvs *KVServer) firstGCMigrate(sortedFile *os.File, firstSortedFilePath string, oldFile *os.File, startTime time.Time) error {
-	var err error
+func (kvs *KVServer) firstGCMigrate(firstSortedFilePath string, oldFile *os.File, startTime time.Time) error {
 	// ============= 优化开始：边写边构建索引 =============
 
-	// 初始化索引数据结构
-	sparse := NewSparseIndexBuilder(kvs.indexBlockBytes)
-	inlineCache := NewInlineCache(kvs.inlineCacheBytes)
-	var currentOffset int64 = 0
-
-	// bufio.Writer for the sorted file; flushed explicitly (and checked) at the end, not via defer
-	writer := bufio.NewWriter(sortedFile)
+	// 产物是一组分区，不再是单个排序文件。RocksDB 迭代器按 key 升序产出，正是
+	// partitionWriter 要求的调用顺序，分区区间因此天然互不重叠。
+	pw := kvs.newPartitionWriter(firstSortedFilePath)
 
 	// Read entries from RocksDB and write them in sorted order to the new file
 	it := kvs.oldPersister.GetDb().NewIterator(grocksdb.NewDefaultReadOptions())
@@ -161,36 +153,16 @@ func (kvs *KVServer) firstGCMigrate(sortedFile *os.File, firstSortedFilePath str
 		// [TagInline, value]（value 就在这条记录里）——由 entryFromRecord 分流。
 		entry, err := kvs.entryFromRecord(string(key.Data()), value.Data(), oldFile)
 		if err != nil {
+			pw.Abort()
 			return err
 		}
 
-		// 记录写入前的偏移量
-		beforeWriteOffset := currentOffset
-
-		// Write the entry to the sorted file for durability (always, regardless of inline decision)
-		err = kvs.WriteEntryToSortedFile(writer, entry)
-		if err != nil {
-			return fmt.Errorf("failed to write entry to sorted file: %v", err)
+		// Write the entry to the sorted file for durability (always, regardless of inline decision).
+		// 稀疏索引、内联缓存预热、分区滚动都在 Add 里。
+		if err := pw.Add(entry); err != nil {
+			pw.Abort()
+			return err
 		}
-
-		// 计算entry的大小（与WriteEntryToSortedFile的格式一致）
-		keySize := uint32(len(entry.Key))
-		valueSize := uint32(len(entry.Value))
-		entrySize := int64(20 + keySize + valueSize) // 20字节头部 + key + value
-
-		unpadKey := kvs.persister.UnpadKey(entry.Key)
-
-		// 每约 indexBlockBytes 记录一个块起点。索引项用文件里的 padded key，
-		// 与查找时的比较保持一致。
-		sparse.Observe(entry.Key, beforeWriteOffset, entrySize)
-
-		// AVP: 小值在预算内预热进内联缓存，读命中即可免去文件 seek
-		if len(entry.Value) < kvs.inlineThreshold {
-			inlineCache.Add(unpadKey, entry.Value)
-		}
-
-		// 更新当前偏移量
-		currentOffset += entrySize
 
 		writeNum++
 		if writeNum%200000 == 0 {
@@ -198,55 +170,37 @@ func (kvs *KVServer) firstGCMigrate(sortedFile *os.File, firstSortedFilePath str
 		}
 	}
 
-	// Flush only hands the buffer to the kernel. The caller deletes the source log once this
-	// function returns nil, so the sorted file must be on disk first; otherwise a power loss
-	// leaves "source deleted, destination still in the page cache" and everything this round
-	// moved is gone. The write path fsyncs every entry; GC is no exception.
-	// Timed per step, like round two: a stall long enough to cost the node its leadership
-	// has to be attributable to one step rather than inferred from the progress cadence.
+	// 每个分区在封口时 Flush + fsync：调用方在本函数返回 nil 之后会删掉源日志，产物必须先真正
+	// 落盘，否则断电后就是"源已删、目标还在 page cache"，本轮搬运的数据全部丢失。写路径每条都
+	// fsync，GC 不能例外。
+	// 分相位计时与第二轮一致：一次长到足以让节点丢掉 leader 的停顿，必须能归到某一步上，
+	// 而不是从进度打印的节奏去猜。
 	tMigrate := time.Since(startTime)
 	tStep := time.Now()
-	err = writer.Flush()
+	parts, err := pw.Finish()
 	if err != nil {
-		return fmt.Errorf("failed to flush sorted file: %v", err)
+		pw.Abort()
+		return err
 	}
-	tFlush := time.Since(tStep)
-	tStep = time.Now()
-	if err := sortedFile.Sync(); err != nil {
-		return fmt.Errorf("failed to fsync sorted file: %v", err)
-	}
-	tSync := time.Since(tStep)
+	tSeal := time.Since(tStep)
 	tStep = time.Now()
 
-	// ============= 直接构建SortedFileIndex对象 =============
+	// ============= 直接构建分区清单 =============
 
 	// 使用加锁保护索引更新
 	kvs.mu.Lock()
 	kvs.firstSortedFilePath = firstSortedFilePath
-	kvs.firstSortedFileIndex = &SortedFileIndex{
-		Sparse:       sparse.Build(),
-		FileSize:     currentOffset,
-		InlineValues: inlineCache,
-		FilePath:     firstSortedFilePath,
-	}
+	kvs.firstPartitions = parts
 	kvs.mu.Unlock()
 
 	// 预热缓存
 	// kvs.warmupCache(firstSortedFilePath)
 
-	tIndex := time.Since(tStep)
-	tStep = time.Now()
-	fmt.Println("建立了索引，得到了针对已排序文件的完整索引")
-	kvs.filePool, err = NewFileDescriptorPool(firstSortedFilePath, 50)
-	if err != nil {
-		fmt.Printf("Failed to create file descriptor pool: %v\n", err)
-		panic("创建文件描述符池失败")
-	}
-	fmt.Println("创建文件描述符池成功")
-	fmt.Printf("[GC-PHASE] round=%d migrate=%v flush=%v fsync=%v index=%v filepool=%v bytes=%d\n",
-		kvs.numGC, tMigrate.Round(time.Millisecond), tFlush.Round(time.Millisecond),
-		tSync.Round(time.Millisecond), tIndex.Round(time.Millisecond),
-		time.Since(tStep).Round(time.Millisecond), currentOffset)
+	fmt.Printf("建立了索引，得到了针对 %d 个分区的完整索引\n", parts.Len())
+	fmt.Printf("[GC-PHASE] round=%d migrate=%v flush=%v fsync=%v seal=%v index=%v partitions=%d bytes=%d\n",
+		kvs.numGC, tMigrate.Round(time.Millisecond), pw.flushTime.Round(time.Millisecond),
+		pw.syncTime.Round(time.Millisecond), tSeal.Round(time.Millisecond),
+		time.Since(tStep).Round(time.Millisecond), parts.Len(), pw.total)
 
 	fmt.Printf("First garbage collection completed in %v, processed %d entries\n", time.Since(startTime), writeNum)
 	return nil
@@ -295,67 +249,6 @@ func (kvs *KVServer) WriteEntryToSortedFile(writer *bufio.Writer, entry *raft.En
 
 	_, err := writer.Write(data)
 	return err
-}
-
-func (kvs *KVServer) CreateIndex(firstSortedFilePath string) error {
-	kvs.mu.Lock()
-	defer kvs.mu.Unlock()
-
-	kvs.firstSortedFilePath = firstSortedFilePath
-
-	// 创建索引，假设每1个条目记录一次索引，稀疏索引，间隔一部分创建一个索引，找到第一个合适的，再进行线性查询
-	index, err := kvs.CreateSortedFileIndex(firstSortedFilePath)
-	if err != nil {
-		// 处理错误
-		return err
-	}
-
-	// index:=&SortedFileIndex{Entries: nil, FilePath: firstSortedFilePath}		//	测试
-
-	kvs.firstSortedFileIndex = index
-
-	// 初始化LRU缓存，设置合适的缓存大小
-	// 这里假设缓存40000个key-value对
-	// err = kvs.initSortedFileCache(sortedFileCacheNums)						    // 测试，err 不要 :=
-	// if err != nil {
-	// 	fmt.Printf("Failed to initialize LRU cache: %v\n", err)
-	// 	return err
-	// }
-
-	// // 预热缓存
-	// kvs.warmupCache(firstSortedFilePath)
-
-	fmt.Println("建立了索引，得到了针对已排序文件的稀疏索引")
-	kvs.filePool, err = NewFileDescriptorPool(firstSortedFilePath, 50)
-	if err != nil {
-		fmt.Printf("Failed to create file descriptor pool: %v\n", err)
-		panic("创建文件描述符池失败")
-	}
-	fmt.Println("创建文件描述符池成功")
-	// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
-
-	return nil
-
-	// kvs.getFromFile = kvs.getFromSortedOrNew
-	// kvs.scanFromFile = kvs.scanFromSortedOrNew
-}
-
-// CreateSortedFileIndex 扫描整个 sortedFile 重建索引（重启或 GC 合并后使用）。
-//
-// 原实现为每个 key 建一条 key→offset 的内存记录，索引内存随 key 数线性增长。
-// 现在改建稀疏块索引，内存降为 O(块数)。注意此路径不重建内联缓存——那是纯加速层，
-// 冷启动为空即可，读路径会在未命中时自然回填。
-func (kvs *KVServer) CreateSortedFileIndex(filePath string) (*SortedFileIndex, error) {
-	sparse, fileSize, err := kvs.BuildSparseIndex(filePath, kvs.indexBlockBytes)
-	if err != nil {
-		return nil, err
-	}
-	return &SortedFileIndex{
-		Sparse:       sparse,
-		FileSize:     fileSize,
-		InlineValues: NewInlineCache(kvs.inlineCacheBytes),
-		FilePath:     filePath,
-	}, nil
 }
 
 func IsValidEntry(kvs *KVServer, entry *raft.Entry, entryOffset int64, cache *lru.Cache) bool {

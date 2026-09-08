@@ -15,13 +15,18 @@ import (
 // low-frequency points only, the GC file switch and the round's completion; the write
 // path never touches it.
 type kvState struct {
-	NumGC        int    `json:"num_gc"`
-	CurrentLog   string `json:"current_log"`
-	CurrentDB    string `json:"current_db"`
-	SortedFile   string `json:"sorted_file"` // latest completed sorted file; empty = no GC yet
-	GCInProgress bool   `json:"gc_in_progress"`
-	OldLog       string `json:"old_log"` // the next two are meaningful only while GCInProgress
-	OldDB        string `json:"old_db"`
+	NumGC      int    `json:"num_gc"`
+	CurrentLog string `json:"current_log"`
+	CurrentDB  string `json:"current_db"`
+	// SortedFile 是最近一轮完成的分区组的**基名**；为空表示还没跑过 GC。
+	// 它本身不是一个文件，实际数据在 Partitions 列出的 <基名>.pN 里。
+	SortedFile string `json:"sorted_file"`
+	// Partitions 是分区清单，按 key 升序。重启时按它直接重建分区边界，不必先扫描
+	// 全部数据文件才知道被切成了几段、各覆盖哪一段 key。
+	Partitions   []partitionMeta `json:"partitions"`
+	GCInProgress bool            `json:"gc_in_progress"`
+	OldLog       string          `json:"old_log"` // the next two are meaningful only while GCInProgress
+	OldDB        string          `json:"old_db"`
 }
 
 func (kvs *KVServer) stateFilePath() string {
@@ -36,6 +41,7 @@ func (kvs *KVServer) saveKVState() {
 		CurrentLog:   kvs.currentLog,
 		CurrentDB:    kvs.currentDBPath,
 		SortedFile:   kvs.sortedFilePath,
+		Partitions:   kvs.lastPartitions.manifest(),
 		GCInProgress: kvs.gcInProgress,
 	}
 	if kvs.gcInProgress {
@@ -78,7 +84,7 @@ func (kvs *KVServer) finishFirstGC(startTime time.Time) {
 	kvs.mu.Lock()
 	kvs.lastGCFinish = true
 	kvs.FirstGC = false
-	kvs.lastSortedFileIndex = kvs.firstSortedFileIndex // 更新本轮的变量为上一次
+	kvs.lastPartitions = kvs.firstPartitions // 更新本轮的变量为上一次
 	kvs.sortedFilePath = kvs.firstSortedFilePath
 	kvs.gcInProgress = false
 	kvs.saveKVState()
@@ -96,7 +102,7 @@ func (kvs *KVServer) finishAnotherGC(startTime time.Time) {
 	kvs.mu.Lock()
 	kvs.anotherStartGC, kvs.anotherEndGC = false, false
 	kvs.lastGCFinish = true
-	kvs.lastSortedFileIndex = kvs.anothersortedFileIndex // 更新本轮的变量为上一次
+	kvs.lastPartitions = kvs.anotherPartitions // 更新本轮的变量为上一次
 	kvs.sortedFilePath = kvs.anotherSortedFilePath
 	kvs.gcInProgress = false
 	kvs.saveKVState()
@@ -143,32 +149,30 @@ func (kvs *KVServer) recoverOrInit(initialDB string) (files []raft.LogFile, appl
 		log.Fatalf("[RECOVER] read applied index: %v", err)
 	}
 
-	// Completed GC rounds: rebuild the sorted-file index and set the read-path flags to
-	// the "GC completed" position.
+	// Completed GC rounds: rebuild the partition set and set the read-path flags to the
+	// "GC completed" position. 边界取自清单，稀疏索引仍要扫每个分区重建。
 	if st.SortedFile != "" {
-		if _, err := os.Stat(st.SortedFile); err != nil {
-			log.Fatalf("[RECOVER] sorted file named by the state file is unavailable: %v", err)
+		parts, err := kvs.loadPartitionSet(st.SortedFile, st.Partitions)
+		if err != nil {
+			log.Fatalf("[RECOVER] rebuild partition set for %s: %v", st.SortedFile, err)
 		}
+		kvs.lastPartitions = parts
 		switch {
 		case st.NumGC >= 2 && !(st.GCInProgress && st.NumGC == 2):
 			// round two completed
-			if err := kvs.AnotherCreateIndex(st.SortedFile); err != nil {
-				log.Fatalf("[RECOVER] rebuild merged sorted-file index: %v", err)
-			}
 			kvs.anotherSortedFilePath = st.SortedFile
-			kvs.lastSortedFileIndex = kvs.anothersortedFileIndex
+			kvs.anotherPartitions = parts
 		default:
 			// only round one completed (or round two in flight, in which case SortedFile
 			// is round one's output)
-			if err := kvs.CreateIndex(st.SortedFile); err != nil {
-				log.Fatalf("[RECOVER] rebuild sorted-file index: %v", err)
-			}
-			kvs.lastSortedFileIndex = kvs.firstSortedFileIndex
+			kvs.firstSortedFilePath = st.SortedFile
+			kvs.firstPartitions = parts
 		}
 		kvs.FirstGC = false
 		kvs.startGC = true
 		kvs.lastGCFinish = true
-		fmt.Printf("[RECOVER] sorted-file index rebuilt: %s\n", st.SortedFile)
+		fmt.Printf("[RECOVER] partition set rebuilt: %s (%d partitions, %d bytes)\n",
+			st.SortedFile, parts.Len(), parts.TotalSize())
 	}
 
 	if st.GCInProgress {
@@ -208,34 +212,35 @@ func (kvs *KVServer) resumeInterruptedGC() {
 	startTime := time.Now()
 	if kvs.numGC == 1 {
 		sorted := firstSortedFilePath // InitGCPaths already names round one's output (.../RaftState_sorted_1)
-		_ = os.Remove(sorted)
-		sortedFile, err := os.Create(sorted)
-		if err != nil {
-			log.Fatalf("[RECOVER] create sorted file: %v", err)
+		// 崩溃那次可能已经封口了几个分区，残留的 .pN 必须先清干净：重做会从 .p0 重新编号，
+		// 留下的旧文件会被当成本轮产物的一部分。
+		if err := removePartitionFiles(sorted); err != nil {
+			log.Fatalf("[RECOVER] remove partial partitions of %s: %v", sorted, err)
 		}
-		defer sortedFile.Close()
 		oldFile, err := os.Open(kvs.oldLog)
 		if err != nil {
 			log.Fatalf("[RECOVER] open old log: %v", err)
 		}
 		defer oldFile.Close()
 		kvs.waitOldVersionApplied(int32(kvs.numGC - 1))
-		if err := kvs.firstGCMigrate(sortedFile, sorted, oldFile, startTime); err != nil {
+		if err := kvs.firstGCMigrate(sorted, oldFile, startTime); err != nil {
 			log.Fatalf("[RECOVER] redo GC round 1 migration: %v", err)
 		}
-		if kvs.firstSortedFileIndex == nil {
+		if kvs.firstPartitions == nil {
 			log.Fatalf("[RECOVER] GC round 1 redo produced no index")
 		}
 		kvs.finishFirstGC(startTime)
 		return
 	}
-	merged := fmt.Sprintf("%s_merged_%d", kvs.lastSortedFileIndex.FilePath, kvs.numGC)
-	_ = os.Remove(merged)
+	merged := fmt.Sprintf("%s_merged_%d", kvs.lastPartitions.Base(), kvs.numGC)
+	if err := removePartitionFiles(merged); err != nil {
+		log.Fatalf("[RECOVER] remove partial partitions of %s: %v", merged, err)
+	}
 	kvs.waitOldVersionApplied(int32(kvs.numGC - 1))
 	if err := kvs.mergeIntoSortedFile(startTime); err != nil {
 		log.Fatalf("[RECOVER] redo GC round %d migration: %v", kvs.numGC, err)
 	}
-	if kvs.anothersortedFileIndex == nil {
+	if kvs.anotherPartitions == nil {
 		log.Fatalf("[RECOVER] GC round %d redo produced no index", kvs.numGC)
 	}
 	kvs.finishAnotherGC(startTime)

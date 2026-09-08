@@ -11,7 +11,6 @@ import (
 // the threshold: the first round rewrites the log into a sorted file, the second merges
 // into it. Rounds are capped at two and never overlap.
 func (kvs *KVServer) gcLoop(ctx context.Context) {
-	// defer kvs.filePool.Close() // 程序退出时关闭池中的所有文件描述符
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
@@ -68,13 +67,13 @@ func (kvs *KVServer) gcLoop(ctx context.Context) {
 				fmt.Println("垃圾回收出现了错误，本轮不推进状态、不删除旧文件: ", err)
 				continue
 			}
-			if kvs.firstSortedFileIndex == nil {
+			if kvs.firstPartitions == nil {
 				fmt.Println("垃圾回收返回成功但未建立排序文件索引，本轮不推进状态")
 				continue
 			}
 			kvs.finishFirstGC(startTime)
 		} else if kvs.lastGCFinish {
-			if kvs.lastSortedFileIndex == nil {
+			if kvs.lastPartitions == nil {
 				fmt.Println("缺少上一轮排序文件索引，跳过本轮迭代 GC")
 				continue
 			}
@@ -86,7 +85,7 @@ func (kvs *KVServer) gcLoop(ctx context.Context) {
 				kvs.lastGCFinish = true
 				continue
 			}
-			if kvs.anothersortedFileIndex == nil {
+			if kvs.anotherPartitions == nil {
 				fmt.Println("垃圾回收返回成功但未建立排序文件索引，本轮不推进状态")
 				kvs.lastGCFinish = true
 				continue
