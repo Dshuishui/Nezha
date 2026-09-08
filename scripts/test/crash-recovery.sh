@@ -45,24 +45,32 @@ GCGB=$(awk -v b="$BYTES" 'BEGIN{printf "%.9f", b/3/1073741824}')
 
 info "构建 $(git rev-parse --short HEAD)"
 go build -o "$BIN" ./cmd/nezha/ || { echo "节点编译失败"; exit 1; }
-go build -o /tmp/crash-randwrite ./cmd/bench/randwrite_goroutine/ || exit 1
+# 必须用 scanverify 写：它把 value 从 key 派生，readonly 才能逐条独立校验。
+# randwrite_goroutine 写的是通用填充串，用它写、用 readonly 读，会得到"每一条值都错"
+# 的假失败——那是工具不配套，不是系统出错。
+go build -o /tmp/crash-scanverify ./cmd/bench/scanverify/ || exit 1
 go build -o /tmp/crash-readonly ./cmd/bench/readonly/ || exit 1
 
 cleanup(){ [ -n "$PID" ] && kill -9 "$PID" 2>/dev/null; }
 trap cleanup EXIT
 
-# start_node [额外的环境变量赋值...]；成功返回后 PID 已就绪
+# start_node [额外的环境变量赋值...]；成功返回后 PID 已就绪。
+# 每次启动写**独立**的日志文件：追加到同一个文件的话，上一次启动留下的 [SYSTEM] 行会让
+# "启动成功"的判据立刻为真，节点死了也照样判成功。
+NLOG=""
 start_node(){
+  NSEQ=$((${NSEQ:-0} + 1))
+  NLOG="$DATA/n$NSEQ.log"
   # shellcheck disable=SC2086
   env "$@" nohup "$BIN" -address "$ADDR" -internalAddress "$IADDR" -peers "$IADDR" \
       -data "$DATA" -gap 100000000 -commitTimeoutS 60 \
       -system nezha -gcThresholdGB "$GCGB" -partitionTargetMB "$PARTITION_MB" \
-      < /dev/null >> "$DATA/n.log" 2>&1 &
+      < /dev/null > "$NLOG" 2>&1 &
   PID=$!
   for _ in $(seq 1 30); do
     sleep 1
     kill -0 "$PID" 2>/dev/null || return 1
-    grep -q '\[SYSTEM\]' "$DATA/n.log" && return 0
+    grep -q '\[SYSTEM\]' "$NLOG" && return 0
   done
   return 0
 }
@@ -72,10 +80,16 @@ kill_node(){ [ -n "$PID" ] && kill -9 "$PID" 2>/dev/null; wait "$PID" 2>/dev/nul
 # wait_gc_done <轮数>：等日志里出现至少这么多轮完成
 wait_gc_done(){
   for _ in $(seq 1 60); do
-    [ "$(grep -c '轮垃圾回收完成' "$DATA/n.log")" -ge "$1" ] && return 0
+    [ "$(cat "$DATA"/n*.log 2>/dev/null | grep -c '轮垃圾回收完成')" -ge "$1" ] && return 0
     sleep 2
   done
   return 1
+}
+
+write_data(){
+  /tmp/crash-scanverify -servers "$ADDR" -leader 0 -dnums "$ENTRIES" -vsize "$VSIZE" \
+      -span 50 -sample 20 > "$DATA/put.out" 2>&1
+  grep -q VERIFY_OK "$DATA/put.out"
 }
 
 verify(){ # verify <场景名>
@@ -94,15 +108,14 @@ scenario_a(){
   info "A 干净重启：GC 跑完 → kill -9 → 重启按清单重建"
   rm -rf "$DATA"; mkdir -p "$DATA"
   start_node || { fail "A: 节点未启动"; return; }
-  /tmp/crash-randwrite -cnums 50 -dnums "$ENTRIES" -vsize "$VSIZE" -servers "$ADDR" > "$DATA/put.out" 2>&1
-  grep -q '^\[THROUGHPUT\]' "$DATA/put.out" || { fail "A: 写入未完成"; return; }
+  write_data || { fail "A: 写入或即时校验未通过"; return; }
   wait_gc_done 1 || { fail "A: GC 未触发（阈值 ${GCGB}GB）"; return; }
   local parts; parts=$(ls "$DATA"/data/valuelog/*.p* 2>/dev/null | wc -l)
   [ "$parts" -ge 2 ] || warn "A: 只产出 $parts 个分区，路由代码没被充分执行"
   info "  产出 $parts 个分区文件，kill -9"
   kill_node
-  start_node || { fail "A: 重启失败，见 $DATA/n.log"; return; }
-  grep -q 'partition set rebuilt' "$DATA/n.log" || fail "A: 日志里没有按清单重建分区的记录"
+  start_node || { fail "A: 重启失败，见 $NLOG"; tail -3 "$NLOG" | sed 's/^/       /'; return; }
+  grep -q 'partition set rebuilt' "$NLOG" || fail "A: 日志里没有按清单重建分区的记录"
   verify A
   kill_node
 }
@@ -113,17 +126,16 @@ scenario_b(){
   rm -rf "$DATA"; mkdir -p "$DATA"
   # NEZHA_GC_PAUSE_MS 让 GC 在"切换已持久化、搬运尚未开始"处停住，正是最难恢复的那一刻
   start_node NEZHA_GC_PAUSE_MS=20000 || { fail "B: 节点未启动"; return; }
-  /tmp/crash-randwrite -cnums 50 -dnums "$ENTRIES" -vsize "$VSIZE" -servers "$ADDR" > "$DATA/put.out" 2>&1
-  grep -q '^\[THROUGHPUT\]' "$DATA/put.out" || { fail "B: 写入未完成"; return; }
+  write_data || { fail "B: 写入或即时校验未通过"; return; }
   local hit=0
   for _ in $(seq 1 60); do
-    grep -q '\[GC-PAUSE\]' "$DATA/n.log" && { hit=1; break; }
+    grep -q '\[GC-PAUSE\]' "$NLOG" && { hit=1; break; }
     sleep 1
   done
   [ "$hit" = 1 ] || { fail "B: 没有进入 GC 暂停窗口，无法制造中途崩溃"; kill_node; return; }
   info "  已进入 GC 暂停窗口，kill -9"
   kill_node
-  start_node || { fail "B: 重启失败，见 $DATA/n.log"; return; }
+  start_node || { fail "B: 重启失败，见 $NLOG"; tail -3 "$NLOG" | sed 's/^/       /'; return; }
   wait_gc_done 1 || { fail "B: 重启后没有重做搬运"; kill_node; return; }
   verify B
   kill_node
@@ -134,7 +146,7 @@ scenario_c(){
   info "C 清单校验：截断一个分区文件 → 重启必须拒绝启动"
   rm -rf "$DATA"; mkdir -p "$DATA"
   start_node || { fail "C: 节点未启动"; return; }
-  /tmp/crash-randwrite -cnums 50 -dnums "$ENTRIES" -vsize "$VSIZE" -servers "$ADDR" > "$DATA/put.out" 2>&1
+  write_data || { fail "C: 写入或即时校验未通过"; return; }
   wait_gc_done 1 || { fail "C: GC 未触发"; return; }
   kill_node
   local victim; victim=$(ls "$DATA"/data/valuelog/*.p0 2>/dev/null | head -1)
@@ -149,7 +161,7 @@ scenario_c(){
     fail "C: 分区被截断后节点照常启动了——会按错误的边界静默判定 key 不存在"
     kill_node
   else
-    grep -q 'manifest says' "$DATA/n.log" \
+    grep -q 'manifest says' "$NLOG" \
       && ok "C: 重启被拒绝，且报出了清单与实际长度不符" \
       || fail "C: 节点退出了，但日志里没有清单校验失败的原因"
     PID=""

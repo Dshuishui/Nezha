@@ -196,16 +196,28 @@ func (ps *PartitionSet) manifest() []partitionMeta {
 func (kvs *KVServer) loadPartitionSet(base string, metas []partitionMeta) (*PartitionSet, error) {
 	ps := &PartitionSet{base: base, inline: NewInlineCache(kvs.inlineCacheBytes)}
 	for _, m := range metas {
+		// 先比字节数再重建索引。反过来的话，被截断的分区会先在扫描时撞上
+		// "unexpected EOF"——那个错误既指不出是哪里不对，也不说明期望多长。
+		// 清单说的字节数与文件实际长度对不上，意味着这个分区没有完整落盘或被改动过；
+		// 继续用它会让读路径按错误的边界判定"这里没有这个 key"，那是静默丢数据。
+		st, err := os.Stat(m.Path)
+		if err != nil {
+			ps.Close()
+			return nil, fmt.Errorf("partition %s: %v", m.Path, err)
+		}
+		if st.Size() != m.Size {
+			ps.Close()
+			return nil, fmt.Errorf("partition %s: manifest says %d bytes, file has %d", m.Path, m.Size, st.Size())
+		}
 		sparse, size, err := kvs.BuildSparseIndex(m.Path, kvs.indexBlockBytes)
 		if err != nil {
 			ps.Close()
 			return nil, fmt.Errorf("rebuild sparse index for %s: %v", m.Path, err)
 		}
 		if size != m.Size {
-			// 清单说的字节数与文件实际长度对不上，说明这个分区没有完整落盘或被改动过。
-			// 继续用它会让读路径按错误的边界判定"这里没有这个 key"，那是静默丢数据。
+			// 长度对得上但解析出来的字节数不对：文件被改过内容而非长度
 			ps.Close()
-			return nil, fmt.Errorf("partition %s: manifest says %d bytes, file has %d", m.Path, m.Size, size)
+			return nil, fmt.Errorf("partition %s: manifest says %d bytes, parsed %d", m.Path, m.Size, size)
 		}
 		pool, err := NewFileDescriptorPool(m.Path, partitionPoolSize)
 		if err != nil {
