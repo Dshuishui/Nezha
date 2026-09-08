@@ -26,7 +26,7 @@
 #   PUT_CLIENTS=100 GET_CLIENTS=100   并发度（用户 2026-09-09 定：PUT/GET 100，SCAN 单线程）
 #   GET_OPS=20000                     GET 总请求 = GET_OPS × 100 轮（-cnums 只改并发，不改总量）
 #   SCAN_DNUMS=50 SCAN_TESTS=20       总扫描次数 = 两者之积（默认 1000）
-#   SCAN_SPAN_PARTS=3                 单次扫描横跨几个分区
+#   SCAN_SPAN_PARTS=2                 单次扫描横跨几个分区
 #   SCAN_PART_MB=                     算 gapkey 用的分区大小；默认取 PARTITION_MB。
 #                                     两者分开是必须的：对照组跑的是不认识
 #                                     -partitionTargetMB 的旧二进制（PARTITION_MB 必须为空），
@@ -75,11 +75,14 @@ SCAN_TESTS="${SCAN_TESTS:-20}"
 #
 #   SCAN_SPAN_PARTS  按"横跨几个分区"定。参数名直接就是实验意图——要测的正是分区化
 #                    让一次范围查询从读一个连续文件变成横跨若干文件，代价有多大。
+#                    注意语义是**区间宽度等于 N 个分区**：起点随机，所以实际触及
+#                    N 或 N+1 个分区（只有恰好对齐边界时才是 N）。取 2 即至少跨 2 个、
+#                    多数情况 3 个。
 #   SCAN_FRAC        按"覆盖数据量的几分之一"定。分区大小未定或不关心分区时用它。
 #
 # **扫描分区大小时必须改用 SCAN_FRAC 或 SCAN_GAP**：若 gapkey 跟着 PARTITION_MB 变，
 # 那么"16MB 分区 vs 32MB 分区"的对比里扫描规模也一起变了，测出来的差异无法归因。
-SCAN_SPAN_PARTS="${SCAN_SPAN_PARTS:-3}"
+SCAN_SPAN_PARTS="${SCAN_SPAN_PARTS:-2}"
 SCAN_PART_MB="${SCAN_PART_MB:-$PARTITION_MB}"
 SCAN_FRAC="${SCAN_FRAC:-}"
 SCAN_GAP="${SCAN_GAP:-}"
