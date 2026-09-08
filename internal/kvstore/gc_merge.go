@@ -1,7 +1,6 @@
 package kvstore
 
 import (
-	"bufio"
 	"fmt"
 	"path/filepath"
 	// "strings"
