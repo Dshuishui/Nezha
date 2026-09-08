@@ -245,13 +245,18 @@ func (wct *WALComparisonTest) closeDB() {
 func (wct *WALComparisonTest) getWALSize() (int64, error) {
 	var walFileSize int64
 
-	files, err := ioutil.ReadDir(wct.DBPath)
+	entries, err := os.ReadDir(wct.DBPath)
 	if err != nil {
 		return 0, err
 	}
 
 	wct.logfToFile("检查目录 %s 中的文件:\n", wct.DBPath)
-	for _, file := range files {
+	for _, entry := range entries {
+		// os.ReadDir 给的是 DirEntry，不带大小，要大小得再 stat 一次
+		file, err := entry.Info()
+		if err != nil {
+			continue
+		}
 		wct.logfToFile("  %s (大小: %d bytes)\n", file.Name(), file.Size())
 		if strings.HasSuffix(file.Name(), ".log") {
 			walFileSize += file.Size()
