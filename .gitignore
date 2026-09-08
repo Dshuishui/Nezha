@@ -15,7 +15,10 @@ error.log
 error_client.log
 run_server.sh
 run_client.sh
-test/
+# 锚定到仓库根：不加斜杠前缀的 test/ 会匹配**任意层级**的 test 目录，
+# 于是 scripts/test/ 整个被忽略——里面已有的脚本因为早就入库看起来一切正常，
+# 但新加的脚本会静默不进仓库。
+/test/
 
 # Benchmark and experiment output
 result/

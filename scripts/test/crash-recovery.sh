@@ -1,0 +1,170 @@
+#!/bin/bash
+# 单节点崩溃恢复验证：GC 改造之后，重启还能不能把数据完整读回来。
+#
+# 为什么要单独测。P1 把 GC 的产物从一个有序文件换成 N 个按 key 区间的分区，磁盘格式与恢复
+# 路径都变了：分区清单进了 kv_state.json、重启按清单重建、字节数与清单不符就拒绝启动、
+# 崩溃重做前要清掉上次写了一半的 .pN。这些逻辑只有崩溃一次才走得到，性能实验一次都碰不着。
+#
+# 而且这类问题**不会报错**：读路径把"这一处没有"当作常态，恢复少还原一个分区只会让某些 key
+# 在某次 GET 上变成 NOKEY。所以每个场景都逐条校验值，并直接数盘上的 key。
+#
+# 三个场景：
+#   A 干净重启      GC 完整跑完 → kill -9 → 重启按清单重建分区
+#   B GC 中途崩溃   切换已完成、搬运未开始时 kill -9（NEZHA_GC_PAUSE_MS 窗口）→ 重启重做搬运
+#   C 清单校验      故意截断一个分区文件 → 重启**必须拒绝**，不能按错误的边界静默读
+#
+# 规模刻意取小：跑通一次 GC 就够，堆数据量只是浪费时间。
+#
+# 用法: bash scripts/test/crash-recovery.sh [场景...]   默认全跑
+# 环境变量: ENTRIES=30000 VSIZE=256 PARTITION_MB=2 DATA=<目录>
+set -u
+GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
+info(){ echo -e "${GREEN}[TEST]${NC} $*"; }
+warn(){ echo -e "${YEL}[WARN]${NC} $*"; }
+fail(){ echo -e "${RED}[FAIL]${NC} $*"; FAILED=$((FAILED+1)); }
+ok(){   echo -e "${GREEN}[ OK ]${NC} $*"; }
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "${REPO_DIR:-$SCRIPT_DIR/../..}" || { echo "无项目目录"; exit 1; }
+source ~/env.sh 2>/dev/null || true
+export TMPDIR=${TMPDIR:-$HOME/work/tmp}; mkdir -p "$TMPDIR"
+
+ENTRIES="${ENTRIES:-30000}"
+VSIZE="${VSIZE:-256}"
+PARTITION_MB="${PARTITION_MB:-2}"
+DATA="${DATA:-$TMPDIR/crash-recovery}"
+ADDR=127.0.0.1:3097
+IADDR=127.0.0.1:30971
+BIN=/tmp/nezha-crash
+FAILED=0
+PID=""
+
+# GC 阈值取写入总量的三分之一，确保跑得起来又不会一直跑
+BYTES=$(( ENTRIES * (20 + 10 + VSIZE) ))
+GCGB=$(awk -v b="$BYTES" 'BEGIN{printf "%.9f", b/3/1073741824}')
+
+info "构建 $(git rev-parse --short HEAD)"
+go build -o "$BIN" ./cmd/nezha/ || { echo "节点编译失败"; exit 1; }
+go build -o /tmp/crash-randwrite ./cmd/bench/randwrite_goroutine/ || exit 1
+go build -o /tmp/crash-readonly ./cmd/bench/readonly/ || exit 1
+
+cleanup(){ [ -n "$PID" ] && kill -9 "$PID" 2>/dev/null; }
+trap cleanup EXIT
+
+# start_node [额外的环境变量赋值...]；成功返回后 PID 已就绪
+start_node(){
+  # shellcheck disable=SC2086
+  env "$@" nohup "$BIN" -address "$ADDR" -internalAddress "$IADDR" -peers "$IADDR" \
+      -data "$DATA" -gap 100000000 -commitTimeoutS 60 \
+      -system nezha -gcThresholdGB "$GCGB" -partitionTargetMB "$PARTITION_MB" \
+      < /dev/null >> "$DATA/n.log" 2>&1 &
+  PID=$!
+  for _ in $(seq 1 30); do
+    sleep 1
+    kill -0 "$PID" 2>/dev/null || return 1
+    grep -q '\[SYSTEM\]' "$DATA/n.log" && return 0
+  done
+  return 0
+}
+
+kill_node(){ [ -n "$PID" ] && kill -9 "$PID" 2>/dev/null; wait "$PID" 2>/dev/null; PID=""; sleep 1; }
+
+# wait_gc_done <轮数>：等日志里出现至少这么多轮完成
+wait_gc_done(){
+  for _ in $(seq 1 60); do
+    [ "$(grep -c '轮垃圾回收完成' "$DATA/n.log")" -ge "$1" ] && return 0
+    sleep 2
+  done
+  return 1
+}
+
+verify(){ # verify <场景名>
+  local out; out=$(/tmp/crash-readonly -servers "$ADDR" -dnums "$ENTRIES" -vsize "$VSIZE" \
+      -span 50 -sample 30 -check 300 2>&1 | grep -v 'new pool success')
+  echo "$out" | grep -E '校验|VERIFY' | sed 's/^/       /'
+  echo "$out" | grep -q FAILOVER_VERIFY_OK || { fail "$1: 逐条校验未通过"; return 1; }
+  local lost; lost=$(python3 "$SCRIPT_DIR/../bench/lost-keys.py" "$DATA" "$ENTRIES" "$VSIZE" 2>/dev/null \
+      | grep -o '丢失 [0-9]*' | grep -o '[0-9]*')
+  [ "${lost:-NA}" = 0 ] || { fail "$1: 盘上丢了 ${lost:-?} 条记录"; return 1; }
+  ok "$1: 逐条校验通过，盘上丢失 0"
+}
+
+# ---------- 场景 A：GC 完整跑完之后重启 ----------
+scenario_a(){
+  info "A 干净重启：GC 跑完 → kill -9 → 重启按清单重建"
+  rm -rf "$DATA"; mkdir -p "$DATA"
+  start_node || { fail "A: 节点未启动"; return; }
+  /tmp/crash-randwrite -cnums 50 -dnums "$ENTRIES" -vsize "$VSIZE" -servers "$ADDR" > "$DATA/put.out" 2>&1
+  grep -q '^\[THROUGHPUT\]' "$DATA/put.out" || { fail "A: 写入未完成"; return; }
+  wait_gc_done 1 || { fail "A: GC 未触发（阈值 ${GCGB}GB）"; return; }
+  local parts; parts=$(ls "$DATA"/data/valuelog/*.p* 2>/dev/null | wc -l)
+  [ "$parts" -ge 2 ] || warn "A: 只产出 $parts 个分区，路由代码没被充分执行"
+  info "  产出 $parts 个分区文件，kill -9"
+  kill_node
+  start_node || { fail "A: 重启失败，见 $DATA/n.log"; return; }
+  grep -q 'partition set rebuilt' "$DATA/n.log" || fail "A: 日志里没有按清单重建分区的记录"
+  verify A
+  kill_node
+}
+
+# ---------- 场景 B：GC 切换之后、搬运之前崩溃 ----------
+scenario_b(){
+  info "B GC 中途崩溃：切换已完成、搬运未开始时 kill -9 → 重启重做搬运"
+  rm -rf "$DATA"; mkdir -p "$DATA"
+  # NEZHA_GC_PAUSE_MS 让 GC 在"切换已持久化、搬运尚未开始"处停住，正是最难恢复的那一刻
+  start_node NEZHA_GC_PAUSE_MS=20000 || { fail "B: 节点未启动"; return; }
+  /tmp/crash-randwrite -cnums 50 -dnums "$ENTRIES" -vsize "$VSIZE" -servers "$ADDR" > "$DATA/put.out" 2>&1
+  grep -q '^\[THROUGHPUT\]' "$DATA/put.out" || { fail "B: 写入未完成"; return; }
+  local hit=0
+  for _ in $(seq 1 60); do
+    grep -q '\[GC-PAUSE\]' "$DATA/n.log" && { hit=1; break; }
+    sleep 1
+  done
+  [ "$hit" = 1 ] || { fail "B: 没有进入 GC 暂停窗口，无法制造中途崩溃"; kill_node; return; }
+  info "  已进入 GC 暂停窗口，kill -9"
+  kill_node
+  start_node || { fail "B: 重启失败，见 $DATA/n.log"; return; }
+  wait_gc_done 1 || { fail "B: 重启后没有重做搬运"; kill_node; return; }
+  verify B
+  kill_node
+}
+
+# ---------- 场景 C：分区文件被截断，重启必须拒绝 ----------
+scenario_c(){
+  info "C 清单校验：截断一个分区文件 → 重启必须拒绝启动"
+  rm -rf "$DATA"; mkdir -p "$DATA"
+  start_node || { fail "C: 节点未启动"; return; }
+  /tmp/crash-randwrite -cnums 50 -dnums "$ENTRIES" -vsize "$VSIZE" -servers "$ADDR" > "$DATA/put.out" 2>&1
+  wait_gc_done 1 || { fail "C: GC 未触发"; return; }
+  kill_node
+  local victim; victim=$(ls "$DATA"/data/valuelog/*.p0 2>/dev/null | head -1)
+  [ -n "$victim" ] || { fail "C: 找不到分区文件"; return; }
+  local sz; sz=$(stat -c %s "$victim")
+  truncate -s $((sz - 1)) "$victim"
+  info "  截断 $(basename "$victim") 一个字节，尝试重启"
+  # 拒绝的方式是 log.Fatalf，所以进程应当立刻退出
+  start_node
+  sleep 3
+  if kill -0 "$PID" 2>/dev/null; then
+    fail "C: 分区被截断后节点照常启动了——会按错误的边界静默判定 key 不存在"
+    kill_node
+  else
+    grep -q 'manifest says' "$DATA/n.log" \
+      && ok "C: 重启被拒绝，且报出了清单与实际长度不符" \
+      || fail "C: 节点退出了，但日志里没有清单校验失败的原因"
+    PID=""
+  fi
+}
+
+WANT="${*:-a b c}"
+for sc in $WANT; do
+  case "$sc" in
+    a|A) scenario_a ;;
+    b|B) scenario_b ;;
+    c|C) scenario_c ;;
+    *) echo "未知场景 $sc（可选 a b c）"; exit 1 ;;
+  esac
+done
+
+echo
+if [ "$FAILED" = 0 ]; then ok "全部通过"; else fail "共 $FAILED 项失败"; exit 1; fi
