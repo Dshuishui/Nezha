@@ -89,7 +89,8 @@ info "统计每格丢失的 key"
       d="$TMPDIR/mt-$LABEL-$tag-$sys-$vs-$r"
       [ -d "$d" ] || continue
       n=$(awk -v mb="$TOTAL_MB" -v v="$vs" 'BEGIN{printf "%d", mb*1048576/(20+10+v)}')
-      echo "$tag $sys v=$vs r=$r: $(python3 "$SCRIPTS/bench/lost-keys.py" "$d" "$n" "$vs" 2>&1 | grep -o '丢失 [0-9]*')"
+      th=0; [ "$sys" = nezha-avp ] && th=512   # 内联的小值不在 valuelog 里，本工具数不准
+      echo "$tag $sys v=$vs r=$r: $(python3 "$SCRIPTS/bench/lost-keys.py" "$d" "$n" "$vs" "$th" 2>&1 | grep -oE '丢失 [0-9]*|不适用')"
     done; done; done
   done
 } | tee "$OUTDIR/lost-keys.txt"

@@ -218,7 +218,11 @@ for sys in $SYSTEMS; do
     # 放在读之前：丢了 key 会让后面的 GET/SCAN 数字失去意义，早一格发现就少浪费几小时。
     LOST=NA
     if [ "$LOST_KEYS" != off ]; then
-      LOST=$(python3 "$SCRIPT_DIR/lost-keys.py" "$DATA" "$N" "$vs" 2>/dev/null | grep -o '丢失 [0-9]*' | grep -o '[0-9]*')
+      # nezha-avp 的小值被内联进 RocksDB、不在 valuelog 里，本工具数不准，会误报几十条。
+      # 传入内联阈值让它自己判定不适用；那种配置的正确性由 readonly/scanverify 逐条校验保证。
+      INLINE_TH=0
+      [ "$sys" = nezha-avp ] && INLINE_TH="${INLINE_THRESHOLD:-512}"
+      LOST=$(python3 "$SCRIPT_DIR/lost-keys.py" "$DATA" "$N" "$vs" "$INLINE_TH" 2>/dev/null | grep -o '丢失 [0-9]*' | grep -o '[0-9]*')
       LOST="${LOST:-NA}"
       if [ "$LOST" != NA ] && [ "$LOST" -gt 0 ]; then
         if [ "$LOST_KEYS" = fail ]; then

@@ -10,7 +10,14 @@ key 就占 0.46% 的请求量。
 起来，与"本应写入的 0..N-1"做差集。定长 entry（20B 头 + 定长 padded key + 定长 value）
 才能按固定跨步解析，所以只适用于单一 value 尺寸的负载。
 
-用法: lost-keys.py <数据目录> <写入条数> <value字节数>
+**不适用于开了 -inlinePlacement 且 value 小于内联阈值的负载。** 那种配置下小值被内联写进
+RocksDB（apply.go 的内联分支在最前面且不看 FileVersion），GC 期间在途的旧日志条目会内联落进
+新库：值自包含、读得到，但它在旧 valuelog 里的那份随文件被删，而搬运遍历的是旧**库**、看不到
+它。于是这个 key 在所有 valuelog 文件里都不存在，却完全可读——按本工具的口径会被误报成丢失。
+实测 nezha-avp 在 64B/256B 上被误报几十条，而 GET 命中率是 1.0000、ops 一条不差。
+传入 inline_threshold 后，value 小于它就直接判定"不适用"，不再给出会被误读的数字。
+
+用法: lost-keys.py <数据目录> <写入条数> <value字节数> [inline_threshold]
 """
 import glob
 import os
@@ -33,9 +40,14 @@ def keys_in(path, stride):
 
 
 def main():
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in (4, 5):
         sys.exit(__doc__)
     d, n, vsize = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+    inline_threshold = int(sys.argv[4]) if len(sys.argv) == 5 else 0
+    if inline_threshold and vsize < inline_threshold:
+        print(f"不适用：value {vsize}B 小于内联阈值 {inline_threshold}B，小值不在 valuelog 里，"
+              f"本工具数不准。这种配置请用 cmd/bench/readonly 或 scanverify 逐条校验。")
+        return
     stride = HEADER + KEY_LEN + vsize
     vlog = os.path.join(d, "data", "valuelog")
 
