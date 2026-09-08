@@ -32,7 +32,11 @@ info(){ echo -e "${GREEN}[INFO]${NC} $*"; }
 warn(){ echo -e "${YEL}[WARN]${NC} $*"; }
 die(){  echo -e "${RED}[FAIL]${NC} $*"; exit 1; }
 
-cd "$(dirname "$0")/../.." || die "无项目目录"
+# REPO_DIR 让脚本对着另一棵工作树跑（默认是脚本自己所在的仓库）。
+# 用途是"改进前基线必须用改进后的脚本重跑"：检出旧 commit 会把 scripts/ 一并退回旧版，
+# 于是"改进前 vs 改进后"的差异里混进了**脚本行为的变化**。把脚本从工作树外的副本运行、
+# 用 REPO_DIR 指向旧代码，两边口径才真的一致。
+cd "${REPO_DIR:-$(dirname "$0")/../..}" || die "无项目目录"
 source ~/env.sh 2>/dev/null || true
 export TMPDIR=${TMPDIR:-$HOME/work/tmp}; mkdir -p "$TMPDIR"
 
