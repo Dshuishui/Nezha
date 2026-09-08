@@ -122,7 +122,7 @@ done
 
 # 表头：一行 = 一次跑。分位数单位毫秒，放大率无量纲。
 if [ ! -f "$OUT" ]; then
-  echo "commit,label,system,syncwal,vsize,entries,total_mb,round,op,n,mean_ms,p50_ms,p90_ms,p95_ms,p99_ms,p999_ms,min_ms,max_ms,ops,bytes,elapsed_s,ops_per_s,mb_per_s,extra,gc_done,lost_keys,write_amp,space_amp,peak_rss_mb" > "$OUT"
+  echo "commit,label,system,syncwal,vsize,entries,total_mb,round,op,n,mean_ms,p50_ms,p90_ms,p95_ms,p99_ms,p999_ms,min_ms,max_ms,ops,bytes,elapsed_s,ops_per_s,mb_per_s,extra,gc_done,lost_keys,space_amp,peak_rss_mb" > "$OUT"
 fi
 
 # field <文本> <键>：从 "键=值" 里取值，取不到给 NA（空字段在汇总表里看起来只是
@@ -156,9 +156,14 @@ start_node(){
   kill -0 "$PID" 2>/dev/null || { tail -20 "$d/n.log"; die "节点未启动 ($sys)"; }
 }
 
-# 放大率。写放大 = 进程实际落盘字节 / 用户逻辑字节；空间放大 = 数据目录占用 / 用户逻辑字节。
-# 两者都是 KV 分离论文的常规指标：KV 分离拿空间换写放大，GC 又把空间吃回去。
-write_bytes(){ awk '/^write_bytes:/{print $2}' "/proc/$1/io" 2>/dev/null || echo 0; }
+# 空间放大 = 数据目录占用 / 用户逻辑字节。
+#
+# **这里不再算写放大。** 曾经用 /proc/PID/io 的 write_bytes 作分子，但那个计数器只统计
+# 由进程**自己的上下文**提交到块层的字节：缓冲写由内核回写线程刷盘，不记在写入进程头上，
+# 只有进程自己 fsync（例如 RocksDB 的后台 compaction 线程）才计入。于是关掉 fsync 时它恒为 0，
+# 而旧版脚本因为每格空等约 10 分钟、compaction 趁机跑了几轮，才凑出非零值——那一列测的是
+# "这段时间里 compaction 恰好跑了多少"，空等时长一变数字就变，不是写放大。
+# 正式的写放大走 scripts/bench/amplification.sh：设备级计数器 + 阶段边界 sync + 等静默。
 dir_bytes(){ du -sb "$1" 2>/dev/null | awk '{print $1}'; }
 
 total=0; done_n=0
@@ -175,7 +180,6 @@ for sys in $SYSTEMS; do
     DATA="$TMPDIR/mt-$LABEL-$sys-$vs-$round"
     info "[$done_n/$total] $sys value=${vs}B entries=$N round=$round"
     start_node "$sys" "$GCGB" "$DATA"
-    W0=$(write_bytes "$PID")
     RSSF="$DATA/rss.txt"
     ( while kill -0 "$PID" 2>/dev/null; do awk '/^VmRSS:/{print $2}' "/proc/$PID/status" 2>/dev/null; sleep 3; done > "$RSSF" ) & SAMPLER=$!
     disown "$SAMPLER" 2>/dev/null || true   # 否则 kill 之后 shell 会往 stderr 打一行 Terminated
@@ -232,19 +236,8 @@ for sys in $SYSTEMS; do
       fi
     fi
 
-    # 放大率在写入与 GC 都结束后采一次。
-    #
-    # **采样前必须先 sync。** /proc/PID/io 的 write_bytes 记的是"已经交给块层的字节"，
-    # 关掉 fsync 时脏页可以在内存里躺很久。旧版脚本每格空等约 10 分钟（bench 客户端的轮间
-    # 静置），内核趁那段时间把脏页刷了，这一列才有非零值——测到的其实是"这十分钟里恰好回写
-    # 了多少"。把空等去掉之后同样的代码就恒为 0，才暴露出它一直依赖的是运气。
-    # 加上 sync，采到的才是"本格确实落盘了多少"。
-    #
-    # 即便如此这一列仍是**进程级**口径，与 Titan/Scavenger 的引擎级不同；正式的放大率数据
-    # 走 scripts/bench/amplification.sh（设备级计数器 + 阶段边界 sync + 等静默）。
-    sync
-    W1=$(write_bytes "$PID"); DIRB=$(dir_bytes "$DATA")
-    WAMP=$(awk -v a="$W0" -v b="$W1" -v l="$LOGICAL" 'BEGIN{ if(l>0) printf "%.4f", (b-a)/l; else print "NA" }')
+    # 空间放大：数据目录占用 / 用户逻辑字节。这是一次 du，含义明确。
+    DIRB=$(dir_bytes "$DATA")
     SAMP=$(awk -v d="$DIRB" -v l="$LOGICAL" 'BEGIN{ if(l>0 && d!="") printf "%.4f", d/l; else print "NA" }')
 
     # ---- GET ----
@@ -280,12 +273,12 @@ for sys in $SYSTEMS; do
 
     emit(){ # emit <op> <latency行> <throughput行> <extra>
       local op="$1" L="$2" T="$3" X="$4"
-      printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+      printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "$COMMIT" "$LABEL" "$sys" "$SYNC_WAL" "$vs" "$N" "$TOTAL_MB" "$round" "$op" \
         "$(field "$L" n)" "$(field "$L" mean)" "$(field "$L" p50)" "$(field "$L" p90)" \
         "$(field "$L" p95)" "$(field "$L" p99)" "$(field "$L" p999)" "$(field "$L" min)" "$(field "$L" max)" \
         "$(field "$T" ops)" "$(field "$T" bytes)" "$(field "$T" elapsed)" "$(field "$T" ops_per_s)" "$(field "$T" mb_per_s)" \
-        "$X" "$GC" "$LOST" "$WAMP" "$SAMP" "$RSS" >> "$OUT"
+        "$X" "$GC" "$LOST" "$SAMP" "$RSS" >> "$OUT"
     }
     emit PUT  "$PUTL"  "$PUTT"  "NA"
     emit GET  "$GETL"  "$GETT"  "$(field "$HIT" ratio)"
@@ -298,4 +291,4 @@ for sys in $SYSTEMS; do
 done
 
 info "完成，$OUT"
-awk -F, 'NR>1{printf "%-11s %-5s %-5s v=%-5s p50=%-9s p99=%-9s ops/s=%-10s wamp=%-7s samp=%s\n", $3,$9,$8,$5,$12,$15,$22,$26,$27}' "$OUT" | tail -40
+awk -F, 'NR>1{printf "%-11s %-5s %-5s v=%-5s p50=%-9s p99=%-9s ops/s=%-10s lost=%-5s samp=%s\n", $3,$9,$8,$5,$12,$15,$22,$26,$27}' "$OUT" | tail -40
