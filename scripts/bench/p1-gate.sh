@@ -41,6 +41,9 @@ OUTDIR="${OUTDIR:-/tmp/p1-gate-$LABEL}"; mkdir -p "$OUTDIR"
 SYNC_WAL="${SYNC_WAL:-0}"
 PARTITION_MB="${PARTITION_MB:-16}"
 ROUNDS="${ROUNDS:-3}"
+# 扫描规模两边必须相同。它按分区大小派生，但对照组不能收到 -partitionTargetMB
+# （旧二进制不认识这个 flag 会直接退出），所以用一个独立变量喂给两边。
+SCAN_PART_MB="${SCAN_PART_MB:-$PARTITION_MB}"
 TOTAL_MB="${TOTAL_MB:-100}"
 VSIZES="${VSIZES:-64 256 1024}"
 
@@ -68,6 +71,7 @@ run(){
   info "跑 $tag"
   REPO_DIR="$tree" TOTAL_MB="$TOTAL_MB" ROUNDS="$ROUNDS" VSIZES="$VSIZES" \
     SYSTEMS="nezha nezha-avp" SYNC_WAL="$SYNC_WAL" PARTITION_MB="$pmb" \
+    SCAN_PART_MB="$SCAN_PART_MB" \
     OUT="$OUTDIR/$tag.csv" bash "$MT" "$LABEL-$tag" > "$OUTDIR/$tag.log" 2>&1 \
     || die "$tag 失败，见 $OUTDIR/$tag.log"
 }

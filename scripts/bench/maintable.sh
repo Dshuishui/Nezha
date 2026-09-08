@@ -26,8 +26,14 @@
 #   PUT_CLIENTS=100 GET_CLIENTS=100   并发度（用户 2026-09-09 定：PUT/GET 100，SCAN 单线程）
 #   GET_OPS=20000                     GET 总请求 = GET_OPS × 100 轮（-cnums 只改并发，不改总量）
 #   SCAN_DNUMS=50 SCAN_TESTS=20       总扫描次数 = 两者之积（默认 1000）
-#   SCAN_FRAC=4                       单次扫描覆盖 记录总数/SCAN_FRAC 条，即数据量的 1/4
-#   SCAN_GAP=                         直接指定 gapkey，非空时覆盖 SCAN_FRAC
+#   SCAN_SPAN_PARTS=3                 单次扫描横跨几个分区
+#   SCAN_PART_MB=                     算 gapkey 用的分区大小；默认取 PARTITION_MB。
+#                                     两者分开是必须的：对照组跑的是不认识
+#                                     -partitionTargetMB 的旧二进制（PARTITION_MB 必须为空），
+#                                     但它的扫描规模必须与实验组**逐字相同**，否则比的就不是同一件事
+#   SCAN_FRAC=                        或按"覆盖 记录总数/SCAN_FRAC 条"定
+#   SCAN_GAP=                         或直接指定 gapkey
+#   三者优先级 SCAN_GAP > SCAN_SPAN_PARTS > SCAN_FRAC
 #   GC_STABLE_CHECKS=4  读之前要求 GC 轮数连续几次检查不变（见 GC 一节的注释）
 #   OUT=/tmp/maintable-<标签>.csv
 set -u
@@ -63,11 +69,19 @@ GET_OPS="${GET_OPS:-20000}"
 # 主判据是 p50，为 p99 多花 11 小时不划算。
 SCAN_DNUMS="${SCAN_DNUMS:-50}"
 SCAN_TESTS="${SCAN_TESTS:-20}"
-# gapkey 按"单次扫描覆盖数据量的 1/SCAN_FRAC"派生，而不是写死一个绝对条数：
-# 写死的话，同样的 gapkey 在 64B 档只覆盖数据集的百分之几、在 1024B 档却覆盖一大片，
-# 三档测的根本不是同一件事。按比例派生才让"范围查询的规模"在三档之间可比。
-# 曾经这个值写死成 400 万，等于每轮扫全库——那是另一个方向的同类错误。
-SCAN_FRAC="${SCAN_FRAC:-4}"
+# gapkey 不写死绝对条数：同样的 gapkey 在 64B 档只覆盖数据集的百分之几、在 1024B 档
+# 却覆盖一大片，三档测的根本不是同一件事。（这个值曾被写死成 400 万，等于每轮扫全库——
+# 是同一个错误的另一个方向。）两种派生方式：
+#
+#   SCAN_SPAN_PARTS  按"横跨几个分区"定。参数名直接就是实验意图——要测的正是分区化
+#                    让一次范围查询从读一个连续文件变成横跨若干文件，代价有多大。
+#   SCAN_FRAC        按"覆盖数据量的几分之一"定。分区大小未定或不关心分区时用它。
+#
+# **扫描分区大小时必须改用 SCAN_FRAC 或 SCAN_GAP**：若 gapkey 跟着 PARTITION_MB 变，
+# 那么"16MB 分区 vs 32MB 分区"的对比里扫描规模也一起变了，测出来的差异无法归因。
+SCAN_SPAN_PARTS="${SCAN_SPAN_PARTS:-3}"
+SCAN_PART_MB="${SCAN_PART_MB:-$PARTITION_MB}"
+SCAN_FRAC="${SCAN_FRAC:-}"
 SCAN_GAP="${SCAN_GAP:-}"
 # 连续这么多次（每次间隔 5s）检查 GC 轮数不变，才认为布局已稳定、可以开始读
 GC_STABLE_CHECKS="${GC_STABLE_CHECKS:-4}"
@@ -197,8 +211,15 @@ for sys in $SYSTEMS; do
     # ---- SCAN ----
     # SCAN 单线程是刻意的：一次范围查询本身读取量就大，再叠并发只会让各 goroutine 的
     # 随机起点互相冲刷缓存，结果不稳定且难以归因。
-    GAP="${SCAN_GAP:-$((N / SCAN_FRAC))}"
-    [ "$GAP" -ge 1 ] || die "gapkey 算出来是 $GAP（N=$N SCAN_FRAC=$SCAN_FRAC）"
+    GAP="$SCAN_GAP"
+    if [ -z "$GAP" ] && [ -n "$SCAN_SPAN_PARTS" ] && [ -n "$SCAN_PART_MB" ]; then
+      # 一个分区装 分区字节数/每条字节数 条；每条 = 20B 头 + 10B key + value
+      GAP=$(( SCAN_SPAN_PARTS * (SCAN_PART_MB * 1048576) / (20 + 10 + vs) ))
+    fi
+    if [ -z "$GAP" ] && [ -n "$SCAN_FRAC" ]; then GAP=$(( N / SCAN_FRAC )); fi
+    [ -n "$GAP" ] || die "gapkey 无法确定：SCAN_GAP/SCAN_SPAN_PARTS(+PARTITION_MB)/SCAN_FRAC 都没给"
+    # 起点上界是 keyspace-gapkey，gapkey 超过记录总数就没有合法起点了
+    [ "$GAP" -ge 1 ] && [ "$GAP" -lt "$N" ] || die "gapkey=$GAP 不在 [1,$N) 内（vsize=$vs）"
     /tmp/mt-scan_pro -cnums 1 -dnums "$SCAN_DNUMS" -tests "$SCAN_TESTS" -gapkey "$GAP" -keyspace "$N" -servers "$ADDR" > "$DATA/scan.out" 2>&1
     SCANL=$(grep '^\[LATENCY\]' "$DATA/scan.out" | tail -1)
     SCANT=$(grep '^\[THROUGHPUT\]' "$DATA/scan.out" | tail -1)
