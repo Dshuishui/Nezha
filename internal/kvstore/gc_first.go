@@ -343,18 +343,58 @@ func (kvs *KVServer) CheckDatabaseContent() error {
 // and it is lost when the old log and index are dropped. Apply is event-driven and normally
 // lags by microseconds, which is why no run had caught this, but a lagging follower or a
 // burst of writes widens the window.
+// waitOldVersionApplied 阻塞到写进旧 valuelog 的条目**全部落进旧库**为止。
+//
+// 分两步，缺了第二步就会丢数据。
+//
+// Raft 的 Offsets/offsetVersions 队列是在 applyLogLoop **组装批次**时出队的，而不是 KV 层
+// 真正落库时；批次随后经 applyCh 异步交给 applyLoop。所以队列排空只意味着"旧文件的条目都
+// 已派发"，此刻仍有最多一个批次（maxApplyBatch=64）外加 applyCh 里缓冲的条目没有落库。
+// 只等第一步就开始搬运，这些在途条目会在搬运走过它们的 key **之后**才写进
+// kvs.oldPersister；而一轮 GC 结束时旧库与旧日志都会被删掉，这些记录就永久没了。
+//
+// 没有任何东西会报错：读路径把"这一处没有"当作常态（数据分散在有序文件与新旧 valuelog 中，
+// 一次读并发查这几处），少搬一条只会在某次 GET 上变成一个 NOKEY。实测每轮丢 21~54 条
+// （共 111 万条），冷 key 丢了连命中率都看不出来——详见 scripts/bench/lost-keys.py。
+//
+// 第二步取"此刻 Raft 已派发到的最大 index"作为目标，等 KV 层的 applied 追上它。KV 层严格
+// 按 index 序应用，追上即意味着所有 index <= target 的条目都已落库，其中自然包含全部旧版本
+// 条目。第一步之后 Raft 再派发的都是新版本，把 target 取得偏大只是多等一会儿，不影响正确性。
 func (kvs *KVServer) waitOldVersionApplied(oldVersion int32) {
 	defer gcCrashWindow()
 	start := time.Now()
+
+	// 第一步：旧版本的条目都已从 Raft 的偏移队列里派发出去
 	for {
 		v, pending := kvs.raft.OldestPendingVersion()
 		if !pending || v > oldVersion {
-			if waited := time.Since(start); waited > 50*time.Millisecond {
-				fmt.Printf("GC waited %v for the old file's pending entries to be applied\n", waited)
-			}
-			return
+			break
 		}
 		time.Sleep(time.Millisecond)
+	}
+
+	// 第二步：KV 层确实把它们写进了旧库
+	target := kvs.raft.GetApplyIndex()
+	warned := time.Now()
+	for {
+		kvs.mu.Lock()
+		applied := kvs.lastAppliedIndex
+		kvs.mu.Unlock()
+		if applied >= target {
+			break
+		}
+		// 不设超时上限：超时就继续搬运等于重新引入丢数据，而这些条目已经提交、
+		// applyLoop 只要活着就是微秒级的事。真卡住了就把它打出来，别静默等待。
+		if time.Since(warned) > 5*time.Second {
+			fmt.Printf("[GC] 仍在等待 KV 层应用到 index %d（当前 %d），已等 %v\n",
+				target, applied, time.Since(start).Round(time.Second))
+			warned = time.Now()
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if waited := time.Since(start); waited > 50*time.Millisecond {
+		fmt.Printf("GC waited %v for the old file's pending entries to be applied\n", waited)
 	}
 }
 
