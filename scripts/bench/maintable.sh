@@ -24,8 +24,15 @@
 #                     100MiB 数据配 128MB 默认值只会切出一个分区，路由代码根本不被执行，
 #                     跑出来的"无退化"是假的；验收要显式调小（如 16）。
 #   PUT_CLIENTS=100 GET_CLIENTS=100   并发度（用户 2026-09-09 定：PUT/GET 100，SCAN 单线程）
-#   GET_OPS=20000                     GET 总请求 = GET_OPS × 100 轮（-cnums 只改并发，不改总量）
-#   SCAN_DNUMS=50 SCAN_TESTS=20       总扫描次数 = 两者之积（默认 1000）
+#   GET_OPS=200000 GET_TESTS=10       GET 总请求 = 两者之积（默认 200 万）
+#   SCAN_DNUMS=250 SCAN_TESTS=4       总扫描次数 = 两者之积（默认 1000）
+#   REST_SEC=5                        bench 客户端的轮间静置秒数
+#
+#   **轮数要少、每轮要大。** 分位数是把所有单次延迟汇总后算的，与轮数无关；轮数只影响
+#   "每轮吞吐"这个平均值的样本数。而每两轮之间要静置 REST_SEC 秒，所以轮数直接乘进空等：
+#   旧默认（GET 100 轮 / SCAN 20 轮）每格空等 590 秒，而真正在测的只有约 57 秒——
+#   一格 11 分钟里 88% 是 time.Sleep。改成 10 轮 / 4 轮后操作总数与分位数样本完全不变，
+#   空等降到 60 秒，每格约 2.5 分钟。
 #   SCAN_SPAN_PARTS=2                 单次扫描横跨几个分区
 #   SCAN_PART_MB=                     算 gapkey 用的分区大小；默认取 PARTITION_MB。
 #                                     两者分开是必须的：对照组跑的是不认识
@@ -35,6 +42,9 @@
 #   SCAN_GAP=                         或直接指定 gapkey
 #   三者优先级 SCAN_GAP > SCAN_SPAN_PARTS > SCAN_FRAC
 #   GC_STABLE_CHECKS=4  读之前要求 GC 轮数连续几次检查不变（见 GC 一节的注释）
+#   LOST_KEYS=warn      每格读之前数一遍盘上丢了多少 key：warn 记录并继续 / fail 立即中止 / off 不查。
+#                       GC 搬丢记录不会报任何错，只会在某次 GET 上变成一个 NOKEY，命中率看不出来。
+#                       改动了 GC 或恢复路径时应当用 fail——**跑几小时之后才发现搬丢了才是真浪费**。
 #   OUT=/tmp/maintable-<标签>.csv
 set -u
 GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
@@ -46,7 +56,10 @@ die(){  echo -e "${RED}[FAIL]${NC} $*"; exit 1; }
 # 用途是"改进前基线必须用改进后的脚本重跑"：检出旧 commit 会把 scripts/ 一并退回旧版，
 # 于是"改进前 vs 改进后"的差异里混进了**脚本行为的变化**。把脚本从工作树外的副本运行、
 # 用 REPO_DIR 指向旧代码，两边口径才真的一致。
-cd "${REPO_DIR:-$(dirname "$0")/../..}" || die "无项目目录"
+# 脚本自身所在目录要在 cd 之前定下来：cd 之后 $0 若是相对路径就指不回来了，
+# 而 REPO_DIR 指向别的工作树时更是完全对不上。
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "${REPO_DIR:-$SCRIPT_DIR/../..}" || die "无项目目录"
 source ~/env.sh 2>/dev/null || true
 export TMPDIR=${TMPDIR:-$HOME/work/tmp}; mkdir -p "$TMPDIR"
 
@@ -59,7 +72,9 @@ SYNC_WAL="${SYNC_WAL:-0}"
 PARTITION_MB="${PARTITION_MB:-}"
 PUT_CLIENTS="${PUT_CLIENTS:-100}"
 GET_CLIENTS="${GET_CLIENTS:-100}"
-GET_OPS="${GET_OPS:-20000}"
+GET_OPS="${GET_OPS:-200000}"
+GET_TESTS="${GET_TESTS:-10}"
+REST_SEC="${REST_SEC:-5}"
 # 总扫描次数 = SCAN_DNUMS × SCAN_TESTS，默认 1000。
 # 下限由分位数的样本量定：最近秩下 N 个样本的 p99 就是第 N 个，样本太少时 p99 直接等于最大值。
 # 冒烟曾用 80 个查询，p99 与 p999 双双落在 max 上，那个分位数没有任何意义。
@@ -67,8 +82,8 @@ GET_OPS="${GET_OPS:-20000}"
 # 之所以不取更高：gapkey 改为数据量的 1/4 之后单次扫描涨到约 25MB，5000 次会让
 # 整套实验的 SCAN 部分从约 3 小时涨到约 14 小时，而 p99 的轮间噪声本就有 5~13%，
 # 主判据是 p50，为 p99 多花 11 小时不划算。
-SCAN_DNUMS="${SCAN_DNUMS:-50}"
-SCAN_TESTS="${SCAN_TESTS:-20}"
+SCAN_DNUMS="${SCAN_DNUMS:-250}"
+SCAN_TESTS="${SCAN_TESTS:-4}"
 # gapkey 不写死绝对条数：同样的 gapkey 在 64B 档只覆盖数据集的百分之几、在 1024B 档
 # 却覆盖一大片，三档测的根本不是同一件事。（这个值曾被写死成 400 万，等于每轮扫全库——
 # 是同一个错误的另一个方向。）两种派生方式：
@@ -88,6 +103,7 @@ SCAN_FRAC="${SCAN_FRAC:-}"
 SCAN_GAP="${SCAN_GAP:-}"
 # 连续这么多次（每次间隔 5s）检查 GC 轮数不变，才认为布局已稳定、可以开始读
 GC_STABLE_CHECKS="${GC_STABLE_CHECKS:-4}"
+LOST_KEYS="${LOST_KEYS:-warn}"
 OUT="${OUT:-/tmp/maintable-$LABEL.csv}"
 ADDR=127.0.0.1:3088
 IADDR=127.0.0.1:30881
@@ -106,7 +122,7 @@ done
 
 # 表头：一行 = 一次跑。分位数单位毫秒，放大率无量纲。
 if [ ! -f "$OUT" ]; then
-  echo "commit,label,system,syncwal,vsize,entries,total_mb,round,op,n,mean_ms,p50_ms,p90_ms,p95_ms,p99_ms,p999_ms,min_ms,max_ms,ops,bytes,elapsed_s,ops_per_s,mb_per_s,extra,gc_done,write_amp,space_amp,peak_rss_mb" > "$OUT"
+  echo "commit,label,system,syncwal,vsize,entries,total_mb,round,op,n,mean_ms,p50_ms,p90_ms,p95_ms,p99_ms,p999_ms,min_ms,max_ms,ops,bytes,elapsed_s,ops_per_s,mb_per_s,extra,gc_done,lost_keys,write_amp,space_amp,peak_rss_mb" > "$OUT"
 fi
 
 # field <文本> <键>：从 "键=值" 里取值，取不到给 NA（空字段在汇总表里看起来只是
@@ -198,6 +214,20 @@ for sys in $SYSTEMS; do
     esac
     kill -0 "$PID" 2>/dev/null || { tail -30 "$DATA/n.log"; die "节点在 GC 中崩溃 ($sys/$vs/$round)"; }
 
+    # ---- 搬丢了没有 ----
+    # 放在读之前：丢了 key 会让后面的 GET/SCAN 数字失去意义，早一格发现就少浪费几小时。
+    LOST=NA
+    if [ "$LOST_KEYS" != off ]; then
+      LOST=$(python3 "$SCRIPT_DIR/lost-keys.py" "$DATA" "$N" "$vs" 2>/dev/null | grep -o '丢失 [0-9]*' | grep -o '[0-9]*')
+      LOST="${LOST:-NA}"
+      if [ "$LOST" != NA ] && [ "$LOST" -gt 0 ]; then
+        if [ "$LOST_KEYS" = fail ]; then
+          die "GC 搬丢了 $LOST 条记录（$sys/$vs/$round）——先修再测"
+        fi
+        warn "GC 搬丢了 $LOST 条记录（$sys/$vs/$round）"
+      fi
+    fi
+
     # 放大率在写入与 GC 都结束后采一次
     W1=$(write_bytes "$PID"); DIRB=$(dir_bytes "$DATA")
     WAMP=$(awk -v a="$W0" -v b="$W1" -v l="$LOGICAL" 'BEGIN{ if(l>0) printf "%.4f", (b-a)/l; else print "NA" }')
@@ -205,7 +235,8 @@ for sys in $SYSTEMS; do
 
     # ---- GET ----
     # keyspace 必须等于实际写入量，否则读的大多是从未写入的 key。
-    /tmp/mt-zipf_read -cnums "$GET_CLIENTS" -dnums "$GET_OPS" -keyspace "$N" -servers "$ADDR" > "$DATA/get.out" 2>&1
+    /tmp/mt-zipf_read -cnums "$GET_CLIENTS" -dnums "$GET_OPS" -tests "$GET_TESTS" -rest "$REST_SEC" \
+        -keyspace "$N" -servers "$ADDR" > "$DATA/get.out" 2>&1
     GETL=$(grep '^\[LATENCY\]' "$DATA/get.out" | tail -1)
     GETT=$(grep '^\[THROUGHPUT\]' "$DATA/get.out" | tail -1)
     HIT=$(grep '^\[HITRATE\]' "$DATA/get.out" | tail -1)
@@ -223,7 +254,8 @@ for sys in $SYSTEMS; do
     [ -n "$GAP" ] || die "gapkey 无法确定：SCAN_GAP/SCAN_SPAN_PARTS(+PARTITION_MB)/SCAN_FRAC 都没给"
     # 起点上界是 keyspace-gapkey，gapkey 超过记录总数就没有合法起点了
     [ "$GAP" -ge 1 ] && [ "$GAP" -lt "$N" ] || die "gapkey=$GAP 不在 [1,$N) 内（vsize=$vs）"
-    /tmp/mt-scan_pro -cnums 1 -dnums "$SCAN_DNUMS" -tests "$SCAN_TESTS" -gapkey "$GAP" -keyspace "$N" -servers "$ADDR" > "$DATA/scan.out" 2>&1
+    /tmp/mt-scan_pro -cnums 1 -dnums "$SCAN_DNUMS" -tests "$SCAN_TESTS" -rest "$REST_SEC" \
+        -gapkey "$GAP" -keyspace "$N" -servers "$ADDR" > "$DATA/scan.out" 2>&1
     SCANL=$(grep '^\[LATENCY\]' "$DATA/scan.out" | tail -1)
     SCANT=$(grep '^\[THROUGHPUT\]' "$DATA/scan.out" | tail -1)
     YIELD=$(grep '^\[SCANYIELD\]' "$DATA/scan.out" | tail -1)
@@ -234,12 +266,12 @@ for sys in $SYSTEMS; do
 
     emit(){ # emit <op> <latency行> <throughput行> <extra>
       local op="$1" L="$2" T="$3" X="$4"
-      printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+      printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "$COMMIT" "$LABEL" "$sys" "$SYNC_WAL" "$vs" "$N" "$TOTAL_MB" "$round" "$op" \
         "$(field "$L" n)" "$(field "$L" mean)" "$(field "$L" p50)" "$(field "$L" p90)" \
         "$(field "$L" p95)" "$(field "$L" p99)" "$(field "$L" p999)" "$(field "$L" min)" "$(field "$L" max)" \
         "$(field "$T" ops)" "$(field "$T" bytes)" "$(field "$T" elapsed)" "$(field "$T" ops_per_s)" "$(field "$T" mb_per_s)" \
-        "$X" "$GC" "$WAMP" "$SAMP" "$RSS" >> "$OUT"
+        "$X" "$GC" "$LOST" "$WAMP" "$SAMP" "$RSS" >> "$OUT"
     }
     emit PUT  "$PUTL"  "$PUTT"  "NA"
     emit GET  "$GETL"  "$GETT"  "$(field "$HIT" ratio)"
