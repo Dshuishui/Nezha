@@ -19,6 +19,10 @@
 #   VSIZES="64 256 1024"
 #   SYSTEMS="baseline nezha-nogc nezha nezha-avp"
 #   SYNC_WAL=0        1 则加 -syncWAL（每条一次 fsync）
+#   PARTITION_MB=     GC 产物中单个分区的目标大小（MB）。留空则不传这个 flag——
+#                     "改进前"的基线二进制不认识它，传了会直接退出。
+#                     100MiB 数据配 128MB 默认值只会切出一个分区，路由代码根本不被执行，
+#                     跑出来的"无退化"是假的；验收要显式调小（如 16）。
 #   PUT_CLIENTS=50 GET_CLIENTS=20 GET_OPS=20000 SCAN_DNUMS=250 SCAN_TESTS=20 SCAN_GAP=1000
 #   GC_STABLE_CHECKS=4  读之前要求 GC 轮数连续几次检查不变（见 GC 一节的注释）
 #   OUT=/tmp/maintable-<标签>.csv
@@ -38,6 +42,7 @@ ROUNDS="${ROUNDS:-3}"
 VSIZES="${VSIZES:-64 256 1024}"
 SYSTEMS="${SYSTEMS:-baseline nezha-nogc nezha nezha-avp}"
 SYNC_WAL="${SYNC_WAL:-0}"
+PARTITION_MB="${PARTITION_MB:-}"
 PUT_CLIENTS="${PUT_CLIENTS:-50}"
 GET_CLIENTS="${GET_CLIENTS:-20}"
 GET_OPS="${GET_OPS:-20000}"
@@ -89,6 +94,8 @@ start_node(){
     *) die "未知系统 $sys" ;;
   esac
   [ "$SYNC_WAL" = 1 ] && flags="$flags -syncWAL"
+  # 只有 nezha/nezha-avp 有 GC 产物；另外两个系统传了也无害，但基线二进制不认识这个 flag
+  [ -n "$PARTITION_MB" ] && flags="$flags -partitionTargetMB $PARTITION_MB"
   rm -rf "$d"; mkdir -p "$d"
   # shellcheck disable=SC2086
   nohup "$BIN" -address "$ADDR" -internalAddress "$IADDR" -peers "$IADDR" \
