@@ -42,6 +42,11 @@ type Config struct {
 	// It trades read cost against reclamation granularity; 0 takes the default.
 	PartitionTargetMB int
 
+	// AbsorbRatio triggers a GC round once the tail log reaches this fraction of the
+	// partitions' total size. Proportional rather than absolute so that the bytes
+	// rewritten stay proportional to the new data absorbed; see gcloop.go.
+	AbsorbRatio float64
+
 	// LSM-Raft baseline (lsmraft.go): span size and idle cut.
 	SSTSpanMB int
 	SSTIdleMs int

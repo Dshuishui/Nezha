@@ -107,6 +107,10 @@ type KVServer struct {
 	indexBlockBytes  int64   // sparse index granularity: one index entry per this many bytes
 	// partitionTargetBytes 是 GC 产物中单个分区的目标大小，见 partition.go 的取舍说明。
 	partitionTargetBytes int64
+	// absorbRatio 决定何时吸收：尾部日志达到分区总量的这个比例就开一轮。
+	// 用比例而不是绝对阈值，是为了让"重写多少"与"因此吸收了多少新数据"成正比——
+	// 否则第 k 轮重写 k×阈值 却只吸收一个阈值，总代价 O(n²)。见 gcloop.go 的注释。
+	absorbRatio float64
 }
 
 func (kv *KVServer) Kill() {
@@ -217,6 +221,7 @@ func New(cfg Config) (*KVServer, error) {
 		dataDir:          cfg.DataDir,
 
 		partitionTargetBytes: int64(cfg.PartitionTargetMB) << 20,
+		absorbRatio:          cfg.AbsorbRatio,
 	}
 	// PASV switches off the storage engine's WAL. RocksDB reads that option once, when
 	// the store is opened, so it must be set before recoverOrInit.

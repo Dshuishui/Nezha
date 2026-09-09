@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// gcLoop checks the value log every five seconds and starts a GC round when it exceeds
-// the threshold: the first round rewrites the log into a sorted file, the second merges
-// into it. Rounds are capped at two and never overlap.
+// gcLoop 每 5 秒查一次 valuelog，达到触发条件就开一轮：第一轮把整个日志重写成按 key 区间
+// 分区的有序文件，之后每一轮把尾部日志**吸收**进它实际覆盖到的那些分区。轮数不设上限，
+// 相邻两轮不重叠。
 func (kvs *KVServer) gcLoop(ctx context.Context) {
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
@@ -43,13 +43,24 @@ func (kvs *KVServer) gcLoop(ctx context.Context) {
 			continue
 		}
 
-		fileSizeGB := float64(fileInfo.Size()) / (1024 * 1024 * 1024)
-		if fileSizeGB <= kvs.gcThresholdGB {
-			// fmt.Printf("文件 %s 大小为 %.2f GB，未达到垃圾回收阈值\n", kvs.currentLog, fileSizeGB)
-			continue
+		// 触发：第一轮看绝对大小（还没有分区，没有可比的分母），之后看**尾部相对分区总量的比例**。
+		//
+		// 原先两轮之后就永久停止（numGC >= 2），valuelog 从此无限增长、空间放大无界。
+		// 而如果只是简单去掉那个上限、继续按绝对阈值触发，代价会变成 O(n²)：第 k 轮重写
+		// k×阈值 的活数据，却只吸收了一个阈值的新数据。重写多少不是问题，**"重写多少"与
+		// "因此吸收了多少新数据"不成比例才是问题**。
+		//
+		// 按比例触发把两者绑在一起：每重写一次 O(n) 之前必然已吸收 O(n) 新数据，
+		// 摊销后每字节 O(1)。绝对阈值降级为下限，防止数据量很小时反复做无意义的小吸收。
+		tailBytes := fileInfo.Size()
+		floor := int64(kvs.gcThresholdGB * 1073741824)
+		need := floor
+		if !kvs.FirstGC {
+			if r := int64(float64(kvs.lastPartitions.TotalSize()) * kvs.absorbRatio); r > need {
+				need = r
+			}
 		}
-		if kvs.numGC >= 2 {
-			// fmt.Printf("已经进行了 %d 轮垃圾回收，停止进一步的垃圾回收\n", kvs.numGC)
+		if tailBytes < need {
 			continue
 		}
 		if kvs.gcInProgress {
@@ -57,7 +68,8 @@ func (kvs *KVServer) gcLoop(ctx context.Context) {
 		}
 		// 第一轮GC
 		if kvs.FirstGC {
-			fmt.Printf("文件 %s 大小为 %.2f GB，开始垃圾回收\n", kvs.currentLog, fileSizeGB)
+			fmt.Printf("文件 %s 大小 %.1fMB 达到阈值 %.1fMB，开始第一轮 GC\n",
+				kvs.currentLog, float64(tailBytes)/1048576, float64(need)/1048576)
 			startTime := time.Now()
 			err = kvs.FirstGarbageCollection()
 			if err != nil {

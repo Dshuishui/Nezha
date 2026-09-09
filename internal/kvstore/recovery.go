@@ -237,7 +237,7 @@ func (kvs *KVServer) resumeInterruptedGC() {
 		log.Fatalf("[RECOVER] remove partial partitions of %s: %v", merged, err)
 	}
 	kvs.waitOldVersionApplied(int32(kvs.numGC - 1))
-	if err := kvs.mergeIntoSortedFile(startTime); err != nil {
+	if err := kvs.absorbTail(startTime); err != nil {
 		log.Fatalf("[RECOVER] redo GC round %d migration: %v", kvs.numGC, err)
 	}
 	if kvs.anotherPartitions == nil {
