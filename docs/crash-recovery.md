@@ -1,8 +1,8 @@
 # Crash Recovery
 
 Status: implemented and verified (2026-09-04).
-Commits: `5aa8fdf` (Raft: rebuildable log, durable term/vote/base), `e8ebaab`
-(applied index stored with the data), `4a3d9ef` (KV state file, startup recovery,
+Commits: `5a5b7c2` (Raft: rebuildable log, durable term/vote/base), `4b55510`
+(applied index stored with the data), `d5845ce` (KV state file, startup recovery,
 interrupted-GC resume). Verification driver: `scripts/multinode/recover.sh`.
 
 ## Problem

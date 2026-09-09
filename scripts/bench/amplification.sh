@@ -31,6 +31,8 @@
 #                         吸收只重写尾部覆盖到的分区，只有一个分区时它退化成全量
 #                         重写，P2 相对 P1 的写放大优势整个测不出来。默认 128MB 的
 #                         话 100MiB 数据集只有一个分区，所以这里默认调小。
+#   RANGE_FRAC=0.25       DIST=range 时，覆盖写集中在键空间中一段连续窗口，窗口占这个比例。
+#                         吸收的复用率由**写入流的 key 区间局部性**决定，预期复用约 1-RANGE_FRAC。
 #   ABSORB_RATIO=0.25     按比例触发吸收。**留空则不传该 flag**，因为改造前的二进制
 #                         不认识它，传了会直接退出；对照实验要用同一个脚本驱动两边。
 set -u
@@ -49,6 +51,7 @@ OVERWRITE="${OVERWRITE:-25 50 100}"
 VSIZES="${VSIZES:-64 256 1024}"
 SYSTEMS="${SYSTEMS:-baseline nezha-nogc nezha nezha-avp}"
 DIST="${DIST:-zipf}"
+RANGE_FRAC="${RANGE_FRAC:-0.25}"
 DEV="${DEV:-sdc/sdc3}"
 SYNC_WAL="${SYNC_WAL:-0}"
 PUT_CLIENTS="${PUT_CLIENTS:-50}"
@@ -137,7 +140,7 @@ ops_of(){ grep -o 'ops_per_s=[0-9.]*' "$1" | head -1 | cut -d= -f2; }
 
 total=0; done_n=0
 for s in $SYSTEMS; do for v in $VSIZES; do for o in $OVERWRITE; do total=$((total+1)); done; done; done
-info "共 $total 格；设备 $DEVSTAT；覆盖比例 [$OVERWRITE]%，分布 $DIST；分区 ${PARTITION_MB}MB，吸收比例 ${ABSORB_RATIO:-（不传）}"
+info "共 $total 格；设备 $DEVSTAT；覆盖比例 [$OVERWRITE]%，分布 $DIST$([ "$DIST" = range ] && echo "(窗口 $RANGE_FRAC)")；分区 ${PARTITION_MB}MB，吸收比例 ${ABSORB_RATIO:-（不传）}"
 info "输出 $OUT"
 
 for sys in $SYSTEMS; do
@@ -165,7 +168,7 @@ for sys in $SYSTEMS; do
 
     # ---- 覆盖写：从 [0,N) 按 $DIST 抽键，制造垃圾 ----
     /tmp/amp-randwrite -cnums "$PUT_CLIENTS" -dnums "$M" -vsize "$vs" \
-        -keyspace "$N" -dist "$DIST" -servers "$ADDR" > "$D/update.out" 2>&1
+        -keyspace "$N" -dist "$DIST" -rangeFrac "$RANGE_FRAC" -servers "$ADDR" > "$D/update.out" 2>&1
 
     # ---- 等 GC ----
     # 等轮数稳定而非"至少一轮"，理由同 maintable.sh：写得慢的配置 GC 会多跑几轮，
