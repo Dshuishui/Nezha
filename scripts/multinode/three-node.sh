@@ -22,7 +22,9 @@ case $CMD in
 start)
   PORT=${3:?}; IPORT=${4:?}; VS=${5:-1024}; N=${6:-20000}
   SELF_IP=$(hostname -I | awk '{for(i=1;i<=NF;i++) if($i ~ /^192\.168\.1\./){print $i;exit}}')
-  NEWEST=$(ls -t internal/raft/*.go cmd/nezha/*.go | head -1)
+  # 新旧判据必须覆盖**全部**被编译进节点的源码。原先只看 internal/raft 与 cmd/nezha，
+  # 而 GC 改造整个落在 internal/kvstore——改完直接跑，会静默复用上一次的二进制。
+  NEWEST=$(find internal cmd -name '*.go' -newer /dev/null -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -1)
   if [ ! -x "$EXE" ] || [ "$EXE" -ot "$NEWEST" ]; then
     if [ "$BIN" = race ]; then go build -race -o "$EXE" ./cmd/nezha/ || { echo BUILD_FAIL; exit 1; }
     else go build -o "$EXE" ./cmd/nezha/ || { echo BUILD_FAIL; exit 1; }; fi
@@ -96,7 +98,7 @@ report)
 timeline)
   # GC start/end, heartbeat silence, and every role change, in log order. Needs TS=1 at
   # start for the fmt.Printf lines (GC, "3秒没有收到") to carry a time of their own.
-  cat "$D"/n*.log | grep -E 'Starting garbage collection|垃圾回收完成|垃圾回收出现了错误|GC-PHASE|LOCK-STALL|SLOW-APPEND|忽略.*拉票|3秒没有收到|Follower -> Candidate|Candidate -> Leader' \
+  cat "$D"/n*.log | grep -E 'Starting garbage collection|垃圾回收完成|垃圾回收出现了错误|GC-PHASE|GC-ABSORB|LOCK-STALL|SLOW-APPEND|忽略.*拉票|3秒没有收到|Follower -> Candidate|Candidate -> Leader' \
     | sed "s/^/node$IDX /"
   ;;
 esac
