@@ -27,6 +27,12 @@
 #   DIST=zipf|uniform     覆盖写的键分布（默认 zipf，与 GET 的热点口径一致）
 #   DEV=sdc/sdc3          设备与分区名，用于读 /sys/block/<DEV>/stat
 #   SYNC_WAL=0
+#   PARTITION_MB=16       GC 产出分区的目标大小。**必须让数据集分成好几个分区**：
+#                         吸收只重写尾部覆盖到的分区，只有一个分区时它退化成全量
+#                         重写，P2 相对 P1 的写放大优势整个测不出来。默认 128MB 的
+#                         话 100MiB 数据集只有一个分区，所以这里默认调小。
+#   ABSORB_RATIO=0.25     按比例触发吸收。**留空则不传该 flag**，因为改造前的二进制
+#                         不认识它，传了会直接退出；对照实验要用同一个脚本驱动两边。
 set -u
 GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
 info(){ echo -e "${GREEN}[INFO]${NC} $*"; }
@@ -46,6 +52,8 @@ DIST="${DIST:-zipf}"
 DEV="${DEV:-sdc/sdc3}"
 SYNC_WAL="${SYNC_WAL:-0}"
 PUT_CLIENTS="${PUT_CLIENTS:-50}"
+PARTITION_MB="${PARTITION_MB:-16}"
+ABSORB_RATIO="${ABSORB_RATIO-0.25}"
 QUIET_SECS="${QUIET_SECS:-10}"     # 连续这么多秒进程写入低于阈值才算静默
 QUIET_BYTES="${QUIET_BYTES:-1048576}"  # 每 2 秒写入低于这个字节数即视为已停止
 QUIET_MAX="${QUIET_MAX:-180}"      # 等静默的上限，超时记 NA 而不是硬等
@@ -113,10 +121,12 @@ start_node(){
     *) die "未知系统 $sys" ;;
   esac
   [ "$SYNC_WAL" = 1 ] && flags="$flags -syncWAL"
+  [ -n "$ABSORB_RATIO" ] && flags="$flags -absorbRatio $ABSORB_RATIO"
   rm -rf "$d"; mkdir -p "$d"
   # shellcheck disable=SC2086
   nohup "$BIN" -address "$ADDR" -internalAddress "$IADDR" -peers "$IADDR" \
-      -data "$d" -gap 100000000 -gcThresholdGB "$gcgb" -commitTimeoutS 60 $flags \
+      -data "$d" -gap 100000000 -gcThresholdGB "$gcgb" -commitTimeoutS 60 \
+      -partitionTargetMB "$PARTITION_MB" $flags \
       < /dev/null > "$d/n.log" 2>&1 &
   PID=$!
   sleep 8
@@ -127,7 +137,7 @@ ops_of(){ grep -o 'ops_per_s=[0-9.]*' "$1" | head -1 | cut -d= -f2; }
 
 total=0; done_n=0
 for s in $SYSTEMS; do for v in $VSIZES; do for o in $OVERWRITE; do total=$((total+1)); done; done; done
-info "共 $total 格；设备 $DEVSTAT；覆盖比例 [$OVERWRITE]%，分布 $DIST"
+info "共 $total 格；设备 $DEVSTAT；覆盖比例 [$OVERWRITE]%，分布 $DIST；分区 ${PARTITION_MB}MB，吸收比例 ${ABSORB_RATIO:-（不传）}"
 info "输出 $OUT"
 
 for sys in $SYSTEMS; do
