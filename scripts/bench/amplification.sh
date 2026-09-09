@@ -186,6 +186,12 @@ for sys in $SYSTEMS; do
     esac
     kill -0 "$PID" 2>/dev/null || { tail -30 "$D/n.log"; die "节点崩溃 ($sys/$vs/$pct)"; }
 
+    # 每轮吸收的明细单独留一份。设备级写放大量的是"系统总共写了多少"，答不了
+    # "吸收相对全量重写省了多少"——后者要看每轮**复用**与**重写**各自的源字节数：
+    # 复用的那些字节正是全量重写会白写一遍的量。有了这两个数就不必再造一个
+    # "全量重写"的二进制来对照。
+    grep -h '\[GC-ABSORB\]' "$D/n.log" 2>/dev/null | sed "s|^|$sys,$vs,$pct,|" >> "$OUT.absorb"
+
     # ---- 静默后取终值 ----
     sync
     wait_quiet "$PID"; QU=$?

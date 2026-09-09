@@ -86,6 +86,10 @@ func (kvs *KVServer) absorbTail(startTime time.Time) error {
 	var newParts []*SortedFileIndex
 	var reclaimed int64 // 本次吸收丢掉的旧版本字节数，纯观测
 	reusedParts, rewrittenParts, tailCount := 0, 0, 0
+	// 复用与重写各自的源字节数。吸收省下的写入量就是 reusedBytes——全量重写会把这些
+	// 字节原样再写一遍。两者相加即全量重写的代价，比值可直接算出本轮省了多少，
+	// 无需再造一个"全量重写"的二进制来对照。
+	var reusedBytes, rewrittenBytes int64
 
 	pending, more := <-tail
 	// flushWriter 把写入器刚产出的分区接到清单末尾，保持 key 序
@@ -107,6 +111,7 @@ func (kvs *KVServer) absorbTail(startTime time.Time) error {
 			// 尾部没碰到它，原样复用：不读、不写、不改名。这正是省下来的代价。
 			newParts = append(newParts, part)
 			reusedParts++
+			reusedBytes += part.FileSize
 			continue
 		}
 		tailCount += len(slice)
@@ -124,6 +129,7 @@ func (kvs *KVServer) absorbTail(startTime time.Time) error {
 		}
 		flushWriter()
 		rewrittenParts++
+		rewrittenBytes += part.FileSize
 	}
 
 	// 比最后一个分区还大的尾部记录：单独成新分区接在末尾
@@ -160,9 +166,9 @@ func (kvs *KVServer) absorbTail(startTime time.Time) error {
 	kvs.anotherPartitions = merged
 	kvs.mu.Unlock()
 
-	fmt.Printf("[GC-ABSORB] round=%d 尾部=%d条 复用分区=%d 重写分区=%d 产出=%d个 回收=%dB 耗时=%v\n",
-		kvs.numGC, tailCount, reusedParts, rewrittenParts, merged.Len(), reclaimed,
-		time.Since(startTime).Round(time.Millisecond))
+	fmt.Printf("[GC-ABSORB] round=%d 尾部=%d条 复用分区=%d(%dB) 重写分区=%d(%dB) 产出=%d个 回收=%dB 耗时=%v\n",
+		kvs.numGC, tailCount, reusedParts, reusedBytes, rewrittenParts, rewrittenBytes,
+		merged.Len(), reclaimed, time.Since(startTime).Round(time.Millisecond))
 
 	kvs.anotherEndGC = true
 	kvs.switchedPersister = nil
