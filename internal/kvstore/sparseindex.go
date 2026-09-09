@@ -203,24 +203,8 @@ type SortedFileIndex struct {
 	// 分区化之后一个进程同时持有多个有序文件，描述符必须跟着文件走。
 	pool *FileDescriptorPool
 
-	// Entries 是本分区里的记录条数，DeadBytes 是其中已被更新版本取代、可以丢弃的字节数。
-	//
-	// DeadBytes 在**吸收**时精确累加：尾部日志归并进分区的那一刻，新值与被它覆盖的旧值
-	// 同时在手，旧值的字节数是白送的。不在写路径上计量，是因为搬进分区的 key 在存储引擎里
-	// 没有记录（GC 切换时挂的是空库），"查库未命中"分不清"旧版本在分区里"和"这是个新 key"，
-	// 装载阶段会把全部新 key 误计成垃圾。详见 docs/gc-redesign.md 第 4.3 节。
-	//
-	// 有了它，回收才能从"全量重写"变成"只压实脏的那个分区"：代价从 O(数据集) 降到 O(该分区)。
-	Entries   int
-	DeadBytes int64
-}
-
-// deadRatio 是本分区中可回收字节的占比，压实的触发就取它。
-func (sfi *SortedFileIndex) deadRatio() float64 {
-	if sfi == nil || sfi.FileSize <= 0 {
-		return 0
-	}
-	return float64(sfi.DeadBytes) / float64(sfi.FileSize)
+	// Entries 是本分区里的记录条数，纯观测量，随清单持久化。
+	Entries int
 }
 
 func (sfi *SortedFileIndex) closePool() {

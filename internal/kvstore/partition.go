@@ -2,9 +2,7 @@ package kvstore
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -28,8 +26,9 @@ import (
 // 的分段会把范围查询打回随机读——对这个系统是灾难。DiffKV 的 sorted group 是唯一同时满足
 // "回收可增量"与"读不退化"的骨架，这里借的是它。
 //
-// **本文件只做布局与路由（P1）。回收逻辑一行未动**：两轮上限、全量重写、无垃圾计量都还在，
-// 改变的仅是产物从 1 个文件变成 N 个分区。先证明布局改造不伤读，再谈回收效率。
+// 本文件只做布局与路由。回收逻辑在 gc_absorb.go 与 gcloop.go：吸收把尾部并进它覆盖到的
+// 分区，触发条件按尾部占分区总量的比例。分区级的垃圾计量**不需要**——吸收重写一个分区时
+// 旧版本当场丢掉，没碰到的分区本来就没垃圾，所以任何 DeadBytes 都会恒为零。
 
 // defaultPartitionTargetBytes 是单个分区的目标大小。
 //
@@ -64,14 +63,6 @@ func (ps *PartitionSet) Len() int {
 	return len(ps.parts)
 }
 
-// Base 是这组分区的基名，第二轮 GC 用它派生归并产物的名字。
-func (ps *PartitionSet) Base() string {
-	if ps == nil {
-		return ""
-	}
-	return ps.base
-}
-
 // TotalSize 是全部分区的字节数之和。
 func (ps *PartitionSet) TotalSize() int64 {
 	if ps == nil {
@@ -82,36 +73,6 @@ func (ps *PartitionSet) TotalSize() int64 {
 		n += p.FileSize
 	}
 	return n
-}
-
-// DeadBytes 是全部分区可回收字节之和；TotalSize 是它们的总字节数。两者之比就是整组的垃圾率。
-func (ps *PartitionSet) DeadBytes() int64 {
-	if ps == nil {
-		return 0
-	}
-	var n int64
-	for _, p := range ps.parts {
-		n += p.DeadBytes
-	}
-	return n
-}
-
-// dirtiest 返回垃圾率最高且超过 ratio 的那个分区；没有则返回 nil。
-// 压实一次只做一个分区，取最脏的那个——同样的搬运字节数，回收的垃圾最多。
-func (ps *PartitionSet) dirtiest(ratio float64) *SortedFileIndex {
-	if ps == nil {
-		return nil
-	}
-	var best *SortedFileIndex
-	for _, p := range ps.parts {
-		if p.deadRatio() <= ratio {
-			continue
-		}
-		if best == nil || p.deadRatio() > best.deadRatio() {
-			best = p
-		}
-	}
-	return best
 }
 
 // Paths 按 key 序返回全部分区文件路径。
@@ -168,35 +129,6 @@ func (ps *PartitionSet) Close() {
 	}
 }
 
-// openStream 按 key 序读出整组分区的全部 entry。
-//
-// 分区各自内部有序、区间又互不重叠，顺次拼接即得全局有序流——第二轮归并因此完全不必关心
-// 上一轮的产物被切成了几个文件，它读到的仍是一条有序流。
-func (ps *PartitionSet) openStream() (*bufio.Reader, func(), error) {
-	if ps == nil || len(ps.parts) == 0 {
-		return bufio.NewReader(bytes.NewReader(nil)), func() {}, nil
-	}
-	files := make([]*os.File, 0, len(ps.parts))
-	readers := make([]io.Reader, 0, len(ps.parts))
-	for _, p := range ps.parts {
-		f, err := os.Open(p.FilePath)
-		if err != nil {
-			for _, o := range files {
-				o.Close()
-			}
-			return nil, nil, fmt.Errorf("open partition %s: %v", p.FilePath, err)
-		}
-		files = append(files, f)
-		readers = append(readers, f)
-	}
-	closeAll := func() {
-		for _, f := range files {
-			f.Close()
-		}
-	}
-	return bufio.NewReaderSize(io.MultiReader(readers...), 1<<20), closeAll, nil
-}
-
 // ---- 清单的持久化 ----
 
 // partitionMeta 是清单里的一项，随 KV 状态一起写盘。重启时按它直接重建分区边界，
@@ -209,10 +141,8 @@ type partitionMeta struct {
 	Lo   string `json:"lo"`
 	Hi   string `json:"hi"`
 	Size int64  `json:"size"`
-	// Entries 与 DeadBytes 必须一起持久化：重启后若把 DeadBytes 清零，已经攒下的垃圾就
-	// 再也不会触发压实，空间放大只增不减——这正是改造要消除的那个问题。
-	Entries   int   `json:"entries"`
-	DeadBytes int64 `json:"dead_bytes"`
+	// Entries 是记录条数，纯观测：清单是回看一组分区长什么样的唯一入口。
+	Entries int `json:"entries"`
 }
 
 func (ps *PartitionSet) manifest() []partitionMeta {
@@ -223,7 +153,7 @@ func (ps *PartitionSet) manifest() []partitionMeta {
 	for _, p := range ps.parts {
 		out = append(out, partitionMeta{
 			Path: p.FilePath, Lo: p.Lo, Hi: p.Hi, Size: p.FileSize,
-			Entries: p.Entries, DeadBytes: p.DeadBytes,
+			Entries: p.Entries,
 		})
 	}
 	return out
@@ -270,7 +200,6 @@ func (kvs *KVServer) loadPartitionSet(base string, metas []partitionMeta) (*Part
 			Hi:           m.Hi,
 			pool:         pool,
 			Entries:      m.Entries,
-			DeadBytes:    m.DeadBytes,
 		})
 	}
 	return ps, nil
@@ -459,8 +388,6 @@ func (pw *partitionWriter) seal() error {
 		Hi:           pw.hi,
 		pool:         pool,
 		Entries:      pw.n,
-		// 刚写出来的分区里每一条都是最新版本，垃圾为零。它由后续的吸收累加。
-		DeadBytes: 0,
 	})
 	pw.total += pw.offset
 	return nil
