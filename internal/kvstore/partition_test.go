@@ -308,3 +308,72 @@ func TestScanAcrossPartitions(t *testing.T) {
 		}
 	}
 }
+
+// 垃圾计量要能跨重启活下来。清零的话，已经攒下的垃圾再也不会触发压实，
+// 空间放大只增不减——那正是改造要消除的问题。
+func TestGarbageAccountingSurvivesReload(t *testing.T) {
+	dir := t.TempDir()
+	kvs := newTestServer(4096)
+	base := filepath.Join(dir, "sorted_1")
+
+	ps := writeEntries(t, kvs, base, 200, 100)
+	if ps.Len() < 3 {
+		t.Fatalf("前置条件不成立：应有多个分区，实际 %d", ps.Len())
+	}
+	// 刚写出来的分区每条都是最新版本，垃圾必须为零
+	for i, p := range ps.parts {
+		if p.DeadBytes != 0 {
+			t.Errorf("新分区 %d 的 DeadBytes = %d; want 0", i, p.DeadBytes)
+		}
+		if p.Entries == 0 {
+			t.Errorf("新分区 %d 没有记录条数", i)
+		}
+	}
+
+	// 模拟吸收累加出来的垃圾
+	ps.parts[1].DeadBytes = ps.parts[1].FileSize / 2
+	wantRatio := ps.parts[1].deadRatio()
+	metas := ps.manifest()
+	ps.Close()
+
+	reloaded, err := kvs.loadPartitionSet(base, metas)
+	if err != nil {
+		t.Fatalf("loadPartitionSet: %v", err)
+	}
+	defer reloaded.Close()
+
+	if got := reloaded.parts[1].DeadBytes; got != ps.parts[1].DeadBytes {
+		t.Errorf("重启后 DeadBytes = %d; want %d", got, ps.parts[1].DeadBytes)
+	}
+	if got := reloaded.parts[1].Entries; got != ps.parts[1].Entries {
+		t.Errorf("重启后 Entries = %d; want %d", got, ps.parts[1].Entries)
+	}
+	if got := reloaded.parts[1].deadRatio(); got != wantRatio {
+		t.Errorf("重启后垃圾率 = %v; want %v", got, wantRatio)
+	}
+}
+
+// 压实一次只做一个分区，必须挑最脏的那个：同样的搬运字节数，回收的垃圾最多。
+func TestDirtiestPartitionSelection(t *testing.T) {
+	ps := mkSet([2]string{"100", "199"}, [2]string{"300", "399"}, [2]string{"500", "599"})
+	for _, p := range ps.parts {
+		p.FileSize = 1000
+	}
+	ps.parts[0].DeadBytes = 100 // 10%
+	ps.parts[1].DeadBytes = 700 // 70%
+	ps.parts[2].DeadBytes = 600 // 60%
+
+	got := ps.dirtiest(0.5)
+	if got == nil || got.Lo != "300" {
+		t.Errorf("dirtiest(0.5) 应选 70% 那个分区，得到 %v", got)
+	}
+	if ps.dirtiest(0.8) != nil {
+		t.Error("没有分区超过 80% 时应返回 nil")
+	}
+	if (*PartitionSet)(nil).dirtiest(0.5) != nil {
+		t.Error("nil 集合应返回 nil")
+	}
+	if got := ps.DeadBytes(); got != 1400 {
+		t.Errorf("DeadBytes 合计 = %d; want 1400", got)
+	}
+}

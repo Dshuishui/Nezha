@@ -84,6 +84,36 @@ func (ps *PartitionSet) TotalSize() int64 {
 	return n
 }
 
+// DeadBytes 是全部分区可回收字节之和；TotalSize 是它们的总字节数。两者之比就是整组的垃圾率。
+func (ps *PartitionSet) DeadBytes() int64 {
+	if ps == nil {
+		return 0
+	}
+	var n int64
+	for _, p := range ps.parts {
+		n += p.DeadBytes
+	}
+	return n
+}
+
+// dirtiest 返回垃圾率最高且超过 ratio 的那个分区；没有则返回 nil。
+// 压实一次只做一个分区，取最脏的那个——同样的搬运字节数，回收的垃圾最多。
+func (ps *PartitionSet) dirtiest(ratio float64) *SortedFileIndex {
+	if ps == nil {
+		return nil
+	}
+	var best *SortedFileIndex
+	for _, p := range ps.parts {
+		if p.deadRatio() <= ratio {
+			continue
+		}
+		if best == nil || p.deadRatio() > best.deadRatio() {
+			best = p
+		}
+	}
+	return best
+}
+
 // Paths 按 key 序返回全部分区文件路径。
 func (ps *PartitionSet) Paths() []string {
 	if ps == nil {
@@ -179,6 +209,10 @@ type partitionMeta struct {
 	Lo   string `json:"lo"`
 	Hi   string `json:"hi"`
 	Size int64  `json:"size"`
+	// Entries 与 DeadBytes 必须一起持久化：重启后若把 DeadBytes 清零，已经攒下的垃圾就
+	// 再也不会触发压实，空间放大只增不减——这正是改造要消除的那个问题。
+	Entries   int   `json:"entries"`
+	DeadBytes int64 `json:"dead_bytes"`
 }
 
 func (ps *PartitionSet) manifest() []partitionMeta {
@@ -187,7 +221,10 @@ func (ps *PartitionSet) manifest() []partitionMeta {
 	}
 	out := make([]partitionMeta, 0, len(ps.parts))
 	for _, p := range ps.parts {
-		out = append(out, partitionMeta{Path: p.FilePath, Lo: p.Lo, Hi: p.Hi, Size: p.FileSize})
+		out = append(out, partitionMeta{
+			Path: p.FilePath, Lo: p.Lo, Hi: p.Hi, Size: p.FileSize,
+			Entries: p.Entries, DeadBytes: p.DeadBytes,
+		})
 	}
 	return out
 }
@@ -232,6 +269,8 @@ func (kvs *KVServer) loadPartitionSet(base string, metas []partitionMeta) (*Part
 			Lo:           m.Lo,
 			Hi:           m.Hi,
 			pool:         pool,
+			Entries:      m.Entries,
+			DeadBytes:    m.DeadBytes,
 		})
 	}
 	return ps, nil
@@ -398,6 +437,9 @@ func (pw *partitionWriter) seal() error {
 		Lo:           pw.lo,
 		Hi:           pw.hi,
 		pool:         pool,
+		Entries:      pw.n,
+		// 刚写出来的分区里每一条都是最新版本，垃圾为零。它由后续的吸收累加。
+		DeadBytes: 0,
 	})
 	pw.total += pw.offset
 	return nil
