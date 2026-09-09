@@ -42,3 +42,34 @@ CLAUDE.md
 
 # Driver run logs from scripts/multinode/*.sh
 scripts/multinode/*.log
+
+# go build 的产物。`go build ./cmd/bench/xxx/` 不带 -o 会把二进制丢在**当前目录**，
+# 于是一次批量构建就在仓库根塞进 21 个可执行文件、252MB，还被 git add -A 一起提交了。
+# 它们是 Mach-O arm64（Mac 上编的），在 Linux 实验机上根本跑不了。
+# 按名字逐个忽略：这些名字与 cmd/bench、cmd/ycsb 下的目录名一一对应，加新工具时要同步。
+/A
+/A_pro
+/D
+/E
+/F
+/Load-D-E
+/cdf
+/cdf_v2
+/countkeys
+/nezha
+/randread
+/randread_pro
+/randwrite
+/randwrite_goroutine
+/randwrite_pro
+/readonly
+/scan
+/scan_pro
+/scan_pro_paginated
+/scanverify
+/seqwrite
+/small_value
+/testRocksDB
+/testRocksDB-kvs
+/testRocksDB_v2
+/zipf_read
