@@ -12,6 +12,12 @@
 #   A 干净重启      GC 完整跑完 → kill -9 → 重启按清单重建分区
 #   B GC 中途崩溃   切换已完成、搬运未开始时 kill -9（NEZHA_GC_PAUSE_MS 窗口）→ 重启重做搬运
 #   C 清单校验      故意截断一个分区文件 → 重启**必须拒绝**，不能按错误的边界静默读
+#   D 写分区途中崩   第 2 轮吸收正在写分区时 kill -9 → 盘上留下**半个**分区组 → 重启必须
+#                    认出它是半成品、清掉重做。B 停在"搬运尚未开始"，盘上什么也没有，
+#                    恰好绕开了这个窗口——两个真 bug 就是从这里漏过去的：恢复删的分区名
+#                    对不上（删不掉），而吸收看见自己的 p0 就当成已完成直接返回，于是
+#                    anotherPartitions 为 nil、恢复 log.Fatalf，**每次重启都一样，节点
+#                    再也起不来**。
 #
 # 规模刻意取小：跑通一次 GC 就够，堆数据量只是浪费时间。
 #
@@ -168,13 +174,51 @@ scenario_c(){
   fi
 }
 
-WANT="${*:-a b c}"
+# ---------- 场景 D：第 2 轮吸收正在写分区时崩溃 ----------
+#
+# 为什么要先干净地跑完第 1 轮再挂钩子：第 1 轮和第 2 轮走的是两条不同的重做路径
+# （finishFirstGC 对 absorbTail），出 bug 的是后者。钩子从第二次启动才生效，
+# 那时下一轮必然是第 2 轮，窗口就落在吸收里。
+scenario_d(){
+  info "D 写分区途中崩溃：第 2 轮吸收写到一半 kill -9 → 重启必须清掉半成品并重做"
+  rm -rf "$DATA"; mkdir -p "$DATA"
+  start_node || { fail "D: 节点未启动"; return; }
+  write_data || { fail "D: 写入或即时校验未通过"; return; }
+  wait_gc_done 1 || { fail "D: 第 1 轮 GC 未触发（阈值 ${GCGB}GB）"; return; }
+  kill_node
+
+  # 钩子在每个分区封口后停住，此刻本轮产物在盘上但不完整、也没提交
+  start_node NEZHA_GC_WRITE_PAUSE_MS=15000 || { fail "D: 带钩子重启失败"; return; }
+  write_data || { fail "D: 第二遍写入未通过"; return; }
+  local hit=0
+  for _ in $(seq 1 90); do
+    grep -q 'partition written; more to go' "$NLOG" && { hit=1; break; }
+    sleep 1
+  done
+  [ "$hit" = 1 ] || { fail "D: 没能停在写分区的窗口里，无法制造半成品"; kill_node; return; }
+
+  local partial; partial=$(ls "$DATA"/data/valuelog/RaftState_sorted_2.p* 2>/dev/null | wc -l | tr -d ' ')
+  [ "${partial:-0}" -ge 1 ] || { fail "D: 窗口里盘上没有第 2 轮的分区文件，场景没成立"; kill_node; return; }
+  info "  第 2 轮已写出 $partial 个分区（未提交），kill -9"
+  kill_node
+
+  # 这一步就是回归判据本身：修之前这里必然 log.Fatalf，而且每次重启都一样
+  start_node || { fail "D: 重启失败——半成品把节点卡死了"; tail -5 "$NLOG" | sed 's/^/       /'; return; }
+  sleep 2
+  kill -0 "$PID" 2>/dev/null || { fail "D: 节点启动后随即退出"; tail -5 "$NLOG" | sed 's/^/       /'; PID=""; return; }
+  wait_gc_done 2 || { fail "D: 重启后没有重做第 2 轮吸收"; kill_node; return; }
+  verify D
+  kill_node
+}
+
+WANT="${*:-a b c d}"
 for sc in $WANT; do
   case "$sc" in
     a|A) scenario_a ;;
     b|B) scenario_b ;;
     c|C) scenario_c ;;
-    *) echo "未知场景 $sc（可选 a b c）"; exit 1 ;;
+    d|D) scenario_d ;;
+    *) echo "未知场景 $sc（可选 a b c d）"; exit 1 ;;
   esac
 done
 

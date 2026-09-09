@@ -407,7 +407,21 @@ func (kvs *KVServer) waitOldVersionApplied(oldVersion int32) {
 // for that many milliseconds at the point where the switch is durable but migration has not
 // started, giving an external script the chance to kill -9 mid-GC. Unset in production.
 func gcCrashWindow() {
-	v := os.Getenv("NEZHA_GC_PAUSE_MS")
+	pauseFor("NEZHA_GC_PAUSE_MS", "switch done; migration not started")
+}
+
+// gcWritePauseWindow opens the other crash window that matters: partitions are being
+// written, so the round's output exists on disk but is incomplete and uncommitted. It is a
+// separate hook because the two windows fail differently — a crash before migration leaves
+// nothing behind, while a crash during it leaves a partial partition set that recovery has
+// to recognise as partial. Reaching it needs a pause inside the writing loop; polling for
+// the file from outside cannot hit a window that lasts about a second.
+func gcWritePauseWindow() {
+	pauseFor("NEZHA_GC_WRITE_PAUSE_MS", "partition written; more to go")
+}
+
+func pauseFor(env, where string) {
+	v := os.Getenv(env)
 	if v == "" {
 		return
 	}
@@ -415,7 +429,7 @@ func gcCrashWindow() {
 	if err != nil || ms <= 0 {
 		return
 	}
-	fmt.Printf("[GC-PAUSE] switch done; pausing %d ms per NEZHA_GC_PAUSE_MS\n", ms)
+	fmt.Printf("[GC-PAUSE] %s; pausing %d ms per %s\n", where, ms, env)
 	time.Sleep(time.Duration(ms) * time.Millisecond)
 }
 

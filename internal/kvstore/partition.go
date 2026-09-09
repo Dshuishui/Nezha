@@ -390,6 +390,9 @@ func (pw *partitionWriter) seal() error {
 		Entries:      pw.n,
 	})
 	pw.total += pw.offset
+	// 一个分区刚落盘、后面还有的那一刻——本轮产物在盘上但不完整、也还没提交。
+	// 崩溃恢复的场景 D 要的就是这个窗口，它与"搬运尚未开始"的失败方式不同。
+	gcWritePauseWindow()
 	return nil
 }
 
