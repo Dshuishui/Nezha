@@ -396,7 +396,7 @@ func runWALSizeTest(targetSize uint64, logFile *os.File) RecoveryResult {
 }
 
 func main() {
-	fmt.Println("=== RocksDB WAL 大小恢复性能测试 ===\n")
+	fmt.Print("=== RocksDB WAL 大小恢复性能测试 ===\n\n")
 
 	// 创建日志文件
 	logFileName := fmt.Sprintf("wal_test_results_%s.txt", time.Now().Format("2006-01-02_15-04-05"))

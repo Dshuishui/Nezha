@@ -333,7 +333,7 @@ func runWALSizeTest(targetSize uint64) RecoveryResult {
 }
 
 func main() {
-	fmt.Println("=== RocksDB WAL 大小恢复性能测试 ===\n")
+	fmt.Print("=== RocksDB WAL 大小恢复性能测试 ===\n\n")
 
 	// 测试不同的WAL大小
 	walSizes := []uint64{

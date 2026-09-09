@@ -532,7 +532,7 @@ func runComparisonTest(testType TestType, recordCount int, valueSize int, logFil
 }
 
 func main() {
-	fmt.Println("=== Nezha 键值分离 WAL 恢复性能对比测试 ===\n")
+	fmt.Print("=== Nezha 键值分离 WAL 恢复性能对比测试 ===\n\n")
 
 	// 创建日志文件
 	logFileName := fmt.Sprintf("comparison_test_results_%s.txt", time.Now().Format("2006-01-02_15-04-05"))
