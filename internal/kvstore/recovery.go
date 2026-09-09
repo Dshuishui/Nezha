@@ -127,6 +127,16 @@ func (kvs *KVServer) finishAnotherGC(startTime time.Time) {
 	if err := os.Remove(kvs.oldLog); err != nil {
 		fmt.Printf("第 %v 轮垃圾回收删除旧文件出现了错误: %v\n", kvs.numGC, err)
 	}
+	// 旧的存储引擎同样要删。每轮切换都新建一个库，不删的话它们会一直堆着：
+	// 实测 8 轮之后 dbfile/ 下有 9 个库共 600MB，是分区文件的 40 倍，
+	// 空间放大因此照样无界——分区清理干净了也没用。
+	// 先 Close 再删：目录还被打开着就 RemoveAll，RocksDB 会在后台写到已删除的 inode 上。
+	if kvs.oldPersister != nil && kvs.oldDBPath != "" && kvs.oldDBPath != kvs.currentDBPath {
+		kvs.oldPersister.Close()
+		if err := os.RemoveAll(kvs.oldDBPath); err != nil {
+			fmt.Printf("删除旧存储引擎 %s 失败: %v\n", kvs.oldDBPath, err)
+		}
+	}
 	fmt.Printf("第 %v 轮垃圾回收完成，等待下一轮垃圾回收，且已删除 oldLog 指向的文件\n", kvs.numGC)
 }
 

@@ -40,7 +40,9 @@ func (kvs *KVServer) absorbTail(startTime time.Time) error {
 		return fmt.Errorf("吸收缺少上一组分区")
 	}
 
-	base := fmt.Sprintf("%s_absorb_%d", old.Base(), kvs.numGC)
+	// 基名固定、只加轮号，不以上一轮的基名为前缀——否则名字逐轮叠加，
+	// 8 轮之后就是 RaftState_sorted_1_absorb_2_absorb_3_..._absorb_8。
+	base := fmt.Sprintf("%s_%d", sortedFileBase, kvs.numGC)
 	if _, err := os.Stat(partitionPath(base, 0)); err == nil {
 		fmt.Println("本轮吸收的产物已存在，跳过")
 		return nil

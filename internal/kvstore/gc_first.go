@@ -23,11 +23,16 @@ var (
 	firstSortedFilePath      string
 	firstNewRaftStateLogPath string
 	firstNewPersisterPath    string
+	// sortedFileBase 是**稳定**的分区组基名，第 N 轮的产物是 <基名>_N。
+	// 不这样做的话就会重蹈归并路径那个覆辙：以上一轮的基名为前缀逐轮叠加，
+	// 实测 8 轮之后文件名成了 RaftState_sorted_1_absorb_2_absorb_3_..._absorb_8.p0。
+	sortedFileBase string
 )
 
 // 在main函数中或者适当的地方初始化这些路径
 func InitGCPaths(dataDir string) {
-	firstSortedFilePath = filepath.Join(dataDir, "data", "valuelog", "RaftState_sorted_1")
+	sortedFileBase = filepath.Join(dataDir, "data", "valuelog", "RaftState_sorted")
+	firstSortedFilePath = sortedFileBase + "_1"
 	firstNewRaftStateLogPath = filepath.Join(dataDir, "data", "valuelog", "newRaftState_1")
 	firstNewPersisterPath = filepath.Join(dataDir, "data", "dbfile", "newKeyIndex_1")
 }
