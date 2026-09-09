@@ -259,10 +259,9 @@ func (kvs *KVServer) resumeInterruptedGC() {
 		kvs.finishFirstGC(startTime)
 		return
 	}
-	merged := fmt.Sprintf("%s_merged_%d", kvs.lastPartitions.Base(), kvs.numGC)
-	if err := removePartitionFiles(merged); err != nil {
-		log.Fatalf("[RECOVER] remove partial partitions of %s: %v", merged, err)
-	}
+	// 半成品分区的清理交给 absorbTail：它知道自己写的是哪个基名。这里曾按
+	// "<上一组基名>_merged_<轮号>" 去删，而吸收写的是 "<稳定基名>_<轮号>"，
+	// 名字对不上，崩溃留下的分区一个也没被清掉。
 	kvs.waitOldVersionApplied(int32(kvs.numGC - 1))
 	if err := kvs.absorbTail(startTime); err != nil {
 		log.Fatalf("[RECOVER] redo GC round %d migration: %v", kvs.numGC, err)

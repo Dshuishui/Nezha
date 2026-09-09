@@ -48,9 +48,15 @@ func (kvs *KVServer) absorbTail(startTime time.Time) error {
 	// 基名固定、只加轮号，不以上一轮的基名为前缀——否则名字逐轮叠加，
 	// 8 轮之后就是 RaftState_sorted_1_absorb_2_absorb_3_..._absorb_8。
 	base := fmt.Sprintf("%s_%d", sortedFileBase, kvs.numGC)
-	if _, err := os.Stat(partitionPath(base, 0)); err == nil {
-		fmt.Println("本轮吸收的产物已存在，跳过")
-		return nil
+	// 本轮的分区文件如果已经在盘上，那是上一次尝试留下的、**未提交**的产物：一组分区只有
+	// 在 finishAnotherGC 把清单写进 kv_state.json 之后才算数，而那之后 numGC 就推进了，
+	// 下一轮用的是另一个基名。所以这里看到的必然是半成品，先清掉再重写。
+	//
+	// 原先这里是"存在就跳过"。文件存在分不清"写完了"和"写了一半"，于是搬运途中崩溃会让
+	// 重做把半个分区当成完整产物：吸收直接返回，anotherPartitions 仍是 nil，恢复随即
+	// log.Fatalf，而且每次重启都走同一条路——一次崩溃就让节点再也起不来。
+	if err := removePartitionFiles(base); err != nil {
+		return fmt.Errorf("清理上一次未完成的吸收产物失败: %v", err)
 	}
 	kvs.anotherSortedFilePath = base
 
