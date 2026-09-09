@@ -26,7 +26,13 @@ var (
 	// 而写放大与空间放大在文献里量的是回收垃圾的代价（Scavenger+/HashKV/Titan
 	// 都是"装载→update 制造垃圾→触发 GC→再测"），没有覆盖写就测不到那件事。
 	keyspace = flag.Int("keyspace", 0, "overwrite mode: draw keys from [0,keyspace) with repetition (0 = unique load)")
-	dist     = flag.String("dist", "zipf", "overwrite key distribution: zipf|uniform（仅 keyspace>0 时有效）")
+	dist     = flag.String("dist", "zipf", "overwrite key distribution: zipf|uniform|range（仅 keyspace>0 时有效）")
+	// range 分布把全部覆盖写关进键空间里一段**连续**的窗口，窗口占 rangeFrac。
+	// 它是唯一能让 GC 的分区复用生效的负载形态：决定一个分区要不要重写的是**覆盖**
+	// （碰到一个 key 就得整块重写），不是频次——所以 zipf 的频次倾斜给不了复用，
+	// 实测每一轮都是"复用分区=0"（results/amplification/2026-09-09-writeamp）。
+	// 窗口外的分区一个 key 都不会被碰到，预期复用比例约 1-rangeFrac，可直接证伪。
+	rangeFrac = flag.Float64("rangeFrac", 0.25, "dist=range: 覆盖写集中在键空间中一段连续窗口，窗口占这个比例")
 )
 
 type KVClient struct {
@@ -206,6 +212,19 @@ func keysFor(allKeys []int, start, end, worker int) []int {
 	if *dist == "uniform" {
 		for j := range out {
 			out[j] = rnd.Intn(*keyspace)
+		}
+		return out
+	}
+	if *dist == "range" {
+		// 窗口起点对所有 worker 必须一致，否则各 worker 各占一段，合起来又铺满了
+		// 键空间，局部性就没了。用固定种子而非 worker 种子来定起点。
+		w := int(float64(*keyspace) * *rangeFrac)
+		if w < 1 {
+			w = 1
+		}
+		lo := rand.New(rand.NewSource(int64(*keyspace))).Intn(*keyspace - w + 1)
+		for j := range out {
+			out[j] = lo + rnd.Intn(w)
 		}
 		return out
 	}
