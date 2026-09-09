@@ -552,8 +552,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 			if result.err == nil {
 				reply.Value = result.value
 			} else {
-				reply.Err = raft.ErrNoKey
-				reply.Value = raft.NoKey
+				setReadFailure(reply, result.err)
 			}
 			return reply
 		}
@@ -644,8 +643,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 			if result.err == nil {
 				reply.Value = result.value
 			} else {
-				reply.Err = raft.ErrNoKey
-				reply.Value = raft.NoKey
+				setReadFailure(reply, result.err)
 			}
 			return reply
 		}
@@ -703,8 +701,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 		if result.err == nil {
 			reply.Value = result.value
 		} else {
-			reply.Err = raft.ErrNoKey
-			reply.Value = raft.NoKey
+			setReadFailure(reply, result.err)
 		}
 		return reply
 	}
@@ -714,6 +711,27 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 //
 // 分区区间互不重叠，候选因此只有一个，查找本身仍是原来的"稀疏索引二分 + 块内顺序扫描"。
 // 相对改造前的单个大文件，索引更小、局部性更好。
+// setReadFailure 按错误的性质回应：只有"这一处确实没有"才是 ErrNoKey，
+// 其余一律是 ErrInternal——读失败时 key 是否存在是**未知**的，不能替客户端断言它不存在。
+func setReadFailure(reply *kvrpc.GetInRaftResponse, err error) {
+	if errors.Is(err, ErrKeyAbsent) {
+		reply.Err = raft.ErrNoKey
+		reply.Value = raft.NoKey
+		return
+	}
+	fmt.Printf("[READ] 读取失败，按 ErrInternal 上报（不是 NOKEY）: %v\n", err)
+	reply.Err = raft.ErrInternal
+	reply.Value = raft.NoKey
+}
+
+// ErrKeyAbsent 表示"这一处没有这个 key"，与"读取失败"必须区分开。
+//
+// GC 之后数据分散在若干分区与新旧 valuelog 中，一次读并发查这几处，"这一处没有"是常态；
+// 而读取失败（文件打不开、I/O 出错、记录损坏）是异常。此前两者都只是 error，调用方一律
+// 当作 NOKEY 回给客户端——**一次真正的读取失败会变成一个确定的"key 不存在"**，
+// 客户端据此认定数据没了。用哨兵把两者分开，调用方才有得判。
+var ErrKeyAbsent = errors.New(raft.ErrNoKey)
+
 func (kvs *KVServer) getFromPartitions(key string, ps *PartitionSet) (string, error) {
 	if ps == nil {
 		return "", errors.New("invalid partition set: set is nil")
@@ -724,7 +742,7 @@ func (kvs *KVServer) getFromPartitions(key string, ps *PartitionSet) (string, er
 		// 内联缓存不必在这里查：缓存只由写进某个分区的 entry 填充，被缓存的 key 必然落在
 		// 某个分区的区间内，走不到这个分支。计一次 miss 以保持与改造前一致的命中率口径。
 		avpRecordMiss()
-		return "", errors.New(raft.ErrNoKey)
+		return "", ErrKeyAbsent
 	}
 	return kvs.getFromSortedFile(key, part)
 }

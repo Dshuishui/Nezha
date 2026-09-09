@@ -137,7 +137,7 @@ func (kvs *KVServer) scanBlock(index *SortedFileIndex, paddedKey string, start, 
 		}
 	}
 	avpRecordScan(scanned, end-start)
-	return nil, errors.New(raft.ErrNoKey)
+	return nil, ErrKeyAbsent
 }
 
 // lookupInSortedFile 通过稀疏索引查找 key 对应的 entry。
@@ -148,7 +148,7 @@ func (kvs *KVServer) lookupInSortedFile(index *SortedFileIndex, key string) (*ra
 	paddedKey := kvs.persister.PadKey(key)
 	start, end, ok := index.blockRange(paddedKey)
 	if !ok {
-		return nil, errors.New(raft.ErrNoKey)
+		return nil, ErrKeyAbsent
 	}
 	return kvs.scanBlock(index, paddedKey, start, end)
 }

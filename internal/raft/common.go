@@ -8,5 +8,6 @@ const (
 	ErrNoKey       = kvrpc.ErrNoKey
 	ErrInlineValue = kvrpc.ErrInlineValue
 	ErrWrongLeader = kvrpc.ErrWrongLeader
+	ErrInternal    = kvrpc.ErrInternal
 	NoKey          = kvrpc.NoKey
 )
