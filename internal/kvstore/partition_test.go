@@ -377,3 +377,40 @@ func TestDirtiestPartitionSelection(t *testing.T) {
 		t.Errorf("DeadBytes 合计 = %d; want 1400", got)
 	}
 }
+
+// 吸收会把没被尾部碰到的分区原样复用进新一组，那些文件仍在被引用。
+// 按基名整体清理会把它们一起删掉——那是直接丢数据，所以必须按路径逐个比对。
+func TestObsoleteFilesKeepsReusedPartitions(t *testing.T) {
+	prev := mkSet([2]string{"100", "199"}, [2]string{"300", "399"}, [2]string{"500", "599"})
+	for i, p := range prev.parts {
+		p.FilePath = fmt.Sprintf("/d/old.p%d", i)
+	}
+	// 新一组：复用 prev 的第 1 个分区（同一个文件），另外两个被重写成新文件
+	next := &PartitionSet{parts: []*SortedFileIndex{
+		{FilePath: "/d/new.p0"},
+		prev.parts[1], // 原样复用
+		{FilePath: "/d/new.p1"},
+	}}
+
+	got := obsoleteFiles(prev, next)
+	want := map[string]bool{"/d/old.p0": true, "/d/old.p2": true}
+	if len(got) != len(want) {
+		t.Fatalf("应删 %d 个，实际 %d 个: %v", len(want), len(got), got)
+	}
+	for _, g := range got {
+		if !want[g] {
+			t.Errorf("不该删 %s", g)
+		}
+		if g == prev.parts[1].FilePath {
+			t.Errorf("删掉了仍被复用的分区 %s——这是丢数据", g)
+		}
+	}
+
+	if obsoleteFiles(nil, next) != nil {
+		t.Error("prev 为 nil 时应返回 nil")
+	}
+	// 全部复用时一个都不该删
+	if got := obsoleteFiles(prev, prev); len(got) != 0 {
+		t.Errorf("全部复用时应删 0 个，实际 %v", got)
+	}
+}

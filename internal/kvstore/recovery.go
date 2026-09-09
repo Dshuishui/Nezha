@@ -102,11 +102,28 @@ func (kvs *KVServer) finishAnotherGC(startTime time.Time) {
 	kvs.mu.Lock()
 	kvs.anotherStartGC, kvs.anotherEndGC = false, false
 	kvs.lastGCFinish = true
+	// 上一组里没被新一组复用的分区文件，本轮之后就没人引用了，要删掉。
+	//
+	// 轮数封在两轮时这最多多留一份，无关紧要；放开轮数上限后它是空间无界的直接原因——
+	// 实测 8 轮之后盘上留着 35 个分区文件而活跃的只有 8 个，空间放大从 13 涨到 52。
+	// 必须按**路径**逐个比对而不是按基名整体清理：吸收会把没被尾部碰到的分区原样复用进
+	// 新一组，那些文件仍在被引用，删掉就是丢数据。
+	stale := obsoleteFiles(kvs.lastPartitions, kvs.anotherPartitions)
 	kvs.lastPartitions = kvs.anotherPartitions // 更新本轮的变量为上一次
 	kvs.sortedFilePath = kvs.anotherSortedFilePath
 	kvs.gcInProgress = false
 	kvs.saveKVState()
 	kvs.mu.Unlock()
+	// 删除放在状态落盘**之后**：崩在中间只会留下几个没人引用的文件，
+	// 反过来则是清单指向已被删除的文件，重启直接起不来。
+	for _, f := range stale {
+		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+			fmt.Printf("删除已废弃的分区 %s 失败: %v\n", f, err)
+		}
+	}
+	if len(stale) > 0 {
+		fmt.Printf("[GC-ABSORB] 删除已废弃分区 %d 个\n", len(stale))
+	}
 	if err := os.Remove(kvs.oldLog); err != nil {
 		fmt.Printf("第 %v 轮垃圾回收删除旧文件出现了错误: %v\n", kvs.numGC, err)
 	}

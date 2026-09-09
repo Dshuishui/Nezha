@@ -280,6 +280,27 @@ func (kvs *KVServer) loadPartitionSet(base string, metas []partitionMeta) (*Part
 
 func partitionPath(base string, i int) string { return fmt.Sprintf("%s.p%d", base, i) }
 
+// obsoleteFiles 返回 prev 里已经不再被 next 引用的那些分区文件。
+//
+// 吸收会把没被尾部碰到的分区**原样复用**进新一组，它们的文件仍在被引用，删掉就是丢数据。
+// 所以不能按"上一组的基名"整体清理，必须按路径逐个比对。
+func obsoleteFiles(prev, next *PartitionSet) []string {
+	if prev == nil {
+		return nil
+	}
+	keep := make(map[string]bool, next.Len())
+	for _, p := range next.Paths() {
+		keep[p] = true
+	}
+	var out []string
+	for _, p := range prev.Paths() {
+		if !keep[p] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // removePartitionFiles 删除一组分区留下的全部文件。崩溃重做前要先清掉上次写了一半的产物，
 // 否则残留的 .pN 会被下一次写入跳过或覆盖到一半。
 func removePartitionFiles(base string) error {
