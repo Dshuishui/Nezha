@@ -365,7 +365,7 @@ func TestDirtiestPartitionSelection(t *testing.T) {
 
 	got := ps.dirtiest(0.5)
 	if got == nil || got.Lo != "300" {
-		t.Errorf("dirtiest(0.5) 应选 70% 那个分区，得到 %v", got)
+		t.Errorf("dirtiest(0.5) 应选垃圾率 70%% 的那个分区，得到 %v", got)
 	}
 	if ps.dirtiest(0.8) != nil {
 		t.Error("没有分区超过 80% 时应返回 nil")
