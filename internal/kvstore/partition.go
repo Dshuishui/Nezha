@@ -445,6 +445,13 @@ func (pw *partitionWriter) seal() error {
 	return nil
 }
 
+// Seal 强制封口当前分区，即使它还没写满。
+//
+// 吸收时必须在每一段被重写的区间结束时调用：中间那些没被尾部碰到的分区是**原样复用**的，
+// 不经过写入器。若不封口，下一段（key 区间不相邻）会继续写进同一个文件，该文件的 [Lo,Hi]
+// 就会横跨那个复用分区的区间——区间重叠，读路径的二分路由随即失效。
+func (pw *partitionWriter) Seal() error { return pw.seal() }
+
 // Finish 封口最后一个分区并交出清单。
 func (pw *partitionWriter) Finish() (*PartitionSet, error) {
 	if err := pw.seal(); err != nil {
