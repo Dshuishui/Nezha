@@ -33,6 +33,12 @@ import (
 //  2. gcloop 里：触发条件改成"尾部大小 / 分区总量"的比例。这样每重写一次 O(n) 之前
 //     必然已吸收 O(n) 新数据，摊销后每字节 O(1)，最坏情况总代价也回到 O(n)。
 //
+// 封口只发生在"下一个分区要被原样复用"之前，而不是每重写完一个分区就封一次。
+// 后者会给每一段留一个零头：GB 级实测 17 段产出 45 个分区装 4.01GB，其中 12 个
+// 小于等于 1MB，而 128MB 的目标下 32 个就够。零头逐轮累积，分区数会随轮数增长。
+// 相邻的被重写分区之间没有复用分区隔开，本就该连续写进同一个文件，由 targetBytes
+// 自然滚动——那才是分区大小的唯一决定者。
+//
 // 为什么不需要"按垃圾率压实单个分区"：吸收重写一个分区时，被新版本取代的旧记录当场就
 // 丢掉了，该分区垃圾归零；而没被碰到的分区，正是那些 key 没被覆盖、本来就没有垃圾的。
 // 垃圾因此不会在分区里累积。代价是一个分区里哪怕只有一个 key 被覆盖也要整块重写——
@@ -121,6 +127,15 @@ func (kvs *KVServer) absorbTail(startTime time.Time) error {
 		}
 		if len(slice) == 0 {
 			// 尾部没碰到它，原样复用：不读、不写、不改名。这正是省下来的代价。
+			//
+			// 封口必须发生在**这里**——正要插入一个复用分区之前。写入器当前那个文件
+			// 到此为止，否则它后面还会接上本复用分区之后的 key，[Lo,Hi] 就横跨了这个
+			// 复用分区，区间重叠、二分路由失效。
+			if err := pw.Seal(); err != nil {
+				pw.Abort()
+				return err
+			}
+			flushWriter()
 			newParts = append(newParts, part)
 			reusedParts++
 			reusedBytes += part.FileSize
@@ -133,13 +148,6 @@ func (kvs *KVServer) absorbTail(startTime time.Time) error {
 			return err
 		}
 		reclaimed += n
-		// 必须在这里封口：下一个被重写的区间与本段 key 不相邻，中间隔着原样复用的分区。
-		// 不封口就会把两段写进同一个文件，其 key 区间横跨复用分区，区间重叠、路由失效。
-		if err := pw.Seal(); err != nil {
-			pw.Abort()
-			return err
-		}
-		flushWriter()
 		rewrittenParts++
 		rewrittenBytes += part.FileSize
 	}
