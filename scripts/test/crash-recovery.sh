@@ -22,7 +22,7 @@
 # 规模刻意取小：跑通一次 GC 就够，堆数据量只是浪费时间。
 #
 # 用法: bash scripts/test/crash-recovery.sh [场景...]   默认全跑
-# 环境变量: ENTRIES=30000 VSIZE=256 PARTITION_MB=2 DATA=<目录>
+# 环境变量: ENTRIES=30000 VSIZE=256 PARTITION_MB=2 DATA=<目录，各场景在其下各占一个子目录>
 set -u
 GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
 info(){ echo -e "${GREEN}[TEST]${NC} $*"; }
@@ -38,7 +38,8 @@ export TMPDIR=${TMPDIR:-$HOME/work/tmp}; mkdir -p "$TMPDIR"
 ENTRIES="${ENTRIES:-30000}"
 VSIZE="${VSIZE:-256}"
 PARTITION_MB="${PARTITION_MB:-2}"
-DATA="${DATA:-$TMPDIR/crash-recovery}"
+DATA_BASE="${DATA:-$TMPDIR/crash-recovery}"
+DATA="$DATA_BASE"
 ADDR=127.0.0.1:3097
 IADDR=127.0.0.1:30971
 BIN=/tmp/nezha-crash
@@ -81,7 +82,30 @@ start_node(){
   return 0
 }
 
-kill_node(){ [ -n "$PID" ] && kill -9 "$PID" 2>/dev/null; wait "$PID" 2>/dev/null; PID=""; sleep 1; }
+# kill_node 之后必须**等端口真的放开**再启动下一个节点。只 sleep 1 秒是不够的：
+# 各场景共用 127.0.0.1:3097，端口没释放时新节点绑不上就退出，表现成"重启失败"——
+# 一个与被测逻辑毫无关系的假失败（2026-09-09 全套跑里场景 A 就这样挂过一次，
+# 单独重跑即通过）。
+kill_node(){
+  [ -n "$PID" ] && kill -9 "$PID" 2>/dev/null
+  wait "$PID" 2>/dev/null
+  PID=""
+  local port="${ADDR##*:}"
+  for _ in $(seq 1 60); do
+    ss -ltn 2>/dev/null | grep -q ":$port " || return 0
+    sleep 0.5
+  done
+  warn "端口 $port 30 秒后仍被占用"
+}
+
+# fresh_data <场景名>：给这个场景一个**独立**的数据目录。
+# 之前全部场景共用一个目录、各自开头 rm -rf，于是前一个场景失败时留下的日志会被
+# 后一个场景删掉——今天就因此丢过一次失败现场，只能重跑才拿到原因。
+fresh_data(){
+  DATA="$DATA_BASE/$1"
+  rm -rf "$DATA"; mkdir -p "$DATA"
+  NSEQ=0
+}
 
 # wait_gc_done <轮数>：等日志里出现至少这么多轮完成
 wait_gc_done(){
@@ -112,7 +136,7 @@ verify(){ # verify <场景名>
 # ---------- 场景 A：GC 完整跑完之后重启 ----------
 scenario_a(){
   info "A 干净重启：GC 跑完 → kill -9 → 重启按清单重建"
-  rm -rf "$DATA"; mkdir -p "$DATA"
+  fresh_data a
   start_node || { fail "A: 节点未启动"; return; }
   write_data || { fail "A: 写入或即时校验未通过"; return; }
   wait_gc_done 1 || { fail "A: GC 未触发（阈值 ${GCGB}GB）"; return; }
@@ -129,7 +153,7 @@ scenario_a(){
 # ---------- 场景 B：GC 切换之后、搬运之前崩溃 ----------
 scenario_b(){
   info "B GC 中途崩溃：切换已完成、搬运未开始时 kill -9 → 重启重做搬运"
-  rm -rf "$DATA"; mkdir -p "$DATA"
+  fresh_data b
   # NEZHA_GC_PAUSE_MS 让 GC 在"切换已持久化、搬运尚未开始"处停住，正是最难恢复的那一刻
   start_node NEZHA_GC_PAUSE_MS=20000 || { fail "B: 节点未启动"; return; }
   write_data || { fail "B: 写入或即时校验未通过"; return; }
@@ -150,7 +174,7 @@ scenario_b(){
 # ---------- 场景 C：分区文件被截断，重启必须拒绝 ----------
 scenario_c(){
   info "C 清单校验：截断一个分区文件 → 重启必须拒绝启动"
-  rm -rf "$DATA"; mkdir -p "$DATA"
+  fresh_data c
   start_node || { fail "C: 节点未启动"; return; }
   write_data || { fail "C: 写入或即时校验未通过"; return; }
   wait_gc_done 1 || { fail "C: GC 未触发"; return; }
@@ -181,7 +205,7 @@ scenario_c(){
 # 那时下一轮必然是第 2 轮，窗口就落在吸收里。
 scenario_d(){
   info "D 写分区途中崩溃：第 2 轮吸收写到一半 kill -9 → 重启必须清掉半成品并重做"
-  rm -rf "$DATA"; mkdir -p "$DATA"
+  fresh_data d
   start_node || { fail "D: 节点未启动"; return; }
   write_data || { fail "D: 写入或即时校验未通过"; return; }
   wait_gc_done 1 || { fail "D: 第 1 轮 GC 未触发（阈值 ${GCGB}GB）"; return; }
