@@ -29,8 +29,10 @@ ENTRIES="${ENTRIES:-50000}"
 VSIZE="${VSIZE:-256}"
 PASSES="${PASSES:-3}"
 PARTITION_MB="${PARTITION_MB:-2}"
-ABSORB_RATIO="${ABSORB_RATIO:-0.25}"
-MIN_ROUNDS="${MIN_ROUNDS:-5}"
+# 留空则不传 -absorbRatio：改造前的二进制不认识这个 flag，传了会直接退出。
+# 对照实验要用同一个脚本驱动两边，否则差异里会混进脚本行为的变化。
+ABSORB_RATIO="${ABSORB_RATIO-0.25}"
+MIN_ROUNDS="${MIN_ROUNDS-5}"
 DATA="${DATA:-$TMPDIR/gc-rounds}"
 ADDR=127.0.0.1:3096
 IADDR=127.0.0.1:30961
@@ -51,9 +53,12 @@ cleanup(){ [ -n "$PID" ] && kill -9 "$PID" 2>/dev/null; }
 trap cleanup EXIT
 
 rm -rf "$DATA"; mkdir -p "$DATA"
+EXTRA=""
+[ -n "$ABSORB_RATIO" ] && EXTRA="-absorbRatio $ABSORB_RATIO"
+# shellcheck disable=SC2086
 nohup "$BIN" -address "$ADDR" -internalAddress "$IADDR" -peers "$IADDR" \
     -data "$DATA" -gap 100000000 -commitTimeoutS 60 -system nezha \
-    -gcThresholdGB "$GCGB" -partitionTargetMB "$PARTITION_MB" -absorbRatio "$ABSORB_RATIO" \
+    -gcThresholdGB "$GCGB" -partitionTargetMB "$PARTITION_MB" $EXTRA \
     < /dev/null > "$DATA/n.log" 2>&1 &
 PID=$!
 for _ in $(seq 1 30); do sleep 1; grep -q '\[SYSTEM\]' "$DATA/n.log" && break; done
@@ -62,7 +67,7 @@ kill -0 "$PID" 2>/dev/null || { tail -20 "$DATA/n.log"; die "节点未启动"; }
 rounds(){ grep -c '轮垃圾回收完成' "$DATA/n.log" 2>/dev/null || echo 0; }
 dirmb(){ du -sm "$DATA/data" 2>/dev/null | awk '{print $1}'; }
 
-info "数据集 $(( DATASET/1048576 ))MB，分区目标 ${PARTITION_MB}MB，吸收比例 $ABSORB_RATIO，GC 下限 $(awk -v g=$GCGB 'BEGIN{printf "%.1f", g*1024}')MB"
+info "数据集 $(( DATASET/1048576 ))MB，分区目标 ${PARTITION_MB}MB，吸收比例 ${ABSORB_RATIO:-（不传）}，GC 下限 $(awk -v g=$GCGB 'BEGIN{printf "%.1f", g*1024}')MB"
 printf '%-6s %-8s %-8s %-10s %s\n' "阶段" "GC轮数" "目录MB" "空间放大" "分区数"
 
 for pass in $(seq 0 "$PASSES"); do
@@ -84,8 +89,12 @@ done
 
 R=$(rounds)
 echo
-[ "$R" -ge "$MIN_ROUNDS" ] || die "只跑了 $R 轮 GC，少于要求的 $MIN_ROUNDS 轮——轮数上限可能没真正去掉"
-ok "连续跑了 $R 轮 GC"
+if [ -z "$MIN_ROUNDS" ]; then
+  warn "未设轮数下限（对照组：改造前封顶两轮，本来就跑不满）"
+elif [ "$R" -lt "$MIN_ROUNDS" ]; then
+  die "只跑了 $R 轮 GC，少于要求的 $MIN_ROUNDS 轮——轮数上限可能没真正去掉"
+fi
+ok "共跑了 $R 轮 GC"
 
 # 每一轮都不该丢记录。GC 搬丢不报错，只在某次 GET 上变成一个 NOKEY，必须直接数盘。
 LOST=$(python3 "$SCRIPT_DIR/../bench/lost-keys.py" "$DATA" "$ENTRIES" "$VSIZE" 2>/dev/null | grep -o '丢失 [0-9]*' | grep -o '[0-9]*')
