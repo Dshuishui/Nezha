@@ -77,8 +77,18 @@ start_node(){
   for _ in $(seq 1 30); do
     sleep 1
     kill -0 "$PID" 2>/dev/null || return 1
-    grep -q '\[SYSTEM\]' "$NLOG" && return 0
+    grep -q '\[SYSTEM\]' "$NLOG" && break
   done
+  # 还要等它**当选**才算能服务读。[SYSTEM] 是启动时就打的，那之后还有一个选举超时
+  # （minElectionTimeout 3 秒）才会有 leader；而验证工具 readonly 走的是 GetFrom，
+  # 故意不跟随重定向，所以打在 follower 上会被 ErrWrongLeader 全部挡回——实测
+  # 300 个 GET 全部"取不到"、SCAN 30 次全部范围失败，看起来像丢数据，其实是还没选出 leader。
+  for _ in $(seq 1 30); do
+    kill -0 "$PID" 2>/dev/null || return 1
+    grep -q -- '-> Leader' "$NLOG" && return 0
+    sleep 1
+  done
+  warn "节点起来了但 30 秒内没有当选，读会被 leaderCheck 挡回"
   return 0
 }
 

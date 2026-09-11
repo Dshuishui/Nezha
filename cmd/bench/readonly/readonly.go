@@ -48,10 +48,18 @@ func main() {
 	}
 	defer kvc.Close()
 
-	var ok, bad, missing int
+	// wrongLeader 单独计数，不混进 missing。GetFrom 故意不跟随重定向（它要看的就是**这一个**
+	// 节点的本地状态），所以打在还没当选的节点上会全部拿到 ErrWrongLeader。此前这类回应被
+	// 计成"取不到"，于是"节点刚重启、还没选出 leader"看起来和"数据丢了"一模一样——
+	// 实测 300 个 GET 全部"取不到"，排查了一轮才发现节点只是还没当选。
+	var ok, bad, missing, wrongLeader int
 	for i := 0; i < *checkN && i < *dnums; i++ {
 		k := strconv.Itoa(i)
 		reply, err := kvc.GetFrom(0, k)
+		if err == nil && reply.Err == kvrpc.ErrWrongLeader {
+			wrongLeader++
+			continue
+		}
 		if err != nil || reply.Err != kvrpc.OK {
 			missing++
 			continue
@@ -66,9 +74,9 @@ func main() {
 			}
 		}
 	}
-	fmt.Printf("GET 校验: 正确 %d, 错误 %d, 取不到 %d\n", ok, bad, missing)
+	fmt.Printf("GET 校验: 正确 %d, 错误 %d, 取不到 %d, 非leader %d\n", ok, bad, missing, wrongLeader)
 
-	var st, sok, sbad, serr int
+	var st, sok, sbad, serr, swrong int
 	for s := 0; s < *sample; s++ {
 		lo := s * *spanN
 		hi := lo + *spanN - 1
@@ -76,6 +84,10 @@ func main() {
 			break
 		}
 		reply, err := kvc.ScanFrom(0, strconv.Itoa(lo), strconv.Itoa(hi))
+		if err == nil && reply.Err == kvrpc.ErrWrongLeader {
+			swrong++
+			continue
+		}
 		if err != nil || reply.Err != kvrpc.OK {
 			serr++
 			continue
@@ -89,8 +101,14 @@ func main() {
 			}
 		}
 	}
-	fmt.Printf("SCAN 校验: 返回 %d 条, 正确 %d, 错误 %d, 范围失败 %d\n", st, sok, sbad, serr)
-	if bad > 0 || sbad > 0 || missing > 0 || serr > 0 {
+	fmt.Printf("SCAN 校验: 返回 %d 条, 正确 %d, 错误 %d, 范围失败 %d, 非leader %d\n", st, sok, sbad, serr, swrong)
+	if wrongLeader > 0 || swrong > 0 {
+		// 单独的一条：这说明目标节点还没当选，不是数据有问题。要么等它当选，
+		// 要么用 -leaderCheck=false 启动节点以读取 follower 的本地状态。
+		fmt.Printf("目标节点未持有 leader 身份：GET %d 次、SCAN %d 次被 ErrWrongLeader 挡回\n",
+			wrongLeader, swrong)
+	}
+	if bad > 0 || sbad > 0 || missing > 0 || serr > 0 || wrongLeader > 0 || swrong > 0 {
 		fmt.Println("FAILOVER_VERIFY_FAIL")
 	} else if ok == 0 || st == 0 {
 		fmt.Println("FAILOVER_VERIFY_EMPTY")
