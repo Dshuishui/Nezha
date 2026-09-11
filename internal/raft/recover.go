@@ -127,7 +127,19 @@ func (rf *Raft) RecoverLog(files []LogFile, lastApplied int) (lastIndex int, err
 			return 0, fmt.Errorf("log files are empty but applied index %d is past the log base %d",
 				lastApplied, rf.lastIncludedIndex)
 		}
-		return 0, nil
+		// 按与下面正常路径**同样的不变式**把状态摆正。这里最容易错的是返回值：
+		// 必须返回 base 而不是 0。日志是空的，但逻辑上的最后一条就是 base——
+		// 返回 0 的话 Raft 以为自己最后一条是 0，下一个 Put 拿到 index 1，
+		// 而 pos = index - base - 1 = -30001，applyLogLoop 一路报越界，写入全部失败。
+		rf.log = nil
+		rf.Offsets = nil
+		rf.offsetVersions = nil
+		rf.lastApplied = rf.lastIncludedIndex
+		rf.commitIndex = rf.lastIncludedIndex
+		rf.shotOffset = rf.lastIncludedIndex
+		util.DPrintf("RaftNode[%d] recovery complete: log empty, everything compacted at base %d, term=%d votedFor=%d",
+			rf.me, rf.lastIncludedIndex, rf.currentTerm, rf.votedFor)
+		return rf.lastIncludedIndex, nil
 	}
 	if rf.stateLoaded && rf.lastIncludedIndex != base {
 		return 0, fmt.Errorf("log base mismatch: state file says %d, first log record implies %d", rf.lastIncludedIndex, base)
