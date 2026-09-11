@@ -49,6 +49,11 @@ func main() {
 	// and throughput is decided by the slowest goroutine, so the value shapes the
 	// stability of throughput numbers more than the speed of the system does.
 	flag.IntVar(&cfg.CommitTimeoutS, "commitTimeoutS", 60, "seconds to wait for the apply callback before giving up")
+	// On by default: a read served by a follower silently returns whatever that node has
+	// applied so far, which is not an error the caller can detect. Single-node runs are
+	// unaffected, the node holds the leader role. Turn it off to inspect a follower's own
+	// state, which the verification tools do on purpose.
+	flag.BoolVar(&cfg.LeaderCheck, "leaderCheck", true, "reject reads on a non-leader and redirect the client (not ReadIndex: a deposed leader still answers)")
 	flag.StringVar(&cfg.VizAddr, "vizAddr", "", "listen address for the AVP placement visualiser, e.g. :8080 (empty = disabled)")
 	flag.IntVar(&cfg.SSTSpanMB, "sstSpanMB", 32, "lsm-raft: applied value bytes per shipped SSTable span")
 	flag.IntVar(&cfg.SSTIdleMs, "sstIdleMs", 1000, "lsm-raft: cut the open span after this many ms without writes")

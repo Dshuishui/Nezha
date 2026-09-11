@@ -15,8 +15,37 @@ import (
 	"gitee.com/dong-shuishui/FlexSync/internal/raft"
 )
 
+// requireLeader 检查本节点是否还持有 leader 身份。不是的话填好 ErrWrongLeader 与
+// leaderId，让客户端改投 leader（客户端的 Get/Scan/Put 都会跟随重定向）。
+//
+// 为什么读也需要它：读路径完全在本地完成——查 RocksDB 拿偏移、去 valuelog 取字节。
+// follower 的本地状态落后 leader 多少，取决于它的 apply 落后多少，于是一次打到
+// follower 上的读会**静默返回旧值**，既不报错也无从察觉。
+//
+// **它保证不了什么**：这是 leader **检查**，不是 ReadIndex。一个已被罢免却尚不知情的
+// 旧 leader 仍然持有 role，照样会应答——所以它不提供线性一致性。
+// 要补上这个缺口得用 raft.GetReadIndex()：它向多数派发一轮心跳确认自己仍是 leader，
+// 再等 applyIndex 追上 commitIndex。代价是**每次读一次多数派往返**，而本地 GET 的 p50
+// 只有 0.13ms——那会让读延迟涨一到两个数量级。该函数已实现，就在 raft.go 里等着，
+// 何时启用应当由"要不要线性一致读"这个需求决定，而不是顺手打开。
+//
+// 关掉它（-leaderCheck=false）则回到改造前的行为：任何节点都用本地状态应答读。
+// 验证工具要故意读 follower 的本地状态时需要这样（见 client.GetFrom）。
+func (kvs *KVServer) requireLeader() (int32, bool) {
+	if !kvs.leaderCheck || kvs.raft.IsLeader() {
+		return 0, true
+	}
+	return kvs.raft.GetLeaderId(), false
+}
+
 func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeRequest) (*kvrpc.ScanRangeResponse, error) {
 	reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
+
+	if leader, ok := kvs.requireLeader(); !ok {
+		reply.Err = raft.ErrWrongLeader
+		reply.LeaderId = leader
+		return reply, nil
+	}
 
 	// commitIndex, isLeader := kvs.raft.GetReadIndex()
 	// if !isLeader {
@@ -142,6 +171,9 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 }
 
 func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
+	if leader, ok := kvs.requireLeader(); !ok {
+		return &kvrpc.GetInRaftResponse{Err: raft.ErrWrongLeader, LeaderId: leader}, nil
+	}
 	reply := kvs.StartGet(in)
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()

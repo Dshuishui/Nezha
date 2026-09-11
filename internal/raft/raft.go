@@ -111,7 +111,12 @@ type Raft struct {
 	matchIndex []int // 每个follower的log同步进度（初始为0），和nextIndex强关联
 
 	// 所有服务器，选举相关状态
-	role           string    // 身份
+	role string // 身份
+	// leaderRole 是 role == ROLE_LEADER 的原子镜像，只为**读路径**存在。
+	// role 本身由 rf.mu 保护，而读路径每个请求都要问一次"我是 leader 吗"——
+	// 去抢那把写路径也在用的锁，等于把读串行到写上面。
+	// 一律通过 setRole 改动，两者不会走散。
+	leaderRole     atomic.Bool
 	leaderId       int       // leader的id
 	lastActiveTime time.Time // 上次活跃时间（刷新时机：收到leader心跳、给其他candidates投票、请求其他节点投票）
 	// lastBroadcastTime time.Time // 作为leader，上次的广播时间
@@ -283,12 +288,22 @@ func (rf *Raft) GetLeaderId() (leaderId int32) {
 	return int32(rf.leaderId)
 }
 
+// setRole 是改动 role 的**唯一**入口，它顺带维护 leaderRole 这个原子镜像。
+// 调用方必须已持有 rf.mu（与此前直接赋值时的要求一致）。
+func (rf *Raft) setRole(role string) {
+	rf.role = role
+	rf.leaderRole.Store(role == ROLE_LEADER)
+}
+
 // IsLeader reports whether this node currently holds the leader role. Prefer it over
 // comparing GetLeaderId with rf.me: leaderId 0 also stands for "unknown".
+//
+// 读原子镜像，不取 rf.mu：本函数在读路径上**每个请求都会调一次**，而 rf.mu 同时被
+// 写路径持有。答案可能比真相旧几微秒——但"我是不是 leader"这个问题本来就只能给出
+// 陈旧的答案，因为一个自认为是 leader 的节点可能已经被罢免而尚不知情。
+// 这个局限的后果见 kvstore/service.go 里 requireLeader 的说明。
 func (rf *Raft) IsLeader() bool {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	return rf.role == ROLE_LEADER
+	return rf.leaderRole.Load()
 }
 
 func (rf *Raft) GetApplyIndex() (applyindex int) {
@@ -330,7 +345,7 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raftrpc.RequestVoteReques
 	// 发现更大的任期，则转为该任期的follower
 	if args.Term > int32(rf.currentTerm) {
 		rf.currentTerm = int(args.Term)
-		rf.role = ROLE_FOLLOWER
+		rf.setRole(ROLE_FOLLOWER)
 		rf.votedFor = -1      // 有问题，如果两个leader同时选举，那会进行多次投票，因为都满足下方的投票条件---没有问题，如果第二个来请求投票，此时args.Term = rf.currentTerm。因为rf.currentTerm已经更新
 		rf.persistHardState() // Raft 要求 term/votedFor 落盘后再应答或发起 RPC
 		// rf.leaderId = int(args.CandidateId) // 先假设这个即将成为leader
@@ -424,7 +439,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	// 发现更大的任期，则转为该任期的follower
 	if args.Term > int32(rf.currentTerm) {
 		rf.currentTerm = int(args.Term)
-		rf.role = ROLE_FOLLOWER
+		rf.setRole(ROLE_FOLLOWER)
 		rf.votedFor = -1
 		rf.persistHardState() // Raft 要求 term/votedFor 落盘后再应答或发起 RPC
 		// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
@@ -557,7 +572,7 @@ func (rf *Raft) HeartbeatInRaft(ctx context.Context, args *raftrpc.AppendEntries
 	// 发现更大的任期，则转为该任期的follower
 	if args.Term > int32(rf.currentTerm) {
 		rf.currentTerm = int(args.Term)
-		rf.role = ROLE_FOLLOWER
+		rf.setRole(ROLE_FOLLOWER)
 		rf.votedFor = -1
 		rf.persistHardState() // Raft 要求 term/votedFor 落盘后再应答或发起 RPC
 	}
@@ -804,7 +819,7 @@ func (rf *Raft) electionLoop() {
 			// follower -> candidates
 			if rf.role == ROLE_FOLLOWER {
 				if elapses >= timeout {
-					rf.role = ROLE_CANDIDATES
+					rf.setRole(ROLE_CANDIDATES)
 					util.DPrintf("RaftNode[%d] Follower -> Candidate (silent for %v)", rf.me, elapses.Round(time.Millisecond))
 				}
 			}
@@ -890,7 +905,7 @@ func (rf *Raft) electionLoop() {
 				}
 				// 发现了更高的任期，切回follower；这个是不是可以在接受投票时就判断，如果有任期比自己大的，就直接转换为follower，也不看投票结果了
 				if maxTerm > rf.currentTerm {
-					rf.role = ROLE_FOLLOWER
+					rf.setRole(ROLE_FOLLOWER)
 					rf.leaderId = 0
 					rf.currentTerm = maxTerm // 更新自己的Term和voteFor
 					rf.votedFor = -1
@@ -900,7 +915,7 @@ func (rf *Raft) electionLoop() {
 				}
 				// 赢得大多数选票，则成为leader
 				if voteCount > len(rf.peers)/2 {
-					rf.role = ROLE_LEADER
+					rf.setRole(ROLE_LEADER)
 					util.DPrintf("RaftNode[%d] Candidate -> Leader", rf.me)
 					rf.wakeReplication() // 立刻开工，不必等复制循环的兜底 tick
 
@@ -1068,7 +1083,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				return
 			}
 			if reply.Term > int32(rf.currentTerm) { // 变成follower
-				rf.role = ROLE_FOLLOWER
+				rf.setRole(ROLE_FOLLOWER)
 				rf.leaderId = 0
 				rf.currentTerm = int(reply.Term)
 				rf.votedFor = -1
@@ -1148,7 +1163,7 @@ func (rf *Raft) CheckActive(peerId int, resultChan chan<- bool) {
 			return
 		}
 		if reply.Term > int32(rf.currentTerm) { // 变成follower
-			rf.role = ROLE_FOLLOWER
+			rf.setRole(ROLE_FOLLOWER)
 			// rf.leaderId = 0
 			rf.currentTerm = int(reply.Term)
 			rf.votedFor = -1
@@ -1547,7 +1562,7 @@ func Make(peers []string, me int,
 	}
 	rf.replicaWake = make(chan struct{}, 1)
 
-	rf.role = ROLE_FOLLOWER
+	rf.setRole(ROLE_FOLLOWER)
 	rf.leaderId = 0
 	rf.votedFor = -1
 	rf.lastActiveTime = time.Now()
@@ -1647,7 +1662,7 @@ func (rf *Raft) heartbeatLoop() {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
 				if reply.Term > int32(rf.currentTerm) { // 任期落后，退位
-					rf.role = ROLE_FOLLOWER
+					rf.setRole(ROLE_FOLLOWER)
 					rf.currentTerm = int(reply.Term)
 					rf.votedFor = -1
 					rf.persistHardState()

@@ -35,8 +35,17 @@ type Config struct {
 	IndexBlockKB    int  // sparse index granularity over sorted files
 
 	GCThresholdGB  float64
-	CommitTimeoutS int    // how long a Put waits for its apply before giving up
-	VizAddr        string // AVP placement visualiser listen address, "" = off
+	CommitTimeoutS int // how long a Put waits for its apply before giving up
+
+	// LeaderCheck rejects reads on a node that does not hold the leader role, telling the
+	// client to retry against the leader. Without it a follower answers from its own store,
+	// which lags the leader by however far behind its apply has fallen.
+	//
+	// It is a leader *check*, not ReadIndex: it does not make reads linearizable, because a
+	// deposed leader keeps the role until it learns otherwise. See requireLeader in
+	// service.go for what remains unguaranteed and what closing that gap would cost.
+	LeaderCheck bool
+	VizAddr     string // AVP placement visualiser listen address, "" = off
 
 	// PartitionTargetMB is the target size of one GC output partition (partition.go).
 	// It trades read cost against reclamation granularity; 0 takes the default.
