@@ -87,6 +87,15 @@ func (kvs *KVServer) finishFirstGC(startTime time.Time) {
 	kvs.lastPartitions = kvs.firstPartitions // 更新本轮的变量为上一次
 	kvs.sortedFilePath = kvs.firstSortedFilePath
 	kvs.gcInProgress = false
+	// 把 applied 索引落进**新**库。GC 切换时新建的库从没记过它，而 SetApplied 只在 apply
+	// 路径上被调用——于是一轮 GC 完成之后若没有新的写入，新库里的 applied 就一直是 0，
+	// 而 Raft 持久化的 base 已经推到了压实位置。重启时两者矛盾，恢复直接放弃：
+	//     [RECOVER] applied=0 … base=(30001,1)
+	//     rebuild Raft log: log files are empty but applied index / base index are not zero
+	// 也就是"GC 把全部条目搬进分区、之后再没写入过"的节点**起不来**。
+	// GCInProgress 那条分支本来能兜住（它会回读旧库），但它只在 GC 被**中断**时才走；
+	// 正常完成的一轮走不到那里，而旧库此时已被删除。
+	kvs.persister.SetApplied(kvs.lastAppliedIndex)
 	kvs.saveKVState()
 	kvs.mu.Unlock()
 	if err := os.Remove(kvs.oldLog); err != nil {
@@ -112,6 +121,8 @@ func (kvs *KVServer) finishAnotherGC(startTime time.Time) {
 	kvs.lastPartitions = kvs.anotherPartitions // 更新本轮的变量为上一次
 	kvs.sortedFilePath = kvs.anotherSortedFilePath
 	kvs.gcInProgress = false
+	// 同 finishFirstGC：新库不知道 applied 到哪了，不补这一笔，一轮之后无写入的节点起不来
+	kvs.persister.SetApplied(kvs.lastAppliedIndex)
 	kvs.saveKVState()
 	kvs.mu.Unlock()
 	// 删除放在状态落盘**之后**：崩在中间只会留下几个没人引用的文件，

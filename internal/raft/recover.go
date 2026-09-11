@@ -3,7 +3,6 @@ package raft
 import (
 	"bufio"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -117,9 +116,16 @@ func (rf *Raft) RecoverLog(files []LogFile, lastApplied int) (lastIndex int, err
 	}
 
 	if expected == -1 {
-		// No records at all is fine only for an empty cluster restart.
-		if lastApplied != 0 || rf.lastIncludedIndex != 0 {
-			return 0, errors.New("log files are empty but applied index / base index are not zero")
+		// 日志里一条记录都没有，有**两种**合法情形：
+		//   1. 全新集群重启（base == 0 且 applied == 0）
+		//   2. GC 已把全部条目压实进分区，之后再没有写入——此时 base 就是压实到的位置，
+		//      日志文件确实是空的，而 applied 不可能超过 base（超过 base 的条目根本不存在）。
+		// 原先只允许第 1 种，于是"GC 完成后一直没写入"的节点重启直接失败。
+		//
+		// applied 反而**大于** base 才是真矛盾：它声称应用过一些哪里都不存在的条目。
+		if lastApplied > rf.lastIncludedIndex {
+			return 0, fmt.Errorf("log files are empty but applied index %d is past the log base %d",
+				lastApplied, rf.lastIncludedIndex)
 		}
 		return 0, nil
 	}
