@@ -107,7 +107,7 @@ go build -o "$BIN" ./cmd/nezha/ || die "节点编译失败"
 go build -o /tmp/amp-randwrite ./cmd/bench/randwrite_goroutine/ || die "写入工具编译失败"
 
 if [ ! -f "$OUT" ]; then
-  echo "commit,label,system,syncwal,vsize,entries,total_mb,overwrite_pct,dist,gc_done,quiesced,dev_bytes_load,dev_bytes_update,proc_bytes_total,logical_load,logical_update,live_logical,write_amp_total,write_amp_update,space_amp,put_ops_s_load,put_ops_s_update" > "$OUT"
+  echo "commit,label,system,syncwal,vsize,entries,total_mb,overwrite_pct,dist,gc_done,quiesced,dev_bytes_load,dev_bytes_update,proc_bytes_total,logical_load,logical_update,live_logical,write_amp_total,write_amp_update,space_amp,space_amp_valuelog,space_amp_store,dir_bytes_valuelog,dir_bytes_store,put_ops_s_load,put_ops_s_update" > "$OUT"
 fi
 
 PID=""
@@ -199,6 +199,14 @@ for sys in $SYSTEMS; do
     sync
     wait_quiet "$PID"; QU=$?
     D2=$(dev_written); P1=$(proc_written "$PID"); DIRB=$(dir_bytes "$D")
+    # 数据目录里有两样性质完全不同的东西，混在一个数里报会说不清改进是谁的：
+    #   data/valuelog  value 的真身（分区文件）——**GC 负责的就是这一部分**
+    #   data/dbfile    RocksDB，只存 key→偏移——GC 完全不碰它
+    # 实测 50000 条 × 256B（逻辑 13MB）时：valuelog 14MB、dbfile 75MB，
+    # 也就是"空间放大 7.02"里有 5.7 倍来自 RocksDB 自己未压实的 WAL 与 L0，
+    # 那一项在所有 KV 分离系统里都一样，不体现本文的贡献。所以三列一起报。
+    DIRB_VLOG=$(dir_bytes "$D/data/valuelog")
+    DIRB_STORE=$(dir_bytes "$D/data/dbfile")
     QUIESCED=$([ "$QL" = 0 ] && [ "$QU" = 0 ] && echo yes || echo "no(超时${QUIET_MAX}s)")
 
     DEV_LOAD=$((D1-D0)); DEV_UPD=$((D2-D1)); PROC_TOT=$((P1-P0))
@@ -206,11 +214,14 @@ for sys in $SYSTEMS; do
     WA_UPD=$(awk -v d="$DEV_UPD" -v l="$LOGICAL_UPD" 'BEGIN{ if(l>0) printf "%.4f", d/l; else print "NA" }')
     # 空间放大的分母是活数据：覆盖之后活的仍是 N 个键
     SA=$(awk -v d="$DIRB" -v l="$LOGICAL_LOAD" 'BEGIN{ if(l>0 && d!="") printf "%.4f", d/l; else print "NA" }')
+    SA_VLOG=$(awk -v d="$DIRB_VLOG" -v l="$LOGICAL_LOAD" 'BEGIN{ if(l>0 && d!="") printf "%.4f", d/l; else print "NA" }')
+    SA_STORE=$(awk -v d="$DIRB_STORE" -v l="$LOGICAL_LOAD" 'BEGIN{ if(l>0 && d!="") printf "%.4f", d/l; else print "NA" }')
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
       "$COMMIT" "$LABEL" "$sys" "$SYNC_WAL" "$vs" "$N" "$TOTAL_MB" "$pct" "$DIST" "$GC" "$QUIESCED" \
       "$DEV_LOAD" "$DEV_UPD" "$PROC_TOT" "$LOGICAL_LOAD" "$LOGICAL_UPD" "$LOGICAL_LOAD" \
-      "$WA_TOT" "$WA_UPD" "$SA" "$(ops_of "$D/load.out")" "$(ops_of "$D/update.out")" >> "$OUT"
+      "$WA_TOT" "$WA_UPD" "$SA" "$SA_VLOG" "$SA_STORE" "$DIRB_VLOG" "$DIRB_STORE" \
+      "$(ops_of "$D/load.out")" "$(ops_of "$D/update.out")" >> "$OUT"
 
     cleanup; PID=""
   done
@@ -218,4 +229,4 @@ for sys in $SYSTEMS; do
 done
 
 info "完成，$OUT"
-awk -F, 'NR>1{printf "%-11s v=%-5s ovw=%-4s gc=%-2s quiet=%-14s WA_total=%-8s WA_update=%-9s SA=%s\n", $3,$5,$8,$10,$11,$18,$19,$20}' "$OUT"
+awk -F, 'NR>1{printf "%-11s v=%-5s ovw=%-4s gc=%-2s WA_total=%-8s SA=%-8s SA_vlog=%-8s SA_store=%s\n", $3,$5,$8,$10,$18,$20,$21,$22}' "$OUT"
