@@ -101,6 +101,13 @@ func (kvs *KVServer) finishFirstGC(startTime time.Time) {
 	if err := os.Remove(kvs.oldLog); err != nil {
 		fmt.Println("第 1 轮删除旧文件出现了错误: ", err)
 	}
+	// 最初那个库（dbfile/keyIndex）在这里之后就没人引用了，必须删。
+	// finishAnotherGC 早就删被取代的库了，第一轮却漏了——于是它永久留在盘上：
+	// 实测 gc-rounds 跑完 8 轮，目录 163MB 里有 **75MB 是这个死库**（当前库同样 75MB，
+	// 分区文件只占 14MB），空间放大因此从 7.33 虚报到 12.85。
+	// **这会让 amplification.sh 报的空间放大整体偏高**，因为它量的是整个数据目录。
+	// 先 Close 再删，理由同 finishAnotherGC。
+	kvs.removeSupersededStore()
 	fmt.Println("第 1 轮垃圾回收完成，等待下 1 轮垃圾回收，且已删除 oldLog 指向的文件")
 }
 
@@ -138,17 +145,26 @@ func (kvs *KVServer) finishAnotherGC(startTime time.Time) {
 	if err := os.Remove(kvs.oldLog); err != nil {
 		fmt.Printf("第 %v 轮垃圾回收删除旧文件出现了错误: %v\n", kvs.numGC, err)
 	}
-	// 旧的存储引擎同样要删。每轮切换都新建一个库，不删的话它们会一直堆着：
-	// 实测 8 轮之后 dbfile/ 下有 9 个库共 600MB，是分区文件的 40 倍，
-	// 空间放大因此照样无界——分区清理干净了也没用。
-	// 先 Close 再删：目录还被打开着就 RemoveAll，RocksDB 会在后台写到已删除的 inode 上。
-	if kvs.oldPersister != nil && kvs.oldDBPath != "" && kvs.oldDBPath != kvs.currentDBPath {
-		kvs.oldPersister.Close()
-		if err := os.RemoveAll(kvs.oldDBPath); err != nil {
-			fmt.Printf("删除旧存储引擎 %s 失败: %v\n", kvs.oldDBPath, err)
-		}
-	}
+	kvs.removeSupersededStore()
 	fmt.Printf("第 %v 轮垃圾回收完成，等待下一轮垃圾回收，且已删除 oldLog 指向的文件\n", kvs.numGC)
+}
+
+// removeSupersededStore 删掉本轮被取代的那个存储引擎。每轮 GC 切换都新建一个库，不删的话
+// 它们会一直堆着：实测 8 轮之后 dbfile/ 下有 9 个库共 600MB，是分区文件的 40 倍，
+// 空间放大照样无界——分区清理干净了也没用。
+//
+// 两轮共用同一段，是因为它们各写一份就走散过：finishAnotherGC 早就在删，而 finishFirstGC
+// 漏了，于是最初那个库永久留在盘上（163MB 的目录里 75MB 是它）。
+//
+// 先 Close 再删：目录还被打开着就 RemoveAll，RocksDB 会在后台写到已删除的 inode 上。
+func (kvs *KVServer) removeSupersededStore() {
+	if kvs.oldPersister == nil || kvs.oldDBPath == "" || kvs.oldDBPath == kvs.currentDBPath {
+		return
+	}
+	kvs.oldPersister.Close()
+	if err := os.RemoveAll(kvs.oldDBPath); err != nil {
+		fmt.Printf("删除旧存储引擎 %s 失败: %v\n", kvs.oldDBPath, err)
+	}
 }
 
 // recoverOrInit decides whether this start is a fresh node or a recovery from disk and
