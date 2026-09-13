@@ -102,6 +102,7 @@ type KVServer struct {
 	extraPersistence bool
 	inlinePlacement  bool    // 写入时按大小分流放置，而非仅做读缓存
 	leaderCheck      bool    // 非 leader 上的读直接让客户端改投 leader，见 requireLeader
+	leaseRead        bool    // 读前要求持有 leader 租约，否则退回 ReadIndex，见 requireLeader
 	inlineThreshold  int     // values smaller than this (bytes) are eligible for the inline cache
 	inlineCacheBytes int64   // memory budget for one partition set's shared inline cache
 	gcThresholdGB    float64 // value log size in GB that triggers GC
@@ -215,6 +216,7 @@ func New(cfg Config) (*KVServer, error) {
 		extraPersistence: extraPersistence,
 		inlinePlacement:  cfg.InlinePlacement,
 		leaderCheck:      cfg.LeaderCheck,
+		leaseRead:        cfg.LeaseRead,
 		inlineThreshold:  cfg.InlineThreshold,
 		inlineCacheBytes: int64(cfg.InlineCacheMB) << 20,
 		indexBlockBytes:  int64(cfg.IndexBlockKB) << 10,

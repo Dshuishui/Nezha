@@ -53,7 +53,11 @@ func main() {
 	// applied so far, which is not an error the caller can detect. Single-node runs are
 	// unaffected, the node holds the leader role. Turn it off to inspect a follower's own
 	// state, which the verification tools do on purpose.
-	flag.BoolVar(&cfg.LeaderCheck, "leaderCheck", true, "reject reads on a non-leader and redirect the client (not ReadIndex: a deposed leader still answers)")
+	flag.BoolVar(&cfg.LeaderCheck, "leaderCheck", true, "reject reads on a non-leader and redirect the client")
+	// Lease read closes the gap that -leaderCheck alone leaves open: a deposed leader keeps
+	// the role until it learns otherwise, and answers stale reads meanwhile. With the lease
+	// held a read still costs no RPC; only a cold lease falls back to a ReadIndex round.
+	flag.BoolVar(&cfg.LeaseRead, "leaseRead", true, "serve reads only while the leader lease is held, else fall back to ReadIndex (needs -leaderCheck)")
 	flag.StringVar(&cfg.VizAddr, "vizAddr", "", "listen address for the AVP placement visualiser, e.g. :8080 (empty = disabled)")
 	flag.IntVar(&cfg.SSTSpanMB, "sstSpanMB", 32, "lsm-raft: applied value bytes per shipped SSTable span")
 	flag.IntVar(&cfg.SSTIdleMs, "sstIdleMs", 1000, "lsm-raft: cut the open span after this many ms without writes")

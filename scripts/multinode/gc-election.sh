@@ -2,7 +2,7 @@
 # Does GC starve the heartbeat path? Three nodes, 4 KB values, ~10 GB written, GC at 2 GB.
 #
 # The node logs the pieces this needs but not on one clock: role changes come from DPrintf
-# (dated), while the GC banners and "3秒没有收到" come from fmt.Printf (undated). TS=1 in
+# (dated), while the GC banners and "没有收到来自leader" come from fmt.Printf (undated). TS=1 in
 # three-node.sh stamps every line as it leaves the process, so the three can be lined up.
 #
 # Reads as reproduced when, per node: silent>0 or elections>0, and the timeline shows the

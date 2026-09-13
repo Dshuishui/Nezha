@@ -41,11 +41,19 @@ type Config struct {
 	// client to retry against the leader. Without it a follower answers from its own store,
 	// which lags the leader by however far behind its apply has fallen.
 	//
-	// It is a leader *check*, not ReadIndex: it does not make reads linearizable, because a
-	// deposed leader keeps the role until it learns otherwise. See requireLeader in
-	// service.go for what remains unguaranteed and what closing that gap would cost.
+	// On its own it is a leader *check*, not ReadIndex: a deposed leader keeps the role
+	// until it learns otherwise, so it answers stale reads. LeaseRead closes that gap.
 	LeaderCheck bool
-	VizAddr     string // AVP placement visualiser listen address, "" = off
+
+	// LeaseRead makes a read wait until the node can prove it is still the leader:
+	// either it holds the leader lease (a heartbeat round confirmed by a quorum less than
+	// raft's leaderLeaseDuration ago, costing no RPC at read time), or it falls back to
+	// ReadIndex — one heartbeat round to a quorum plus waiting for apply to catch up.
+	// Requires LeaderCheck; without it every node answers from its own state and there is
+	// nothing to prove. See requireLeader in service.go.
+	LeaseRead bool
+
+	VizAddr string // AVP placement visualiser listen address, "" = off
 
 	// PartitionTargetMB is the target size of one GC output partition (partition.go).
 	// It trades read cost against reclamation granularity; 0 takes the default.

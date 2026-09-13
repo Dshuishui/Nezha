@@ -68,7 +68,7 @@ restart)
   ;;
 recoverlog)
   # 打印最近一次启动日志里的恢复相关行
-  f=$(ls -t "$D"/n*.log | head -1); grep -hE "RECOVER|恢复|GC-PAUSE|Candidate|Leader|election|panic|DATA RACE|fatal" "$f" | head -30
+  f=$(ls -t "$D"/n*.log | head -1); grep -hE "RECOVER|恢复|GC-PAUSE|LEASE|Candidate|Leader|election|panic|DATA RACE|fatal" "$f" | head -30
   ;;
 kill9) kill -9 "$(cat "$D/pid")" 2>/dev/null; sleep 1; kill -0 "$(cat "$D/pid")" 2>/dev/null && echo "STILL_ALIVE node$IDX" || echo "KILLED node$IDX" ;;
 stop)  kill "$(cat "$D/pid")" 2>/dev/null; sleep 1; kill -9 "$(cat "$D/pid")" 2>/dev/null; echo "STOPPED node$IDX" ;;
@@ -79,8 +79,8 @@ report)
   gc=$(cat "$D"/n*.log | grep -c '轮垃圾回收完成') || gc=0
   races=$(cat "$D"/n*.log | grep -c 'WARNING: DATA RACE') || races=0
   err=$(errlines | wc -l | tr -d ' ')
-  cand=$(cat "$D"/n*.log | grep -c 'Candidate\|3秒没有收到') || cand=0
-  silent=$(cat "$D"/n*.log | grep -c '3秒没有收到') || silent=0
+  cand=$(cat "$D"/n*.log | grep -c 'Candidate\|没有收到来自leader') || cand=0
+  silent=$(cat "$D"/n*.log | grep -c '没有收到来自leader') || silent=0
   elect=$(cat "$D"/n*.log | grep -c 'Follower -> Candidate') || elect=0
   won=$(cat "$D"/n*.log | grep -c 'Candidate -> Leader') || won=0
   stalls=$(cat "$D"/n*.log | grep -c 'LOCK-STALL') || stalls=0
@@ -97,8 +97,8 @@ report)
   ;;
 timeline)
   # GC start/end, heartbeat silence, and every role change, in log order. Needs TS=1 at
-  # start for the fmt.Printf lines (GC, "3秒没有收到") to carry a time of their own.
-  cat "$D"/n*.log | grep -E 'Starting garbage collection|垃圾回收完成|垃圾回收出现了错误|GC-PHASE|GC-ABSORB|LOCK-STALL|SLOW-APPEND|忽略.*拉票|3秒没有收到|Follower -> Candidate|Candidate -> Leader' \
+  # start for the fmt.Printf lines (GC, "没有收到来自leader") to carry a time of their own.
+  cat "$D"/n*.log | grep -E 'Starting garbage collection|垃圾回收完成|垃圾回收出现了错误|GC-PHASE|GC-ABSORB|LEASE|LOCK-STALL|SLOW-APPEND|忽略.*拉票|没有收到来自leader|Follower -> Candidate|Candidate -> Leader' \
     | sed "s/^/node$IDX /"
   ;;
 esac

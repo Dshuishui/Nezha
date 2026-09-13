@@ -116,8 +116,21 @@ type Raft struct {
 	// role 本身由 rf.mu 保护，而读路径每个请求都要问一次"我是 leader 吗"——
 	// 去抢那把写路径也在用的锁，等于把读串行到写上面。
 	// 一律通过 setRole 改动，两者不会走散。
-	leaderRole     atomic.Bool
-	leaderId       int       // leader的id
+	leaderRole atomic.Bool
+	// leaseDeadline 是 leader 租约的到期时刻，单调时钟纳秒（0 = 没有租约）。
+	// 与 leaderRole 同理，为读路径而存在，不取 rf.mu；一律通过 grantLease/clearLease
+	// 改动，而 clearLease 挂在 setRole 上，所以退位一定连带撤销租约。
+	//
+	// 存的是相对 leaseEpoch 的单调时钟读数，不是墙钟：NTP 把墙钟往前拨会凭空延长租约，
+	// 那正是最不该发生的事（见 leaseNow）。
+	leaseDeadline atomic.Int64
+	// leaseTermNoop 是本任期那条 no-op（TermLog）的日志 index。
+	// 租约只在 lastApplied 追上它之后才发放：刚当选的 leader 尚未把上一任 leader 已提交
+	// 的条目 apply 完，此刻用本地状态应答读会返回旧值——租约保证的是"没有别的 leader"，
+	// 不保证"我已经知道了所有已提交的写"，后者靠这条 no-op 补齐（Raft 论文 §6.4 第一条）。
+	// 0 表示尚未记下，此时不发租约。
+	leaseTermNoop int
+	leaderId      int       // leader的id
 	lastActiveTime time.Time // 上次活跃时间（刷新时机：收到leader心跳、给其他candidates投票、请求其他节点投票）
 	// lastBroadcastTime time.Time // 作为leader，上次的广播时间
 
@@ -293,6 +306,69 @@ func (rf *Raft) GetLeaderId() (leaderId int32) {
 func (rf *Raft) setRole(role string) {
 	rf.role = role
 	rf.leaderRole.Store(role == ROLE_LEADER)
+	if role != ROLE_LEADER {
+		// 退位即撤租约。挂在这里而不是每个退位点各写一遍：setRole 是改身份的唯一入口，
+		// 漏掉任何一处都意味着一个已被罢免的节点还在用本地状态应答读。
+		rf.clearLease()
+	}
+}
+
+// leaseEpoch / leaseNow 给租约提供一个能塞进 atomic.Int64 的**单调**时钟读数。
+//
+// 不能用 time.Time.UnixNano()：那是墙钟，NTP 或手工调时把时间往前拨，会让一个早该
+// 过期的租约凭空续上——而租约过期是这套机制唯一的安全阀。time.Sub / time.Since 在两端
+// 都带单调读数时走的是单调时钟，调时影响不到它。
+var leaseEpoch = time.Now()
+
+func leaseNow() int64 { return int64(time.Since(leaseEpoch)) }
+
+// grantLease 把租约续到 sent + leaderLeaseDuration。调用者必须持有 rf.mu。
+//
+// 起点取**心跳发出的时刻**而不是收到多数派回执的时刻，这是安全性的要求：follower 的
+// 选举计时从它**收到**心跳时开始算，那必然晚于发出时刻，所以以发出时刻为准的租约一定
+// 先于任何 follower 的选举超时到期。反过来以回执时刻起算，租约就会伸到 follower 的
+// 选举窗口里面去，两个 leader 同时自认为持有租约。
+func (rf *Raft) grantLease(sent time.Time) {
+	deadline := int64(sent.Sub(leaseEpoch)) + int64(leaderLeaseDuration)
+	if deadline > rf.leaseDeadline.Load() { // 迟到的回执不能把租约往回拽
+		rf.leaseDeadline.Store(deadline)
+	}
+}
+
+func (rf *Raft) clearLease() {
+	rf.leaseDeadline.Store(0)
+	rf.leaseTermNoop = 0
+}
+
+// HoldsLease 报告本节点此刻是否持有 leader 租约，也就是"在租约到期之前，集群里不可能
+// 选出另一个 leader"。持有租约的 leader 可以直接用本地状态应答读而无需任何 RPC。
+//
+// 与 IsLeader 的区别：IsLeader 只说"我自认为是 leader"，一个已被罢免却尚不知情的旧
+// leader 照样返回真。HoldsLease 多要求一条——最近一轮心跳被多数派确认过，且距今不足
+// 租约时长，于是那些节点在此期间不会投票给别人。
+//
+// 不取 rf.mu：和 IsLeader 同理，读路径每个请求都会调一次。
+func (rf *Raft) HoldsLease() bool {
+	if !rf.leaderRole.Load() {
+		return false
+	}
+	d := rf.leaseDeadline.Load()
+	return d != 0 && leaseNow() < d
+}
+
+// LeaseRemaining 返回租约还剩多久，没有租约时返回 0。只用于观测与测试。
+func (rf *Raft) LeaseRemaining() time.Duration {
+	if !rf.leaderRole.Load() {
+		return 0
+	}
+	d := rf.leaseDeadline.Load()
+	if d == 0 {
+		return 0
+	}
+	if left := d - leaseNow(); left > 0 {
+		return time.Duration(left)
+	}
+	return 0
 }
 
 // IsLeader reports whether this node currently holds the leader role. Prefer it over
@@ -787,17 +863,25 @@ func (rf *Raft) sendHeartbeat(address string, args *raftrpc.AppendEntriesInRaftR
 	return reply, true
 }
 
+// appendSilenceWarn 是 AppendMonitor 报"联系不上 leader"的门槛。
+//
+// 它**不是**选举门槛（那是 minElectionTimeout），只是一个早于选举发生的预警：心跳每
+// 500ms 一次，连续 3 秒收不到就值得打一行。门槛写成常量而不是字面量，是因为这行日志的
+// 文字里曾把秒数写死成"3秒"，选举超时从 3 秒调到 10 秒之后，那行字读起来像是在说
+// "马上就要选举了"，而实际上还差 7 秒。
+const appendSilenceWarn = 3 * time.Second
+
 func (rf *Raft) AppendMonitor() {
-	timeout := 3 * time.Second
 	for {
 		time.Sleep(2 * time.Second)
 		rf.mu.Lock()
-		silent := time.Since(rf.LastAppendTime) > timeout
+		silent := time.Since(rf.LastAppendTime) > appendSilenceWarn
 		last := rf.lastIndex()
 		rf.mu.Unlock()
 		if silent && rf.GetLeaderId() != int32(rf.me) {
 			//  排在第一的服务器和后面的服务器，打印的内容是不一样的。因为排在第一个的默认就是满足第二个条件了。
-			fmt.Println("3秒没有收到来自leader的同步或者心跳信息！")
+			fmt.Printf("%v没有收到来自leader的同步或者心跳信息！（选举门槛是 %v，还没到）\n",
+				appendSilenceWarn, minElectionTimeout)
 			continue
 		}
 		fmt.Printf("当前的log大小%v\n", last)
@@ -933,8 +1017,12 @@ func (rf *Raft) electionLoop() {
 						OpType: "TermLog",
 					}
 					rf.mu.Unlock()
-					rf.Start(&op) // the no-op for the new term, after nextIndex is initialised; Start fills Index/Term
+					noopIndex, _, _ := rf.Start(&op) // the no-op for the new term, after nextIndex is initialised; Start fills Index/Term
 					rf.mu.Lock()
+					// 租约要等这条 no-op apply 完才发（见 leaseTermNoop）。setRole(ROLE_LEADER)
+					// 不碰 leaseTermNoop，它在上一次退位时已被 clearLease 归零，所以在这行
+					// 赋值之前租约发不出来——顺序即安全阀，别把这行往上挪。
+					rf.leaseTermNoop = int(noopIndex)
 					util.DPrintf("成为leader后发送第一个空指令给Raft层")
 					// rf.lastBroadcastTime = time.Unix(0, 0) // 令appendEntries广播立即执行，因为leader的term开始时，需要提交一条空的无操作记录。
 					return
@@ -1187,51 +1275,103 @@ func (rf *Raft) CheckActive(peerId int, resultChan chan<- bool) {
 	}
 }
 
+// readIndexTimeout 给一轮 ReadIndex 的多数派确认封顶。sendHeartbeat 自己的 RPC 上限是
+// 1 秒，这里留出两倍，好让一次正常的慢回复走完而不是把整次读判死。
+const readIndexTimeout = 2 * time.Second
+
+// applyPollInterval 是 WaitApplied 轮询 lastApplied 的间隔。apply 侧没有可等待的条件
+// 变量，只能轮询；1 毫秒的代价只落在租约失效时的退路上。
+const applyPollInterval = time.Millisecond
+
+// GetReadIndex 是 Raft §6.4 的 ReadIndex：向多数派发一轮不带日志的心跳，多数派仍然认
+// 本任期的自己，就说明这轮往返期间不可能有别的 leader 被选出来，于是当时的 commitIndex
+// 是一个合法的线性一致读位点。调用者还要等 lastApplied 追上它（见 WaitApplied）。
+//
+// 与 HoldsLease 的分工：租约有效时读一次 RPC 都不发，本函数是租约凉了时的退路——刚
+// 当选、GC 把进程按住、心跳丢包。代价是每次读一次多数派往返。
+//
+// 三处与最初的实现不同，都是正确性或延迟上的必须：
+//   - **攒够多数派就返回**，不再把所有回执等齐。等齐意味着任何一个挂掉的 peer 都会让
+//     每次读多花一整个 RPC 超时（1 秒），而多数派之外的票对结论没有贡献。
+//   - **rf.commitIndex 在锁内读**。此前那次读在锁外，是一个会被 -race 抓到的数据竞争。
+//   - **回来之后重新检查身份与任期**。一轮心跳期间本节点可能已经因为看到更高任期而退位，
+//     那时它的 commitIndex 不再是合法的读位点。
 func (rf *Raft) GetReadIndex() (commitindex int, isleader bool) {
 	rf.mu.Lock()
-	// defer rf.mu.Unlock()
 	// 只有leader才执行，如果不是就返回false
 	if rf.role != ROLE_LEADER {
-		// fmt.Println("到这了嘛3")
 		rf.mu.Unlock()
 		return -1, false
 	}
+	term := rf.currentTerm
 	rf.mu.Unlock()
 
-	resultChan := make(chan bool, len(rf.peers)) // 设置为集群中服务器的数量以确保不会被阻塞
-	var wg sync.WaitGroup
-
+	results := make(chan bool, len(rf.peers))
 	for peerId := 0; peerId < len(rf.peers); peerId++ {
 		if peerId == rf.me {
 			continue
 		}
-		wg.Add(1)
-		go func(peerId int) {
-			defer wg.Done()
-			rf.CheckActive(peerId, resultChan)
+		go func(id int) {
+			// CheckActive 在任期已变的分支上**什么都不发**就返回，所以不能直接把
+			// results 交给它：少一条消息，下面的循环就只能靠超时才醒过来。
+			// 这里兜一层，保证每个 peer 恰好上报一次。缓冲 1 是必须的：CheckActive
+			// 是在持有 rf.mu 的时候写这个通道的。
+			one := make(chan bool, 1)
+			rf.CheckActive(id, one)
+			select {
+			case v := <-one:
+				results <- v
+			default:
+				results <- false
+			}
 		}(peerId)
 	}
 
-	// 使用goroutine等待所有的心跳请求完成
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	successCount := 0
-	for result := range resultChan {
-		if result {
-			successCount++
+	acks, replies := 1, 0 // 自己算一票：leader 不会把票投给别人
+	quorum := len(rf.peers)/2 + 1
+	timer := time.NewTimer(readIndexTimeout)
+	defer timer.Stop()
+	for acks < quorum && replies < len(rf.peers)-1 {
+		select {
+		case ok := <-results:
+			replies++
+			if ok {
+				acks++
+			}
+		case <-timer.C:
+			fmt.Println("ReadIndex: 等多数派确认超时")
+			return -1, false
 		}
 	}
-
-	if successCount+1 > len(rf.peers)/2 {
-		// log.Printf("Majority of nodes responded. Current commit index: %d", rf.commitIndex)
-		return rf.commitIndex, true
+	if acks < quorum {
+		fmt.Println("Failed to get majority response")
+		return -1, false
 	}
 
-	fmt.Println("Failed to get majority response")
-	return -1, false // 表示失败，同时也不是合格的leader
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.role != ROLE_LEADER || rf.currentTerm != term {
+		return -1, false // 这一轮期间已经退位，commitIndex 不再是合法读位点
+	}
+	return rf.commitIndex, true
+}
+
+// WaitApplied 等状态机把 idx 之前的日志都应用完，最多等 timeout。
+//
+// ReadIndex 给出的是一个**提交**位点，而读走的是本地状态机；两者之间差着 apply 的进度，
+// 不等它追上就读，读到的仍然是旧值——线性一致性会在这一步漏掉。
+func (rf *Raft) WaitApplied(idx int, timeout time.Duration) bool {
+	if rf.GetApplyIndex() >= idx {
+		return true
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(applyPollInterval)
+		if rf.GetApplyIndex() >= idx {
+			return true
+		}
+	}
+	return false
 }
 
 // heartbeatInterval 是 leader 无条件向每个 peer 发心跳的间隔。
@@ -1244,10 +1384,42 @@ const replicaIdleTick = 20 * time.Millisecond
 
 // 选举超时：最小值加一段随机抖动，避免多个节点同时发起选举。
 // minElectionTimeout 同时是 Raft 论文 §4.2.3 防打扰规则的判据（见 RequestVote）。
+//
+// 取 10 秒 + 最多 1 秒抖动，与 TiKV 的默认值一致
+// （raft-base-tick-interval=1s × raft-election-timeout-ticks=10）。选这么长有两个原因：
+//
+//  1. 租约读要求 leaderLeaseDuration < minElectionTimeout（见下）。3 秒的选举超时只能
+//     配 2.5 秒左右的租约，leader 稍有停顿读就退回 ReadIndex 的多数派往返。
+//  2. defaultAppendRoundBudget 是 8 秒：一轮复制卡满预算都还没被判定为需要重发时，
+//     3 秒的选举超时早就先让 follower 发起选举、把在干活的 leader 换掉了。
+//
+// 代价是故障切换变慢：leader 真的挂掉，最长 11 秒集群里没人服务。三节点 GB 级实测
+// slow_appends=0、没有换届，所以这个代价目前是买得起的。
 const (
-	minElectionTimeout    = 3000 * time.Millisecond
-	electionTimeoutJitter = 150 * time.Millisecond
+	minElectionTimeout    = 10000 * time.Millisecond
+	electionTimeoutJitter = 1000 * time.Millisecond
 )
+
+// leaderLeaseDuration 是一轮心跳被多数派确认后，leader 可以凭本地状态应答读的时长。
+//
+// **上界是硬的**：租约必须在任何 follower 可能发起选举之前到期，否则一个已被取代的旧
+// leader 还在用陈旧的本地状态应答读，租约读就退化成"读 follower"——不如不做。
+// follower 的选举计时从它**收到**心跳算起，晚于 leader 发出心跳的时刻，所以
+//
+//	leaderLeaseDuration < minElectionTimeout − (调度抖动 + 时钟频率误差)
+//
+// 取 9 秒，即选举超时的 90%，余下 1 秒留给 GC/fsync 把进程按住不放的那种停顿以及两台
+// 机器晶振频率的差异（租约两端都用单调时钟，所以**不**依赖墙钟同步，NTP 偏移无关）。
+// 这也正是 TiKV 的 raft-store-max-leader-lease 默认值 9s 与其 10s 选举超时的比例。
+const leaderLeaseDuration = 9000 * time.Millisecond
+
+// leaseRound 记一轮心跳收到的确认票数，由 rf.mu 保护（每个回执协程都在锁内更新它）。
+// granted 保证一轮只续期一次——多数派之后迟到的回执不该再把租约往后推，它们确认的
+// 是同一个发出时刻。
+type leaseRound struct {
+	acks    int
+	granted bool
+}
 
 // defaultAppendRoundBudget 是一轮复制在被判定为"卡住、需要重发"之前的时限。
 // 取得比 sendAppendEntries 的 5 秒 RPC 上限宽，好让正常的慢回复自己走完。
@@ -1631,8 +1803,20 @@ func Make(peers []string, me int,
 func (rf *Raft) heartbeatLoop() {
 	tick := time.NewTicker(heartbeatInterval)
 	defer tick.Stop()
+	// 只在租约的有/无发生变化时打一行。租约本身没有别的可观测出口，而"读是走了租约还是
+	// 退回了 ReadIndex"决定读延迟差一到两个数量级，跑实验时必须能从日志里看出来。
+	hadLease := false
 	for !rf.killed() {
 		<-tick.C
+
+		if now := rf.HoldsLease(); now != hadLease {
+			if now {
+				fmt.Printf("[LEASE] 取得 leader 租约，有效期 %v，此后的读直接走本地状态\n", leaderLeaseDuration)
+			} else {
+				fmt.Println("[LEASE] 租约失效，读退回 ReadIndex（一轮多数派往返）")
+			}
+			hadLease = now
+		}
 
 		rf.mu.Lock()
 		if rf.role != ROLE_LEADER {
@@ -1647,8 +1831,26 @@ func (rf *Raft) heartbeatLoop() {
 		// leader 自己的"最近与 leader 通过消息"就是它自己发出去的这一刻，
 		// §4.2.3 的判据要用（见 RequestVote）。复制链卡住时它不会被刷新，
 		// 那正是不该再拿它当"leader 健在"证据的时候。
-		rf.LastAppendTime = time.Now()
+		sent := time.Now()
+		rf.LastAppendTime = sent
+		term := rf.currentTerm
+		// 本任期的 no-op 还没 apply 完，就不发租约：那之前本地状态可能不含上一任
+		// leader 已提交的写，凭它应答读会返回旧值。
+		noopApplied := rf.leaseTermNoop > 0 && rf.lastApplied >= rf.leaseTermNoop
 		rf.mu.Unlock()
+
+		// 这一轮心跳的确认计数。自己算一票——leader 当然不会投给别人。
+		// 攒够多数派的那一刻把租约续到 sent + leaderLeaseDuration；后面迟到的回执
+		// 由 round.granted 挡掉，不重复续期。
+		round := &leaseRound{acks: 1}
+		quorum := len(rf.peers)/2 + 1
+		if round.acks >= quorum && noopApplied {
+			// 单节点：自己就是多数派，下面的 per-peer 协程一个都不会跑。
+			round.granted = true
+			rf.mu.Lock()
+			rf.grantLease(sent)
+			rf.mu.Unlock()
+		}
 
 		for peerId := 0; peerId < len(rf.peers); peerId++ {
 			if peerId == rf.me {
@@ -1661,11 +1863,24 @@ func (rf *Raft) heartbeatLoop() {
 				}
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
-				if reply.Term > int32(rf.currentTerm) { // 任期落后，退位
+				if reply.Term > int32(rf.currentTerm) { // 任期落后，退位（setRole 连带撤租约）
 					rf.setRole(ROLE_FOLLOWER)
 					rf.currentTerm = int(reply.Term)
 					rf.votedFor = -1
 					rf.persistHardState()
+					return
+				}
+				// reply.Success 只在对方的任期不高于 args.Term 时才为真，所以它就是
+				// 一张"本任期我还认你这个 leader"的确认票。不能改用
+				// reply.Term == args.Term 判断：follower 采纳更高任期时填的是**采纳前**
+				// 的旧任期，那样合法的确认会被当成失败丢掉。
+				if !reply.Success || rf.role != ROLE_LEADER || rf.currentTerm != term {
+					return
+				}
+				round.acks++
+				if !round.granted && round.acks >= quorum && noopApplied {
+					round.granted = true
+					rf.grantLease(sent)
 				}
 			}(peerId)
 		}

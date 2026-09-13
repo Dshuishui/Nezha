@@ -15,28 +15,61 @@ import (
 	"gitee.com/dong-shuishui/FlexSync/internal/raft"
 )
 
-// requireLeader 检查本节点是否还持有 leader 身份。不是的话填好 ErrWrongLeader 与
-// leaderId，让客户端改投 leader（客户端的 Get/Scan/Put 都会跟随重定向）。
+// requireLeader 判断本节点现在能不能用本地状态应答一次读。不能的话填好 ErrWrongLeader
+// 与 leaderId，让客户端改投 leader（客户端的 Get/Scan/Put 都会跟随重定向）。
 //
-// 为什么读也需要它：读路径完全在本地完成——查 RocksDB 拿偏移、去 valuelog 取字节。
+// 为什么读需要它：读路径完全在本地完成——查 RocksDB 拿偏移、去 valuelog 取字节。
 // follower 的本地状态落后 leader 多少，取决于它的 apply 落后多少，于是一次打到
 // follower 上的读会**静默返回旧值**，既不报错也无从察觉。
 //
-// **它保证不了什么**：这是 leader **检查**，不是 ReadIndex。一个已被罢免却尚不知情的
-// 旧 leader 仍然持有 role，照样会应答——所以它不提供线性一致性。
-// 要补上这个缺口得用 raft.GetReadIndex()：它向多数派发一轮心跳确认自己仍是 leader，
-// 再等 applyIndex 追上 commitIndex。代价是**每次读一次多数派往返**，而本地 GET 的 p50
-// 只有 0.13ms——那会让读延迟涨一到两个数量级。该函数已实现，就在 raft.go 里等着，
-// 何时启用应当由"要不要线性一致读"这个需求决定，而不是顺手打开。
+// 三档，由 -leaderCheck / -leaseRead 选：
 //
-// 关掉它（-leaderCheck=false）则回到改造前的行为：任何节点都用本地状态应答读。
-// 验证工具要故意读 follower 的本地状态时需要这样（见 client.GetFrom）。
+//  1. `-leaderCheck=false`：改造前的行为，任何节点都用本地状态应答读。验证工具要故意
+//     读 follower 的本地状态时需要这样（见 client.GetFrom）。
+//  2. `-leaderCheck -leaseRead=false`：只查 role。挡掉了 follower，但**不是线性一致**——
+//     一个已被罢免却尚不知情的旧 leader 仍然持有 role，照样会应答旧值。
+//  3. `-leaderCheck -leaseRead`（默认）：租约读。先看租约——最近一轮心跳被多数派确认
+//     过、且距今不足 raft.leaderLeaseDuration，那么这段时间里不可能有别的 leader 被选
+//     出来，直接读本地，**一次 RPC 都不发**。租约凉了（刚当选、GC 把进程按住、心跳
+//     丢包）才退回 ReadIndex：一轮多数派心跳，再等 apply 追上那个提交位点。
+//
+// 第 3 档的代价只落在退路上：租约有效时读延迟与第 2 档一样（本地 GET 的 p50 是
+// 0.13ms，一次多数派往返会让它涨一到两个数量级，所以"每次读都走 ReadIndex"才是不能
+// 接受的那个方案）。
+//
+// **仍未覆盖的一处**：节点自己被冻住（长时间 STW、虚拟机被挂起）的时候，它醒来后看到
+// 的租约剩余时间是按单调时钟算的、已经过期，所以不会拿旧状态应答——但它也无从知道
+// 自己冻了多久，这一点靠的是单调时钟而非任何主动检测。
 func (kvs *KVServer) requireLeader() (int32, bool) {
-	if !kvs.leaderCheck || kvs.raft.IsLeader() {
+	if !kvs.leaderCheck {
 		return 0, true
 	}
-	return kvs.raft.GetLeaderId(), false
+	if !kvs.raft.IsLeader() {
+		return kvs.raft.GetLeaderId(), false
+	}
+	if !kvs.leaseRead {
+		return 0, true
+	}
+	if kvs.raft.HoldsLease() {
+		return 0, true
+	}
+	// 租约不在手上：退回 ReadIndex。
+	readIndex, ok := kvs.raft.GetReadIndex()
+	if !ok {
+		return kvs.raft.GetLeaderId(), false
+	}
+	if !kvs.raft.WaitApplied(readIndex, readIndexApplyWait) {
+		// 多数派确认了身份，但状态机没在限时内追上那个位点。此时读本地仍可能是旧值，
+		// 所以不能放行；报 ErrWrongLeader 让客户端重试，是这里能给出的最诚实的答复。
+		fmt.Printf("[READ] ReadIndex=%d 等 apply 追上超时，本次读拒绝\n", readIndex)
+		return kvs.raft.GetLeaderId(), false
+	}
+	return 0, true
 }
+
+// readIndexApplyWait 是 ReadIndex 之后等 apply 追上的上限。给得比一次 Put 的提交路径
+// 宽：apply 落后通常是写入正忙，等一会儿就追上了，直接拒绝反而把一次能成的读打掉。
+const readIndexApplyWait = 2 * time.Second
 
 func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeRequest) (*kvrpc.ScanRangeResponse, error) {
 	reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
@@ -47,15 +80,6 @@ func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeReq
 		return reply, nil
 	}
 
-	// commitIndex, isLeader := kvs.raft.GetReadIndex()
-	// if !isLeader {
-	// 	reply.Err = raft.ErrWrongLeader
-	// 	reply.LeaderId = kvs.raft.GetLeaderId()
-	// 	return reply, nil
-	// }
-
-	// for {
-	// 	if kvs.raft.GetApplyIndex() >= commitIndex {
 	if kvs.FirstGC {
 		result, err := kvs.firstGCScan(in.StartKey, in.EndKey)
 		if err != nil {
@@ -73,9 +97,6 @@ func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeReq
 	reply.KeyValuePairs = result
 	return reply, nil
 
-	// }
-	// 	time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
-	// }
 	// ————以下是之前的scan查询————
 	// reply := kvs.StartScan(in)
 	// 检查是否已经垃圾回收完毕
@@ -165,9 +186,6 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	}
 	reply = kvs.anotherGCGet(key, reply)
 	return reply
-	// }
-	// time.Sleep(6 * time.Millisecond) // 等待applyindex赶上commitindex
-	// }
 }
 
 func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
