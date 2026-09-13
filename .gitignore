@@ -73,3 +73,4 @@ scripts/multinode/*.log
 /testRocksDB-kvs
 /testRocksDB_v2
 /zipf_read
+__pycache__/

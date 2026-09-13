@@ -204,7 +204,11 @@ func TestOverwriteTruncatesStaleTail(t *testing.T) {
 	// follower conflict: overwrite from index 2 with a shorter record; index 3 must disappear
 	w.Offsets = w.Offsets[:1]
 	w.offsetVersions = w.offsetVersions[:1]
-	w.WriteEntryToFile([]*Entry{putEntry(2, 2, "b", "short")}, 0+w.Offsets[0]+int64(recordHeader)+10+36)
+	// 覆盖点 = 第一条记录的末尾。记录 = recordHeader + 补齐后的 key + value，所以 key 那一段
+	// 的宽度必须写成 KeyLength，不能写死（曾写死 10，KeyLength 改成 24 之后偏移落在记录中间，
+	// 恢复读出的是"header 看着像损坏"，测试以 index out of range 崩掉）。
+	firstRecordEnd := w.Offsets[0] + int64(recordHeader) + int64(KeyLength) + int64(len("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+	w.WriteEntryToFile([]*Entry{putEntry(2, 2, "b", "short")}, firstRecordEnd)
 	w.CloseLogFile()
 
 	rf := &Raft{persister: &Persister{}}

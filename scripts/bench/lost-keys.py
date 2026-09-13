@@ -21,10 +21,35 @@ RocksDB（apply.go 的内联分支在最前面且不看 FileVersion），GC 期�
 """
 import glob
 import os
+import re
 import sys
 
-KEY_LEN = 10
 HEADER = 20
+
+
+def _key_len():
+    """从 Go 源码里读 KeyLength，而不是写死。
+
+    这个常数决定盘上记录的跨步，写死过一次（10），KeyLength 改成 24 之后本工具解析出的
+    是记录中间的字节，`int()` 直接抛异常，crash-recovery.sh 拿到空串、把"丢了 ? 条"
+    当成失败报了出来——工具坏了，看起来像被测系统坏了。
+    """
+    env = os.environ.get("KEY_LEN")
+    if env:
+        return int(env)
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "..", "..", "internal", "raft", "persister.go")
+    try:
+        with open(src, encoding="utf-8") as f:
+            m = re.search(r"^const KeyLength = (\d+)", f.read(), re.M)
+        if m:
+            return int(m.group(1))
+    except OSError:
+        pass
+    sys.exit(f"读不到 {src} 里的 KeyLength，请用 KEY_LEN=<位数> 覆盖")
+
+
+KEY_LEN = _key_len()
 
 
 def keys_in(path, stride):

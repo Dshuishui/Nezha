@@ -137,9 +137,17 @@ verify(){ # verify <场景名>
       -span 50 -sample 30 -check 300 2>&1 | grep -v 'new pool success')
   echo "$out" | grep -E '校验|VERIFY' | sed 's/^/       /'
   echo "$out" | grep -q FAILOVER_VERIFY_OK || { fail "$1: 逐条校验未通过"; return 1; }
-  local lost; lost=$(python3 "$SCRIPT_DIR/../bench/lost-keys.py" "$DATA" "$ENTRIES" "$VSIZE" 2>/dev/null \
-      | grep -o '丢失 [0-9]*' | grep -o '[0-9]*')
-  [ "${lost:-NA}" = 0 ] || { fail "$1: 盘上丢了 ${lost:-?} 条记录"; return 1; }
+  # 2>&1 而不是丢掉 stderr：工具自己坏掉（曾因把 key 宽度写死成 10 而在 KeyLength 改成 24
+  # 之后解析崩掉）会得到空的 lost，此前那会被报成"盘上丢了 ? 条记录"——被测系统没问题，
+  # 报告却说它丢数据。工具出错必须与"确实丢了"区分开。
+  local lkout lost
+  lkout=$(python3 "$SCRIPT_DIR/../bench/lost-keys.py" "$DATA" "$ENTRIES" "$VSIZE" 2>&1)
+  lost=$(grep -o '丢失 [0-9]*' <<<"$lkout" | grep -o '[0-9]*' || true)
+  if [ -z "${lost:-}" ]; then
+      echo "$lkout" | tail -5 | sed 's/^/       /'
+      fail "$1: lost-keys.py 没给出条数（工具本身出错，不是被测系统丢数据）"; return 1
+  fi
+  [ "$lost" = 0 ] || { fail "$1: 盘上丢了 $lost 条记录"; return 1; }
   ok "$1: 逐条校验通过，盘上丢失 0"
 }
 

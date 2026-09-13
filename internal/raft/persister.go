@@ -16,7 +16,18 @@ import (
 	// "strconv"
 )
 
-const KeyLength = 10
+// KeyLength 是 key 在盘上的定长宽度。PadKey 左补零到这个宽度，于是字典序等于数值序，
+// 有序文件和稀疏索引才能靠字节比较定位。
+//
+// 取 24 是为了容下 YCSB：go-ycsb 的 key 是 "user" 加一个 64 位哈希的十进制表示，
+// 最长 4+19 = 23 字符。此前是 10，超长的 key 会被 PadKey **静默截断**（见下），
+// 于是 YCSB 的 key 只有前 10 个字符参与区分——"user" 加 6 位数字，几万条就开始互相
+// 覆盖，而且一个错都不报。24 留一位余量，且仍是 8 的倍数。
+//
+// 改这个常量会改变盘上的记录长度（每条记录 = 20 字节头 + KeyLength + value），
+// 因此**所有放大率数字都会平移**，旧数据目录也读不了。换值之后 results/ 下的放大率
+// 归档必须重跑才能与新数字比较。
+const KeyLength = 24
 
 var ErrKeyNotFound = errors.New("key not found")
 

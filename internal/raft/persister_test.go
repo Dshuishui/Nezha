@@ -1,8 +1,11 @@
 package raft
 
 import (
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -58,8 +61,12 @@ func TestPadKeyLeadingZeroCollides(t *testing.T) {
 func TestPadKeyTruncatesLongKeys(t *testing.T) {
 	p := &Persister{}
 	// 超过 KeyLength 的 key 被截断，于是只有前 KeyLength 个字符参与区分——
-	// 前缀相同、仅在第 11 个字符之后不同的 key 全部撞到同一个存储位置。
-	a, b := "user_00001_profile", "user_00001_settings"
+	// 前缀相同、仅在第 KeyLength+1 个字符之后不同的 key 全部撞到同一个存储位置。
+	//
+	// 用例数据必须从 KeyLength 派生：写死成 10 位时代的字面量，改大常量之后这两个 key
+	// 不再超长，用例会以"用例失效"自我作废而不是检验行为。
+	shared := "user_" + strings.Repeat("x", KeyLength-len("user_"))
+	a, b := shared+"_profile", shared+"_settings"
 	if len(a) <= KeyLength || len(b) <= KeyLength {
 		t.Fatalf("用例失效：%q/%q 未超过 KeyLength=%d", a, b, KeyLength)
 	}
@@ -73,11 +80,40 @@ func TestPadKeyTruncatesLongKeys(t *testing.T) {
 	}
 }
 
+// KeyLength 必须容得下 YCSB 的 key，否则 YCSB 工作负载会静默丢数据。
+//
+// go-ycsb 的 key 是 "user" 加一个 64 位哈希的十进制表示，最长 4+19 = 23 字符。
+// KeyLength 曾是 10：这些 key 被 PadKey 截断成 "user" 加 6 位数字，几万条之后就开始
+// 互相覆盖，而且截断不报任何错——一次读返回 NOKEY 或别人的 value，无从察觉。
+// 这个用例钉住"截断不会发生"，改小 KeyLength 会让它失败。
+func TestPadKeyFitsYCSBKeys(t *testing.T) {
+	p := &Persister{}
+	// 哈希取满 64 位无符号的最大值，得到最长的那种 key
+	longest := fmt.Sprintf("user%d", uint64(math.MaxUint64))
+	if len(longest) != 24 {
+		t.Fatalf("用例假设失效：最长的 YCSB key %q 是 %d 字符，此前认定为 24", longest, len(longest))
+	}
+	if len(longest) > KeyLength {
+		t.Fatalf("KeyLength=%d 容不下最长的 YCSB key（%d 字符）：PadKey 会静默截断，"+
+			"YCSB 负载下会有 key 互相覆盖", KeyLength, len(longest))
+	}
+	// key 以 "user" 开头、不以 0 开头，所以左补零可逆
+	for _, k := range []string{"user1", "user6284781860667377211", longest} {
+		padded := p.PadKey(k)
+		if len(padded) != KeyLength {
+			t.Errorf("PadKey(%q) 长度 %d，期望 %d", k, len(padded), KeyLength)
+		}
+		if got := p.UnpadKey(padded); got != k {
+			t.Errorf("往返失败 key=%q -> padded=%q -> %q", k, padded, got)
+		}
+	}
+}
+
 func TestPadKeyMisreadsAlreadyPaddedKeys(t *testing.T) {
 	p := &Persister{}
 	// 长度恰好等于 KeyLength 且以足够多 0 开头的 key，会被判定为"已经补齐过"
 	// 而原样返回，跳过补齐逻辑。对于本就该被补齐的用户 key，这是误判。
-	k := "0000001234"
+	k := strings.Repeat("0", KeyLength-4) + "1234"
 	if len(k) != KeyLength {
 		t.Fatalf("用例失效：%q 长度不等于 KeyLength=%d", k, KeyLength)
 	}
