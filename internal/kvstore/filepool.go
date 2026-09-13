@@ -29,20 +29,17 @@ func NewFileDescriptorPool(filePath string, poolSize int) (*FileDescriptorPool, 
 	if poolSize <= 0 {
 		poolSize = 1
 	}
-	file, err := os.Open(filePath)
-	if err != nil {
-		return nil, err
-	}
+	// **只开一个**描述符，它就是 seed；池子初始为空，第一次 Get 从 seed dup 一个。
+	// 开两个（一个进池、一个当 seed）会让每个分区的稳态描述符数从 1 涨到 2——
+	// 100GB 数据按 128MB 分区是 800 个分区，1600 个描述符直接撞上默认 1024 的软上限，
+	// 而这正是分区化当初把池子改成惰性要避开的那件事。
 	seed, err := os.Open(filePath)
 	if err != nil {
-		file.Close()
 		return nil, err
 	}
-	pool := make(chan *os.File, poolSize)
-	pool <- file
 	return &FileDescriptorPool{
 		filePath: filePath,
-		pool:     pool,
+		pool:     make(chan *os.File, poolSize),
 		seed:     seed,
 	}, nil
 }
