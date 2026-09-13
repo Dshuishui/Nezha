@@ -6,10 +6,14 @@
 # 每次多一轮多数派往返，功能完全正常，只是延迟涨一到两个数量级。所以这里要在真实进程上
 # 看到 `[LEASE] 取得 leader 租约` 那一行，并验证读确实答得出正确的值。
 #
-# 三个场景：
+# 四个场景：
 #   A) -leaseRead（默认）     取得租约，读成功
 #   B) -leaseRead=false       只查 role，读成功（证明新开关没把旧路径弄坏）
 #   C) -leaderCheck=false     完全不查，读成功（验证工具走的那条路）
+#   D) 三节点（本机三进程）    **只有 leader 拿到租约**，而且是靠多数派回执拿到的
+#
+# D 是这里唯一覆盖"多数派确认"那条路的场景：单节点时 quorum 等于 1，租约在派出心跳之前
+# 就直接发了，per-peer 的回执协程一个都不会跑。
 set -u
 GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
 info(){ echo -e "${GREEN}[INFO]${NC} $1"; }
@@ -98,5 +102,40 @@ info "=== C：-leaderCheck=false（完全不查，验证工具那条路） ==="
 run_case C -leaderCheck=false
 pass "C 通过（[LEASE] 行 $LEASES 条）"
 
+info "=== D：三节点，只有 leader 该拿到租约（覆盖多数派回执那条路） ==="
+P3=${P3:-41081}; I3=${I3:-40001}
+PEERS="127.0.0.1:$I3,127.0.0.1:$((I3+1)),127.0.0.1:$((I3+2))"
+DIRS=()
+for i in 0 1 2; do
+    d=$(mktemp -d); DIRS+=("$d")
+    /tmp/nezha-lease -address "127.0.0.1:$((P3+i))" -internalAddress "127.0.0.1:$((I3+i))" \
+        -peers "$PEERS" -data "$d" -gap 1000000 -gcThresholdGB 999 \
+        -leaderCheck -leaseRead > "$d/n.log" 2>&1 &
+done
+cleanup3(){ pkill -f nezha-lease 2>/dev/null; rm -rf "${DIRS[@]}"; }
+for _ in $(seq 1 40); do grep -lq -- "-> Leader" "${DIRS[0]}/n.log" "${DIRS[1]}/n.log" "${DIRS[2]}/n.log" 2>/dev/null && break; sleep 1; done
+sleep 6   # 心跳 500ms；给几拍让多数派回执把租约发出来
+
+holders=0; elected=0
+for i in 0 1 2; do
+    g=$(count_in "${DIRS[$i]}/n.log" "取得 leader 租约")
+    e=$(count_in "${DIRS[$i]}/n.log" "Candidate -> Leader")
+    x=$(count_in "${DIRS[$i]}/n.log" "租约失效")
+    echo "       node$((i+1))  当选=$e  取得租约=$g  租约失效=$x"
+    [ "$g" -gt 0 ] && holders=$((holders+1))
+    [ "$e" -gt 0 ] && elected=$((elected+1))
+done
+[ "$elected" -eq 1 ] || { cleanup3; fail "D 有 $elected 个节点当选，三节点应当只有一个"; }
+[ "$holders" -eq 1 ] || { cleanup3; fail "D 有 $holders 个节点持有租约，必须恰好是 1（0 = 多数派回执没被计数，>1 = 安全性破了）"; }
+
+out=$(/tmp/scanverify-lease -servers "127.0.0.1:$P3,127.0.0.1:$((P3+1)),127.0.0.1:$((P3+2))" \
+      -dnums "$N" -vsize "$VSIZE" 2>&1)
+getok=$(grep -oE "GET 校验: 正确 [0-9]+" <<<"$out" | grep -oE "[0-9]+$" || true)
+if ! grep -q "VERIFY_OK" <<<"$out" || [ "${getok:-0}" -eq 0 ]; then
+    echo "$out" | tail -20; cleanup3; fail "D 校验未通过（GET 正确 ${getok:-0} 条）"
+fi
+cleanup3
+pass "D 通过：恰好一个节点当选并持有租约，$N 条经客户端重定向逐条校验通过"
+
 rm -f /tmp/nezha-lease /tmp/scanverify-lease
-echo ""; pass "租约读端到端验证通过：租约真的发出来了，三档读路径都答得出正确的值"
+echo ""; pass "租约读端到端验证通过：租约真的发出来了（含多数派回执那条路），各档读路径都答得出正确的值"
