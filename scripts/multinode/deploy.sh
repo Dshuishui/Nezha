@@ -25,8 +25,13 @@ FORCE=${FORCE:-0}   # FORCE=1 to deploy anyway while something is running
 #
 # 用 pgrep **不带 -f**：匹配进程名而非完整命令行。带 -f 会匹配到这条 ssh 命令自己的
 # 命令行（今天踩了三次），也会匹配到命令行里恰好提到二进制名的 bash 包装进程。
+#
+# 模式是 'nezha' 而不是 'nezha-'：别人的节点二进制就叫 `nezha`，带横线的模式匹配不上，
+# 于是守卫在三台机器都有实验在跑的时候一声不响地放行了（2026-09-13 实测）。另外
+# /proc/<pid>/comm 只有 15 个字符，`nezha-three-normal` 在那里是 `nezha-three-nor`，
+# 任何比它更长的固定模式同样会漏。
 for h in $HOSTS; do
-  running=$(ssh "$h" "pgrep 'nezha-' 2>/dev/null | head -20 | xargs -r ps -o user=,pid=,etime=,args= -p 2>/dev/null | cut -c1-150" 2>/dev/null)
+  running=$(ssh "$h" "pgrep 'nezha' 2>/dev/null | head -20 | xargs -r ps -o user=,pid=,etime=,args= -p 2>/dev/null | cut -c1-150" 2>/dev/null)
   [ -z "$running" ] && continue
   echo "DEPLOY_REFUSED $h: 有被测进程在跑，部署会污染它"
   printf '    %-10s %-8s %-10s %s\n' 属主 PID 已运行 命令
