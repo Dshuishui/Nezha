@@ -1,11 +1,20 @@
 package raft
 
 import (
+	"fmt"
 	"time"
 
 	"gitee.com/dong-shuishui/FlexSync/api/raftrpc"
 	"gitee.com/dong-shuishui/FlexSync/internal/util"
 )
+
+// logPinWarnEntries 是"压缩点被 follower 按住多少条才值得报"的门槛。
+// 取得比 catchUpEntries 大一截：保留窗口内的落后是正常的。
+const logPinWarnEntries = 50000
+
+// estimatedEntryBytes 是一条内存日志条目的粗略占用，用于把"按住多少条"换算成 MB。
+// 实测 216B/条（空 value），带 64B value 约 280B；取 280 报一个不至于偏低的数。
+const estimatedEntryBytes = 280
 
 // In-memory log compaction and the index arithmetic that depends on it.
 
@@ -35,9 +44,12 @@ func (rf *Raft) compactLog() {
 		// 压缩上界：只能压缩已应用的条目
 		safeIndex := rf.lastApplied - catchUpEntries
 
-		// 且不能压缩掉任何 follower 尚未复制的条目，否则它再也追不上。
+		// 且不能压缩掉任何 follower 尚未复制的条目，否则它再也追不上——doAppendEntries
+		// 在 nextIndex 落进已压缩区间时只能跳过本轮，而且每一轮都会同样地跳过，那个
+		// follower 就**永久卡住**（补它需要 InstallSnapshot，本实现没有）。
 		// matchIndex 仅在成为 leader 时分配；follower 上为 nil，此时无需该约束。
 		// 单节点时该循环为空，压缩仅受 lastApplied 约束。
+		pinnedBy, pinnedAt := -1, safeIndex
 		if rf.role == ROLE_LEADER && rf.matchIndex != nil {
 			for i := 0; i < len(rf.peers); i++ {
 				if i == rf.me {
@@ -45,8 +57,24 @@ func (rf *Raft) compactLog() {
 				}
 				if rf.matchIndex[i] < safeIndex {
 					safeIndex = rf.matchIndex[i]
+					pinnedBy = i
 				}
 			}
+		}
+		// 有 follower 把压缩点按住时要说出来。
+		//
+		// 这不是修复，是让一个原本静默的失效模式变得可诊断：压缩上界被 matchIndex 钉住
+		// 意味着 rf.log 会一直涨，而每条 LogEntry 在 64B value 下约 280 字节。
+		// 100GB / 64B ≈ 11.4 亿条，follower 落后 10% 就是约 32GB 常驻内存——进程会被
+		// OOM 杀掉，而在此之前没有任何一行日志提到过原因。
+		//
+		// 真正的修法是 InstallSnapshot：压缩点可以越过落后的 follower，再用状态快照把它
+		// 补齐。那是一个未实现的特性，不是这里能顺手补的。
+		if pinnedBy >= 0 && pinnedAt-safeIndex >= logPinWarnEntries {
+			fmt.Printf("[LOG-PINNED] peer[%d] 只复制到 %d，压缩点被从 %d 按到 %d（%d 条、约 %dMB 常驻）"+
+				"——内存随它的落后程度线性增长，补齐它需要 InstallSnapshot（未实现）\n",
+				pinnedBy, rf.matchIndex[pinnedBy], pinnedAt, safeIndex,
+				pinnedAt-safeIndex, int64(pinnedAt-safeIndex)*estimatedEntryBytes>>20)
 		}
 
 		if safeIndex <= rf.lastIncludedIndex {

@@ -28,7 +28,7 @@ D=$HOME/work/three-$IDX
 PEERS="192.168.1.240:30991,192.168.1.241:30991,192.168.1.241:30992"
 BIN=${BIN:-race}; EXE=/tmp/nezha-three-$BIN
 SYSTEM=${SYSTEM:-nezha}; EXTRA=${EXTRA:-}
-ERRPAT='panic|DATA RACE|垃圾回收出现了错误|读取旧库记录失败|合并中止|failed to read entry|EOF|fatal|RECOVER\] .*失败|\[Error\].*LSM-Raft'
+ERRPAT='panic|DATA RACE|LOG-STUCK|垃圾回收出现了错误|读取旧库记录失败|合并中止|failed to read entry|EOF|fatal|RECOVER\] .*失败|\[Error\].*LSM-Raft'
 # "[LSM-Raft] ship" errors are transient by design (peer down, stale term) and not counted.
 errlines() { cat "$D"/n*.log | grep -E "$ERRPAT" | grep -v 'LSM-Raft\] ship'; }
 case $CMD in
@@ -81,7 +81,7 @@ restart)
   ;;
 recoverlog)
   # 打印最近一次启动日志里的恢复相关行
-  f=$(ls -t "$D"/n*.log | head -1); grep -hE "RECOVER|恢复|GC-PAUSE|LEASE|Candidate|Leader|election|panic|DATA RACE|fatal" "$f" | head -30
+  f=$(ls -t "$D"/n*.log | head -1); grep -hE "RECOVER|恢复|GC-PAUSE|LEASE|LOG-PINNED|LOG-STUCK|Candidate|Leader|election|panic|DATA RACE|fatal" "$f" | head -30
   ;;
 kill9) kill -9 "$(cat "$D/pid")" 2>/dev/null; sleep 1; kill -0 "$(cat "$D/pid")" 2>/dev/null && echo "STILL_ALIVE node$IDX" || echo "KILLED node$IDX" ;;
 stop)  kill "$(cat "$D/pid")" 2>/dev/null; sleep 1; kill -9 "$(cat "$D/pid")" 2>/dev/null; echo "STOPPED node$IDX" ;;
@@ -111,7 +111,7 @@ report)
 timeline)
   # GC start/end, heartbeat silence, and every role change, in log order. Needs TS=1 at
   # start for the fmt.Printf lines (GC, "没有收到来自leader") to carry a time of their own.
-  cat "$D"/n*.log | grep -E 'Starting garbage collection|垃圾回收完成|垃圾回收出现了错误|GC-PHASE|GC-ABSORB|LEASE|LOCK-STALL|SLOW-APPEND|忽略.*拉票|没有收到来自leader|Follower -> Candidate|Candidate -> Leader' \
+  cat "$D"/n*.log | grep -E 'Starting garbage collection|垃圾回收完成|垃圾回收出现了错误|GC-PHASE|GC-ABSORB|LEASE|LOG-PINNED|LOG-STUCK|LOCK-STALL|SLOW-APPEND|忽略.*拉票|没有收到来自leader|Follower -> Candidate|Candidate -> Leader' \
     | sed "s/^/node$IDX /"
   ;;
 esac

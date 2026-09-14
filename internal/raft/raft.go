@@ -157,6 +157,10 @@ type Raft struct {
 	// 容量 1，多次信号合并成一次唤醒即可——循环醒来后会把所有 SyncChans 排空。
 	replicaWake chan struct{}
 
+	// stuckReported 记下每个 peer 的"永久卡住"是否已经报过，避免同一句话被刷几千遍。
+	// 由 rf.mu 保护（只在 doAppendEntries 的持锁段里读写）。
+	stuckReported map[int]bool
+
 	// heardFromLeader 表示本节点曾收到过某个 leader 的 AppendEntries/心跳。
 	// 只用于 §4.2.3 的防打扰判据，一旦置真不再复位——它回答的是"这个集群里有没有过
 	// leader"，而"多久之前"由 LastAppendTime 回答。
@@ -1101,6 +1105,19 @@ func (rf *Raft) doAppendEntries(peerId int) {
 	// round; compaction is bounded by matchIndex so this should not happen in practice.
 	start := rf.index2LogPos(rf.nextIndex[peerId])
 	if start < 0 {
+		// 这不是"这一轮跳过"，而是**永久卡住**：下一轮算出的 start 同样为负。
+		// 补齐这个 follower 需要 InstallSnapshot（未实现），所以要报成一个明确的失效，
+		// 而不是混在 DPrintf 的噪声里每隔几十毫秒刷一次同样的话。每个 peer 只报第一次。
+		if !rf.stuckReported[peerId] {
+			if rf.stuckReported == nil {
+				// 惰性分配：测试里的 Raft 是直接用结构体字面量造的，往 nil map 写会 panic。
+				rf.stuckReported = make(map[int]bool, len(rf.peers))
+			}
+			rf.stuckReported[peerId] = true
+			fmt.Printf("[LOG-STUCK] peer[%d] 的 nextIndex=%d 已落在压缩点 %d 之前，它再也追不上了"+
+				"——补齐需要 InstallSnapshot（未实现）。这个 peer 从此不再接收日志\n",
+				peerId, rf.nextIndex[peerId], rf.lastIncludedIndex)
+		}
 		util.DPrintf("RaftNode[%d] peer[%d] nextIndex[%d] 落后于已压缩点[%d]，跳过本轮日志同步",
 			rf.me, peerId, rf.nextIndex[peerId], rf.lastIncludedIndex)
 		rf.mu.Unlock()
