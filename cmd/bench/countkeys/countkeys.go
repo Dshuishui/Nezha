@@ -26,6 +26,8 @@ import (
 	"strings"
 
 	"github.com/linxGnu/grocksdb"
+
+	"gitee.com/dong-shuishui/FlexSync/internal/raft"
 )
 
 var (
@@ -56,15 +58,24 @@ func main() {
 	it := db.NewIterator(ro)
 	defer it.Close()
 
-	var count int
+	// 恢复用的 applied index 与用户数据同库，靠首字节 0x00 区分（raft.IsMetaKey）。
+	// 把它算进 KEYCOUNT 会让计数恒比写入条数多 1，而 verify-goodput.sh 做的是**精确
+	// 相等**比较——于是"数据完好"和"确实丢了"两个分支都不成立，判定一直落在兜底分支上。
+	var count, meta int
 	var samples []string
 	for it.SeekToFirst(); it.Valid(); it.Next() {
+		k := it.Key()
+		if raft.IsMetaKey(k.Data()) {
+			meta++
+			k.Free()
+			it.Value().Free()
+			continue
+		}
 		count++
 		if len(samples) < *sample {
-			k := it.Key()
-			samples = append(samples, strings.TrimLeft(string(k.Data()), "0"))
-			k.Free()
+			samples = append(samples, string(k.Data()))
 		}
+		k.Free()
 		it.Value().Free()
 	}
 	if err := it.Err(); err != nil {
@@ -73,6 +84,9 @@ func main() {
 	}
 
 	fmt.Printf("KEYCOUNT %d\n", count)
+	if meta > 0 {
+		fmt.Printf("（另有 %d 行存储层元数据，未计入）\n", meta)
+	}
 	if len(samples) > 0 {
 		fmt.Printf("样例 key: %s\n", strings.Join(samples, " "))
 	}
