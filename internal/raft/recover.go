@@ -101,7 +101,7 @@ func (rf *Raft) RecoverLog(files []LogFile, lastApplied int) (lastIndex int, err
 				cmd.OpType = "TermLog" // no-op marker: zero-length key; real keys are always KeyLength bytes
 			} else {
 				cmd.OpType = "Put"
-				cmd.Key = rf.persister.UnpadKey(string(body[:ks]))
+				cmd.Key = string(body[:ks]) // 原样存原样取，不再有填充要剥
 				cmd.Value = string(body[ks:])
 			}
 			entries = append(entries, &raftrpc.LogEntry{Term: term, Command: cmd})

@@ -150,7 +150,7 @@ for sys in $SYSTEMS; do
 # 逻辑字节的分母沿用历史口径 (10 + value)：它把"补齐后的 key 宽度"当成用户数据，
 # 而 benchmark 的 key 是 strconv.Itoa(i)，实际只有 1~7 个字符。换成真实用户字节会让
 # 所有已发表的放大率数字整体移动，是个方法学决定，不在本次修复范围内——所以这里**故意
-# 保留 10**，不跟着 KeyLength 走。见 notes/TODO-avp.md。
+# 保留 10**，不跟着定长宽度走。见 notes/TODO-avp.md。
   LOGICAL_LOAD=$(awk -v n="$N" -v v="$vs" 'BEGIN{printf "%d", n*(10+v)}')
   for pct in $OVERWRITE; do
     done_n=$((done_n+1))

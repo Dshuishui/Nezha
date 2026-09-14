@@ -117,7 +117,7 @@ func (kvs *KVServer) applyCommand(msg raft.ApplyMsg) {
 			// （Raft 日志 + LSM），而后还要被 compaction 反复搬运。
 			kvs.persister.PutValueApplied(op.Key, op.Value, index)
 			if kvs.lsm != nil {
-				kvs.lsmAfterApply(index, kvs.persister.PadKey(op.Key), []byte(op.Value))
+				kvs.lsmAfterApply(index, op.Key, []byte(op.Value))
 			}
 		} else if int(msg.FileVersion) == kvs.numGC { // 对于写入日志时，又进行了 GC ，需将偏移量存新文件
 			// 用 msg 带上来的版本，而不是命令自带的 op.FileVersion：

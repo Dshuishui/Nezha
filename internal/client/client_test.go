@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync"
 	"testing"
@@ -142,4 +143,84 @@ func TestSequenceIdsAreUnique(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// key 的定长十进制编码。存储层现在原样存 key、按字节序排，所以"整数 key 的范围查询
+// 要有数值语义"这件事由客户端负责。这一组钉住它是**单射**的——那正是把同一个编码放在
+// 存储层时不成立的性质（存储层面对的是任意字符串，"7" 与 "007" 会撞成一个）。
+func TestEncodeKeyPadsToWidth(t *testing.T) {
+	c := &Client{opts: Options{KeyPadWidth: 10}}
+	for in, want := range map[string]string{
+		"0":          "0000000000",
+		"7":          "0000000007",
+		"42":         "0000000042",
+		"1234567890": "1234567890", // 恰好等宽，原样
+	} {
+		got, err := c.encodeKey(in)
+		if err != nil {
+			t.Errorf("encodeKey(%q): %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("encodeKey(%q) = %q，期望 %q", in, got, want)
+		}
+		if back := c.decodeKey(got); back != in {
+			t.Errorf("往返失败 %q -> %q -> %q", in, got, back)
+		}
+	}
+}
+
+// 绝不截断。超长 key 原样发出去，由存储层完整保存——截断是被修掉的那个缺陷。
+func TestEncodeKeyNeverTruncates(t *testing.T) {
+	c := &Client{opts: Options{KeyPadWidth: 10}}
+	long := "user18446744073709551615" // 最长的一种 YCSB key，24 字符
+	got, err := c.encodeKey(long)
+	if err != nil {
+		t.Fatalf("encodeKey: %v", err)
+	}
+	if got != long {
+		t.Fatalf("encodeKey(%q) = %q，超长 key 必须原样通过", long, got)
+	}
+	if back := c.decodeKey(got); back != long {
+		t.Fatalf("decodeKey 改动了没被补齐的 key: %q -> %q", got, back)
+	}
+}
+
+// 带前导零的 key 无法与另一个 key 区分开，必须**报错**而不是悄悄撞上去。
+func TestEncodeKeyRejectsLeadingZero(t *testing.T) {
+	c := &Client{opts: Options{KeyPadWidth: 10}}
+	for _, k := range []string{"007", "01", "0000000007"} {
+		if _, err := c.encodeKey(k); !errors.Is(err, ErrLeadingZero) {
+			t.Errorf("encodeKey(%q) 应当报 ErrLeadingZero，实际 %v", k, err)
+		}
+	}
+	// "0" 是零的规范写法，不是前导零
+	if _, err := c.encodeKey("0"); err != nil {
+		t.Errorf("encodeKey(\"0\") 被拒绝了: %v", err)
+	}
+}
+
+// KeyPadNone：原样收发，任何 key 都不动。YCSB 这类本身就定长的 key 用这个。
+func TestKeyPadNonePassesEverythingThrough(t *testing.T) {
+	c := &Client{opts: Options{KeyPadWidth: KeyPadNone}}
+	for _, k := range []string{"0", "007", "7", "user18446744073709551615", ""} {
+		got, err := c.encodeKey(k)
+		if err != nil {
+			t.Errorf("encodeKey(%q): %v", k, err)
+			continue
+		}
+		if got != k || c.decodeKey(got) != k {
+			t.Errorf("KeyPadNone 下 %q 被改动成了 %q/%q", k, got, c.decodeKey(got))
+		}
+	}
+}
+
+// 默认宽度必须与 benchmark 的键空间一致：key 是 strconv.Itoa(i)，十位刚好覆盖到 10^10。
+func TestDefaultsSelectKeyPadWidth(t *testing.T) {
+	var o Options
+	o.defaults()
+	if o.KeyPadWidth != DefaultKeyPadWidth {
+		t.Fatalf("默认 KeyPadWidth = %d，期望 %d（现有 benchmark 工具一行都没改，全靠这个默认值）",
+			o.KeyPadWidth, DefaultKeyPadWidth)
+	}
 }

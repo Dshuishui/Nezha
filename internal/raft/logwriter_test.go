@@ -33,9 +33,10 @@ func entryOf(index uint32, key, val string) *Entry {
 	return &Entry{Index: index, CurrentTerm: 1, VotedFor: 0, Key: key, Value: val}
 }
 
-// recordLen 复现写入端的编码长度：20 字节头 + padding 后的 key + value
+// recordLen 复现写入端的编码长度：20 字节头 + key + value。
+// key 原样写入（存储层不再补齐），所以这里用它本身的长度。
 func recordLen(rf *Raft, e *Entry) int64 {
-	return int64(20 + len(rf.persister.PadKey(e.Key)) + len(e.Value))
+	return int64(20 + len(e.Key) + len(e.Value))
 }
 
 func TestAppendOffsetsAreContiguous(t *testing.T) {
@@ -204,10 +205,10 @@ func TestOverwriteTruncatesStaleTail(t *testing.T) {
 	// follower conflict: overwrite from index 2 with a shorter record; index 3 must disappear
 	w.Offsets = w.Offsets[:1]
 	w.offsetVersions = w.offsetVersions[:1]
-	// 覆盖点 = 第一条记录的末尾。记录 = recordHeader + 补齐后的 key + value，所以 key 那一段
-	// 的宽度必须写成 KeyLength，不能写死（曾写死 10，KeyLength 改成 24 之后偏移落在记录中间，
-	// 恢复读出的是"header 看着像损坏"，测试以 index out of range 崩掉）。
-	firstRecordEnd := w.Offsets[0] + int64(recordHeader) + int64(KeyLength) + int64(len("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+	// 覆盖点 = 第一条记录的末尾。记录 = recordHeader + key + value，key 原样写入，
+	// 所以宽度就是 key 自己的长度——不要写死任何常数（这里曾写死 10，存储层把宽度改成 24
+	// 之后偏移落在记录中间，恢复把尾部读成损坏的 header，测试以 index out of range 崩掉）。
+	firstRecordEnd := w.Offsets[0] + int64(recordHeader) + int64(len("a")) + int64(len("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
 	w.WriteEntryToFile([]*Entry{putEntry(2, 2, "b", "short")}, firstRecordEnd)
 	w.CloseLogFile()
 

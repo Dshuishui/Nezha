@@ -167,20 +167,32 @@ bench_invalid_reason() {
     return 1
 }
 
-# key_width —— 盘上定长 key 的宽度，即 internal/raft/persister.go 里的 KeyLength。
+# key_width —— 盘上定长 key 的宽度。
 #
-# 从 Go 源码解析，不写死。写死过一次（10），2026-09-13 把 KeyLength 改成 24 之后，
+# 存储层已不再补齐 key（原样存、按字节序排），宽度改由**客户端**决定：
+# internal/client 的 DefaultKeyPadWidth。旧工作树里它还是 raft 包的 KeyLength，
+# 对照实验要两边都读得到，所以两个来源都试。
+#
+# 从 Go 源码解析，不写死。写死过一次（10），把宽度改成 24 之后，
 # 六个脚本里十处 `20+10+v` 全部算错：entries_for 少算条数、gcThresholdGB 偏小、
 # SCAN 的 gapkey 跨度偏大——三样都不会报错，只会让实验测的不是想测的东西。
 #
 # 解析失败就直接退出，不给默认值：一个悄悄用错宽度的默认值比跑不起来危险得多。
 key_width() {
-    local src="${BENCH_REPO_DIR:-.}/internal/raft/persister.go" w
-    [ -f "$src" ] || src="$HOME/work/Nezha/internal/raft/persister.go"
-    w=$(sed -n 's/^const KeyLength = \([0-9]*\).*/\1/p' "$src" 2>/dev/null | head -1)
-    [ -n "$w" ] || { echo "读不到 $src 里的 KeyLength" >&2; exit 1; }
+    local src="${BENCH_REPO_DIR:-.}/internal/client/client.go" w
+    [ -f "$src" ] || src="$HOME/work/Nezha/internal/client/client.go"
+    # 必须要求 '=' 和至少一位数字：宽松的模式会先匹配到注释里提到 DefaultKeyPadWidth
+    # 的那一行，捕获出空串，head -1 于是拿到空值。
+    w=$(sed -n 's/^[[:space:]]*DefaultKeyPadWidth[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$src" 2>/dev/null | head -1)
+    if [ -z "$w" ]; then
+        # 旧工作树（存储层还在补齐）里宽度是 raft 包的 KeyLength，对照实验要读得到它
+        w=$(sed -n 's/^const KeyLength = \([0-9]*\).*/\1/p' \
+            "${BENCH_REPO_DIR:-.}/internal/raft/persister.go" 2>/dev/null | head -1)
+    fi
+    [ -n "$w" ] || { echo "读不到定长 key 宽度（client 的 DefaultKeyPadWidth 或 raft 的 KeyLength）" >&2; exit 1; }
     echo "$w"
 }
+
 
 # record_bytes <vsize> —— 一条记录在 valuelog 里占的字节：20 字节头 + 定长 key + value。
 record_bytes() { echo $(( 20 + $(key_width) + ${1:?需要 vsize} )); }

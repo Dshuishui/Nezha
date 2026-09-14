@@ -119,7 +119,7 @@ func writeEntries(t *testing.T, kvs *KVServer, base string, n, valueSize int) *P
 	t.Helper()
 	pw := kvs.newPartitionWriter(base)
 	for i := 0; i < n; i++ {
-		key := kvs.persister.PadKey(fmt.Sprintf("%d", i))
+		key := fmt.Sprintf("%010d", i) // 分区按字节序排，用定长十进制保证字节序=数值序
 		if err := pw.Add(&raft.Entry{Key: key, Value: string(make([]byte, valueSize))}); err != nil {
 			pw.Abort()
 			t.Fatalf("Add(%d): %v", i, err)
@@ -165,7 +165,7 @@ func TestPartitionWriterRollAndLookup(t *testing.T) {
 
 	// 每个 key 都要能通过路由找回来
 	for i := 0; i < n; i++ {
-		key := fmt.Sprintf("%d", i)
+		key := fmt.Sprintf("%010d", i) // 与写入侧同一种编码；存储层不再帮两边归一化
 		got, err := kvs.getFromPartitions(key, ps)
 		if err != nil {
 			t.Fatalf("getFromPartitions(%s): %v", key, err)
@@ -212,7 +212,7 @@ func TestPartitionWriterAbortRemovesFiles(t *testing.T) {
 
 	pw := kvs.newPartitionWriter(base)
 	for i := 0; i < 200; i++ {
-		key := kvs.persister.PadKey(fmt.Sprintf("%d", i))
+		key := fmt.Sprintf("%010d", i) // 分区按字节序排，用定长十进制保证字节序=数值序
 		if err := pw.Add(&raft.Entry{Key: key, Value: string(make([]byte, 100))}); err != nil {
 			t.Fatalf("Add(%d): %v", i, err)
 		}
@@ -257,7 +257,7 @@ func TestPartitionManifestRoundTrip(t *testing.T) {
 		t.Errorf("重建后 %d 个分区; want %d", reloaded.Len(), len(metas))
 	}
 	for i := 0; i < n; i++ {
-		key := fmt.Sprintf("%d", i)
+		key := fmt.Sprintf("%010d", i) // 与写入侧同一种编码；存储层不再帮两边归一化
 		if _, err := kvs.getFromPartitions(key, reloaded); err != nil {
 			t.Fatalf("重建后查不到 key %s: %v", key, err)
 		}
@@ -292,17 +292,17 @@ func TestScanAcrossPartitions(t *testing.T) {
 		t.Errorf("全范围 scan 得到 %d 条; want %d", len(all), n)
 	}
 
-	// 窄范围：只应返回区间内的 key。padding 后按字典序比较，所以直接用 padded 边界取样本
-	sub, err := kvs.scanFromPartitions("10", "12", ps)
+	// 窄范围：只应返回区间内的 key。比较是纯字节序，所以边界也要写成写入时的定长形式
+	sub, err := kvs.scanFromPartitions("0000000010", "0000000012", ps)
 	if err != nil {
 		t.Fatalf("窄范围 scan: %v", err)
 	}
 	if len(sub) == 0 {
 		t.Error("窄范围 scan 不应为空")
 	}
-	loPad, hiPad := kvs.persister.PadKey("10"), kvs.persister.PadKey("12")
+	loPad, hiPad := "0000000010", "0000000012"
 	for k := range sub {
-		p := kvs.persister.PadKey(k)
+		p := k
 		if p < loPad || p > hiPad {
 			t.Errorf("窄范围 scan 返回了区间外的 key %q", k)
 		}

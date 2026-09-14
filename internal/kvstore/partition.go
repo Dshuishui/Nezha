@@ -330,7 +330,7 @@ func (pw *partitionWriter) Add(entry *raft.Entry) error {
 
 	// AVP：小值在预算内预热进内联缓存，读命中即可免去一次文件 seek
 	if len(entry.Value) < pw.kvs.inlineThreshold {
-		pw.inline.Add(pw.kvs.persister.UnpadKey(entry.Key), entry.Value)
+		pw.inline.Add(entry.Key, entry.Value)
 	}
 
 	// 只在 entry 边界滚动，分区因此永远不会从中间截断一条记录

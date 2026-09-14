@@ -21,7 +21,7 @@ func spanFile(t *testing.T, p *Persister, name string, applied int, kv map[strin
 	t.Helper()
 	rows := map[string][]byte{}
 	for k, v := range kv {
-		rows[p.PadKey(k)] = []byte(v)
+		rows[k] = []byte(v)
 	}
 	path := filepath.Join(t.TempDir(), name)
 	if err := p.WriteSpanSST(path, rows, applied); err != nil {

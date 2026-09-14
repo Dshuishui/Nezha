@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// Minimal Raft for writing a log: only the persister (PadKey) and logMu/log handle are needed.
+// Minimal Raft for writing a log: only logMu and the log handle are needed.
 func newLogWriter(t *testing.T, path string, version int32) *Raft {
 	t.Helper()
 	rf := &Raft{persister: &Persister{}}

@@ -262,17 +262,15 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persis
 	defer ro.Destroy()
 
 	result := make(map[string]string)
-	paddedStartKey := kvs.persister.PadKey(startKey)
-	paddedEndKey := kvs.persister.PadKey(endKey)
 
 	// 从RocksDB中获取范围内的key-value对
 	rdb := persister.GetDb()
 	iter := rdb.NewIterator(ro)
 	defer iter.Close()
 
-	for iter.Seek([]byte(paddedStartKey)); iter.Valid(); iter.Next() {
+	for iter.Seek([]byte(startKey)); iter.Valid(); iter.Next() {
 		key := string(iter.Key().Data())
-		if key > paddedEndKey {
+		if key > endKey {
 			break
 		}
 
@@ -282,7 +280,7 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persis
 		if err != nil {
 			return nil, err
 		}
-		originalKey := kvs.persister.UnpadKey(string(key))
+		originalKey := string(key)
 		result[originalKey] = value
 	}
 
@@ -399,7 +397,7 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 			fmt.Println("拿取value有问题")
 			panic(err)
 		}
-		if read_key == kvs.persister.PadKey(key) {
+		if read_key == key {
 			reply.Value = value
 		} else {
 			panic("错乱了，新的rocksdb中的key与index不匹配！！！")
@@ -434,7 +432,7 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 				newFileResult <- searchResult{false, "", err}
 				return
 			}
-			if read_key == kvs.persister.PadKey(key) {
+			if read_key == key {
 				newFileResult <- searchResult{true, value, nil}
 			} else {
 				newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
@@ -457,7 +455,7 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 				oldFileResult <- searchResult{false, "", err}
 				return
 			}
-			if read_key == kvs.persister.PadKey(key) {
+			if read_key == key {
 				oldFileResult <- searchResult{true, value, nil}
 			} else {
 				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in old file")}
@@ -520,7 +518,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 				oldFileResult <- searchResult{false, "", err}
 				return
 			}
-			if read_key == kvs.persister.PadKey(key) {
+			if read_key == key {
 				oldFileResult <- searchResult{true, value, nil}
 			} else {
 				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
@@ -580,7 +578,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 				oldFileResult <- searchResult{false, "", err}
 				return
 			}
-			if read_key == kvs.oldPersister.PadKey(key) {
+			if read_key == key {
 				oldFileResult <- searchResult{true, value, nil}
 			} else {
 				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
@@ -603,7 +601,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 				newFileResult <- searchResult{false, "", err}
 				return
 			}
-			if read_key == kvs.persister.PadKey(key) {
+			if read_key == key {
 				newFileResult <- searchResult{true, value, nil}
 			} else {
 				newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
@@ -669,7 +667,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 			newFileResult <- searchResult{false, "", err}
 			return
 		}
-		if read_key == kvs.persister.PadKey(key) {
+		if read_key == key {
 			newFileResult <- searchResult{true, value, nil}
 		} else {
 			newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
@@ -736,7 +734,7 @@ func (kvs *KVServer) getFromPartitions(key string, ps *PartitionSet) (string, er
 	if ps == nil {
 		return "", errors.New("invalid partition set: set is nil")
 	}
-	part := ps.find(kvs.persister.PadKey(key))
+	part := ps.find(key)
 	if part == nil {
 		// key 比所有分区都小，或落在两个分区之间的空隙里——都等价于这组分区里没有它。
 		// 内联缓存不必在这里查：缓存只由写进某个分区的 entry 填充，被缓存的 key 必然落在
@@ -757,7 +755,7 @@ func (kvs *KVServer) scanFromPartitions(startKey, endKey string, ps *PartitionSe
 	if ps == nil {
 		return nil, nil
 	}
-	parts := ps.overlapping(kvs.persister.PadKey(startKey), kvs.persister.PadKey(endKey))
+	parts := ps.overlapping(startKey, endKey)
 	if len(parts) == 0 {
 		return nil, nil
 	}
@@ -853,15 +851,13 @@ func (kvs *KVServer) scanFromSortedFile(startKey, endKey string, index *SortedFi
 
 // scanFromSortedFileInto 把命中的键值写进调用方给的 map，供跨分区扫描共用一个结果集。
 func (kvs *KVServer) scanFromSortedFileInto(result map[string]string, startKey, endKey string, index *SortedFileIndex) error {
-	paddedStartKey := kvs.persister.PadKey(startKey)
-	paddedEndKey := kvs.persister.PadKey(endKey)
 
 	// 范围查询直接走 sortedFile 顺序读：Entries 已覆盖所有 key（含小值），
 	// 且顺序读本就是范围查询的最优路径。不再遍历内联缓存——那是 O(缓存条目数)，
 	// 与查询范围无关，小值场景下会让窄范围 scan 退化。
 	// 用稀疏索引二分定位扫描起点。原先是从 startKey 起逐个 +1 试探直到命中，
 	// 复杂度随键空间稀疏程度恶化；二分与之无关。
-	startOffset, ok := index.firstBlockAtOrAfter(paddedStartKey)
+	startOffset, ok := index.firstBlockAtOrAfter(startKey)
 	if !ok { // 索引为空，文件里没有数据
 		return nil
 	}
@@ -871,7 +867,7 @@ func (kvs *KVServer) scanFromSortedFileInto(result map[string]string, startKey, 
 	// if !exists {
 	//     // 如果精确的startKey不存在，找到下一个最近的键
 	//     for key, offset := range index.Entries {
-	//         if kvs.persister.PadKey(key) >= paddedStartKey {
+	//         if key >= startKey {
 	//             startOffset = offset
 	//             break
 	//         }
@@ -920,12 +916,12 @@ func (kvs *KVServer) scanFromSortedFileInto(result map[string]string, startKey, 
 			return err
 		}
 
-		if entry.Key > paddedEndKey {
+		if entry.Key > endKey {
 			break // 已经超过了endKey，结束扫描
 		}
 
-		if entry.Key >= paddedStartKey {
-			unpadKey := kvs.persister.UnpadKey(entry.Key)
+		if entry.Key >= startKey {
+			unpadKey := entry.Key
 			result[unpadKey] = entry.Value
 		}
 

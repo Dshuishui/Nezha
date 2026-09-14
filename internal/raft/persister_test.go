@@ -9,117 +9,96 @@ import (
 	"testing"
 )
 
-// PadKey/UnpadKey 的往返行为。
+// 存储层对 key 的契约：原样存、原样返回、按字节序排，唯一的限制是 NUL 开头留给元数据。
 //
-// 这里同时钉住"能还原的"和"还原不了的"。后者是已知局限，写成用例不是认可该行为，
-// 而是让它在被改动时立刻显形——真正修好的那天这些用例会失败，提醒同步更新。
-func TestPadUnpadRoundTrip(t *testing.T) {
-	p := &Persister{}
+// 这一组用例取代了此前钉住 PadKey/UnpadKey 的五个。那五个记录的是**已知缺陷**
+// （前导零撞成一个、超长静默截断、"是否已补齐"的启发式会猜错），注释里写着"真正修好
+// 的那天这些用例会失败"。那天就是现在：编码搬到了 internal/client，存储层不再改写 key，
+// 所以下面断言的是缺陷**不再存在**。
 
-	// 能还原：不含前导零、长度不超过 KeyLength 的 key，加上 "0" 这个特例
-	for _, k := range []string{"0", "1", "9", "42", "1000", "999999999"} {
-		if got := p.UnpadKey(p.PadKey(k)); got != k {
-			t.Errorf("往返失败 key=%q -> padded=%q -> %q", k, p.PadKey(k), got)
+// 前导零曾经会丢：PadKey("007") 与 PadKey("7") 是同一个串，后写的静默覆盖先写的。
+func TestStoreKeepsLeadingZerosDistinct(t *testing.T) {
+	p := newTestPersister(t)
+	p.PutInline("7", "seven")
+	p.PutInline("007", "zero-zero-seven")
+	p.PutInline("0000000007", "padded")
+
+	for key, want := range map[string]string{
+		"7":          "seven",
+		"007":        "zero-zero-seven",
+		"0000000007": "padded",
+	} {
+		got, ok := p.GetInline(key)
+		if !ok {
+			t.Errorf("key %q 读不回来", key)
+			continue
+		}
+		if got != want {
+			t.Errorf("key %q = %q，期望 %q —— 说明这几个 key 又被折叠到同一处了", key, got, want)
 		}
 	}
 }
 
-func TestUnpadKeyZero(t *testing.T) {
-	p := &Persister{}
-	padded := p.PadKey("0")
-	if len(padded) != KeyLength {
-		t.Fatalf("PadKey(\"0\") 长度 %d，期望 %d", len(padded), KeyLength)
-	}
-	// 修复前这里返回空串，key "0" 于是从 SCAN 结果和 sortedFileCache 里消失
-	if got := p.UnpadKey(padded); got != "0" {
-		t.Errorf("UnpadKey(%q) = %q，期望 \"0\"", padded, got)
-	}
-}
-
-// 以下三个用例记录 PadKey 会让不同的 key 落到同一个存储位置的情形。
-// 每一种都会让先写入的 value 被后写入的静默覆盖。
-//
-// 论文实验碰不到：key 由 strconv.Itoa(i) 生成，既无前导零也不超过 10 字符。
-// 但若把 Nezha 当通用 KV 对外提供服务，这三类 key 都会损坏数据。
-// 根治要换填充方案（例如定长排序前缀 + 原始 key），会改动存储格式并波及
-// SCAN、GC、sortedFileCache 所有读路径。
-
-func TestPadKeyLeadingZeroCollides(t *testing.T) {
-	p := &Persister{}
-	// "007" 与 "7" 补齐后是同一个串，原始长度在写入时就丢了
-	if p.PadKey("007") != p.PadKey("7") {
-		t.Errorf("已知局限发生变化：PadKey(\"007\")=%q 与 PadKey(\"7\")=%q 不再相同；"+
-			"若已换掉填充方案，请把本用例改为断言两者不同",
-			p.PadKey("007"), p.PadKey("7"))
-	}
-	// 取回来只会是去掉前导零的那个
-	if got := p.UnpadKey(p.PadKey("007")); got != "7" {
-		t.Errorf("已知局限发生变化：UnpadKey(PadKey(\"007\")) = %q，此前为 \"7\"", got)
-	}
-}
-
-func TestPadKeyTruncatesLongKeys(t *testing.T) {
-	p := &Persister{}
-	// 超过 KeyLength 的 key 被截断，于是只有前 KeyLength 个字符参与区分——
-	// 前缀相同、仅在第 KeyLength+1 个字符之后不同的 key 全部撞到同一个存储位置。
-	//
-	// 用例数据必须从 KeyLength 派生：写死成 10 位时代的字面量，改大常量之后这两个 key
-	// 不再超长，用例会以"用例失效"自我作废而不是检验行为。
-	shared := "user_" + strings.Repeat("x", KeyLength-len("user_"))
+// 超长的 key 曾被截断到 KeyLength，前缀相同的 key 于是互相覆盖，且一个错都不报。
+// 标准 YCSB 的 key（"user" + 64 位哈希，最长 24 字符）正是这种。
+func TestStoreDoesNotTruncateLongKeys(t *testing.T) {
+	p := newTestPersister(t)
+	shared := "user" + strings.Repeat("9", 30)
 	a, b := shared+"_profile", shared+"_settings"
-	if len(a) <= KeyLength || len(b) <= KeyLength {
-		t.Fatalf("用例失效：%q/%q 未超过 KeyLength=%d", a, b, KeyLength)
+	p.PutInline(a, "A")
+	p.PutInline(b, "B")
+
+	if v, ok := p.GetInline(a); !ok || v != "A" {
+		t.Errorf("长 key a 读回 %q/%v，期望 \"A\"/true", v, ok)
 	}
-	if a[:KeyLength] != b[:KeyLength] {
-		t.Fatalf("用例失效：两个 key 的前 %d 个字符本就不同", KeyLength)
+	if v, ok := p.GetInline(b); !ok || v != "B" {
+		t.Errorf("长 key b 读回 %q/%v，期望 \"B\"/true —— 前 24 字符相同的 key 又撞上了", v, ok)
 	}
-	if p.PadKey(a) != p.PadKey(b) {
-		t.Errorf("已知局限发生变化：PadKey(%q)=%q 与 PadKey(%q)=%q 不再相同；"+
-			"若已改为拒绝超长 key 或保留完整 key，请更新本用例",
-			a, p.PadKey(a), b, p.PadKey(b))
+
+	// 最长的一种 YCSB key
+	ycsb := fmt.Sprintf("user%d", uint64(math.MaxUint64))
+	if len(ycsb) != 24 {
+		t.Fatalf("用例假设失效：最长的 YCSB key %q 是 %d 字符", ycsb, len(ycsb))
+	}
+	p.PutInline(ycsb, "ycsb")
+	if v, ok := p.GetInline(ycsb); !ok || v != "ycsb" {
+		t.Errorf("YCSB key 读回 %q/%v", v, ok)
 	}
 }
 
-// KeyLength 必须容得下 YCSB 的 key，否则 YCSB 工作负载会静默丢数据。
-//
-// go-ycsb 的 key 是 "user" 加一个 64 位哈希的十进制表示，最长 4+19 = 23 字符。
-// KeyLength 曾是 10：这些 key 被 PadKey 截断成 "user" 加 6 位数字，几万条之后就开始
-// 互相覆盖，而且截断不报任何错——一次读返回 NOKEY 或别人的 value，无从察觉。
-// 这个用例钉住"截断不会发生"，改小 KeyLength 会让它失败。
-func TestPadKeyFitsYCSBKeys(t *testing.T) {
-	p := &Persister{}
-	// 哈希取满 64 位无符号的最大值，得到最长的那种 key
-	longest := fmt.Sprintf("user%d", uint64(math.MaxUint64))
-	if len(longest) != 24 {
-		t.Fatalf("用例假设失效：最长的 YCSB key %q 是 %d 字符，此前认定为 24", longest, len(longest))
-	}
-	if len(longest) > KeyLength {
-		t.Fatalf("KeyLength=%d 容不下最长的 YCSB key（%d 字符）：PadKey 会静默截断，"+
-			"YCSB 负载下会有 key 互相覆盖", KeyLength, len(longest))
-	}
-	// key 以 "user" 开头、不以 0 开头，所以左补零可逆
-	for _, k := range []string{"user1", "user6284781860667377211", longest} {
-		padded := p.PadKey(k)
-		if len(padded) != KeyLength {
-			t.Errorf("PadKey(%q) 长度 %d，期望 %d", k, len(padded), KeyLength)
+// 唯一的限制：NUL 开头留给元数据（applied index 与用户数据同库，靠首字节区分）。
+// 这一条是**显式报错**，不是静默改写——静默改写正是被修掉的那个缺陷的形态。
+func TestValidateKeyReservesMetaPrefix(t *testing.T) {
+	for _, k := range []string{"\x00", "\x00applied_index", "\x00anything"} {
+		if err := ValidateKey(k); err == nil {
+			t.Errorf("key %q 以 NUL 开头，应当被拒绝", k)
 		}
-		if got := p.UnpadKey(padded); got != k {
-			t.Errorf("往返失败 key=%q -> padded=%q -> %q", k, padded, got)
+	}
+	for _, k := range []string{"", "0", "007", "user1", strings.Repeat("x", 500)} {
+		if err := ValidateKey(k); err != nil {
+			t.Errorf("key %q 被拒绝了: %v", k, err)
 		}
 	}
 }
 
-func TestPadKeyMisreadsAlreadyPaddedKeys(t *testing.T) {
-	p := &Persister{}
-	// 长度恰好等于 KeyLength 且以足够多 0 开头的 key，会被判定为"已经补齐过"
-	// 而原样返回，跳过补齐逻辑。对于本就该被补齐的用户 key，这是误判。
-	k := strings.Repeat("0", KeyLength-4) + "1234"
-	if len(k) != KeyLength {
-		t.Fatalf("用例失效：%q 长度不等于 KeyLength=%d", k, KeyLength)
+// 范围扫描不能把元数据那一行当成用户数据返回。key 原样存之后，一个很小的 startKey
+// 会让迭代器落到库首，元数据就在那里。
+func TestScanSkipsMetaRow(t *testing.T) {
+	p := newTestPersister(t)
+	p.PutValueApplied("a", "1", 5)
+	p.PutValueApplied("b", "2", 6)
+
+	rows, err := p.ScanRange("", "z")
+	if err != nil {
+		t.Fatalf("ScanRange: %v", err)
 	}
-	if p.PadKey(k) != k {
-		t.Errorf("已知局限发生变化：PadKey(%q) = %q，此前原样返回；"+
-			"若已去掉已填充判定，请更新本用例", k, p.PadKey(k))
+	if len(rows) != 2 {
+		t.Fatalf("扫到 %d 行 %v，期望只有 a/b 两行用户数据", len(rows), rows)
+	}
+	for k := range rows {
+		if IsMetaKey([]byte(k)) {
+			t.Errorf("元数据行 %q 被当成用户数据返回了", k)
+		}
 	}
 }
 
@@ -221,7 +200,7 @@ func TestAppliedIndexTravelsWithData(t *testing.T) {
 		t.Fatalf("inline row: %q/%v", v, ok)
 	}
 	// the metadata key must never look like user data to a scan
-	if !IsMetaKey([]byte(appliedIndexKey)) || IsMetaKey([]byte(p.PadKey("1"))) {
+	if !IsMetaKey([]byte(appliedIndexKey)) || IsMetaKey([]byte("1")) {
 		t.Fatal("IsMetaKey misclassifies keys")
 	}
 }

@@ -52,12 +52,12 @@ func NewSparseIndexBuilder(blockBytes int64) *SparseIndexBuilder {
 // 4KB 下 SCAN 与稠密 map 持平，是内存与读代价的合理折中。
 const defaultIndexBlockBytes = 4 * 1024
 
-// Observe 记录一条刚写入的 entry。paddedKey 必须是写进文件的那个 key（已 padding），
+// Observe 记录一条刚写入的 entry。key 必须是写进文件的那个 key（已 padding），
 // offset 是它的起始偏移，size 是它占用的字节数。
-func (b *SparseIndexBuilder) Observe(paddedKey string, offset int64, size int64) {
+func (b *SparseIndexBuilder) Observe(key string, offset int64, size int64) {
 	// 第一条永远建立索引点，保证 Sparse[0] 是文件中最小的 key
 	if !b.started || b.sinceLast >= b.blockBytes {
-		b.entries = append(b.entries, SparseEntry{PaddedKey: paddedKey, Offset: offset})
+		b.entries = append(b.entries, SparseEntry{PaddedKey: key, Offset: offset})
 		b.sinceLast = 0
 		b.started = true
 	}
@@ -68,15 +68,15 @@ func (b *SparseIndexBuilder) Build() []SparseEntry {
 	return b.entries
 }
 
-// blockRange 返回可能包含 paddedKey 的块区间 [start, end)。
-// paddedKey 小于文件中所有 key 时返回 ok=false。
-func (sfi *SortedFileIndex) blockRange(paddedKey string) (start, end int64, ok bool) {
+// blockRange 返回可能包含 key 的块区间 [start, end)。
+// key 小于文件中所有 key 时返回 ok=false。
+func (sfi *SortedFileIndex) blockRange(key string) (start, end int64, ok bool) {
 	n := len(sfi.Sparse)
 	if n == 0 {
 		return 0, 0, false
 	}
-	// 最后一个 PaddedKey <= paddedKey 的块
-	i := sort.Search(n, func(j int) bool { return sfi.Sparse[j].PaddedKey > paddedKey }) - 1
+	// 最后一个 PaddedKey <= key 的块
+	i := sort.Search(n, func(j int) bool { return sfi.Sparse[j].PaddedKey > key }) - 1
 	if i < 0 {
 		return 0, 0, false
 	}
@@ -88,22 +88,22 @@ func (sfi *SortedFileIndex) blockRange(paddedKey string) (start, end int64, ok b
 	return start, end, true
 }
 
-// firstBlockAtOrAfter 返回第一个可能含有 >= paddedKey 的块的起始偏移。
-// 供范围查询定位扫描起点：即使 paddedKey 本身不存在也能给出正确的起点。
-func (sfi *SortedFileIndex) firstBlockAtOrAfter(paddedKey string) (int64, bool) {
+// firstBlockAtOrAfter 返回第一个可能含有 >= key 的块的起始偏移。
+// 供范围查询定位扫描起点：即使 key 本身不存在也能给出正确的起点。
+func (sfi *SortedFileIndex) firstBlockAtOrAfter(key string) (int64, bool) {
 	if len(sfi.Sparse) == 0 {
 		return 0, false
 	}
-	if start, _, ok := sfi.blockRange(paddedKey); ok {
+	if start, _, ok := sfi.blockRange(key); ok {
 		return start, true
 	}
-	// paddedKey 比文件中所有 key 都小，从头开始扫
+	// key 比文件中所有 key 都小，从头开始扫
 	return sfi.Sparse[0].Offset, true
 }
 
-// scanBlock 在 [start, end) 内顺序查找 paddedKey。
+// scanBlock 在 [start, end) 内顺序查找 key。
 // 找到返回其 entry；块内 key 已超过目标说明不存在，返回 raft.ErrNoKey。
-func (kvs *KVServer) scanBlock(index *SortedFileIndex, paddedKey string, start, end int64) (*raft.Entry, error) {
+func (kvs *KVServer) scanBlock(index *SortedFileIndex, key string, start, end int64) (*raft.Entry, error) {
 	file, err := os.Open(index.FilePath)
 	if err != nil {
 		return nil, err
@@ -128,11 +128,11 @@ func (kvs *KVServer) scanBlock(index *SortedFileIndex, paddedKey string, start, 
 		}
 		scanned++
 		_ = size
-		if entry.Key == paddedKey {
+		if entry.Key == key {
 			avpRecordScan(scanned, end-start)
 			return entry, nil
 		}
-		if entry.Key > paddedKey { // 已越过目标，块内有序，后面不可能再有
+		if entry.Key > key { // 已越过目标，块内有序，后面不可能再有
 			break
 		}
 	}
@@ -145,12 +145,11 @@ func (kvs *KVServer) lookupInSortedFile(index *SortedFileIndex, key string) (*ra
 	if index == nil {
 		return nil, errors.New("invalid index: index is nil")
 	}
-	paddedKey := kvs.persister.PadKey(key)
-	start, end, ok := index.blockRange(paddedKey)
+	start, end, ok := index.blockRange(key)
 	if !ok {
 		return nil, ErrKeyAbsent
 	}
-	return kvs.scanBlock(index, paddedKey, start, end)
+	return kvs.scanBlock(index, key, start, end)
 }
 
 // BuildSparseIndex 扫描整个 sortedFile 重建稀疏索引（进程重启或索引重建时使用）。

@@ -86,7 +86,7 @@ run after  "$REPO"      "$PARTITION_MB"
 info "统计每格丢失的 key"
 {
   for tag in before after; do
-    # 记录宽度必须取**那一侧代码**的 KeyLength：改进前的工作树可能还是 10，
+    # 记录宽度必须取**那一侧代码**的定长宽度：改进前的工作树里它是 raft 包的 KeyLength，
     # 拿改进后的 24 去算条数，before 那半边全部对不上。
     [ "$tag" = before ] && tree="$BASE_TREE" || tree="$REPO"
     for sys in nezha nezha-avp; do for vs in $VSIZES; do for r in $(seq 1 "$ROUNDS"); do

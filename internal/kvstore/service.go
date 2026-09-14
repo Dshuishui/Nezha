@@ -206,6 +206,14 @@ func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) 
 }
 
 func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) (*kvrpc.PutInRaftResponse, error) {
+	// 校验放在进入 Raft 之前：一个存不下的 key 不该先被复制到多数派、再在 apply 时
+	// 出问题。存储层原样存 key，唯一的限制是 NUL 开头留给元数据（raft.ValidateKey）。
+	// 此前这里没有校验，而存储层会**静默改写**不合规的 key——超长的截断、带前导零的
+	// 与另一个 key 撞在一起，两种都不报错。
+	if err := raft.ValidateKey(in.GetKey()); err != nil {
+		fmt.Printf("[PUT] 拒绝 key: %v\n", err)
+		return &kvrpc.PutInRaftResponse{Err: raft.ErrInvalidKey}, nil
+	}
 	// fmt.Println("走到了server端的put函数"
 	// startTime := time.Now() // 总开始时间
 	reply := kvs.StartPut(in)

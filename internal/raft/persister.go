@@ -11,73 +11,52 @@ import (
 
 	"github.com/linxGnu/grocksdb"
 
-	"strings"
 	"sync"
 	// "strconv"
 )
 
-// KeyLength 是 key 在盘上的定长宽度。PadKey 左补零到这个宽度，于是字典序等于数值序，
-// 有序文件和稀疏索引才能靠字节比较定位。
+// 存储层把 key 当作不透明的字节串：原样写入、原样返回，迭代顺序就是字节序。
+// 这是 RocksDB / LevelDB / TiKV 的契约，**也是这里刚刚改成的契约**。
 //
-// 取 24 是为了容下 YCSB：go-ycsb 的 key 是 "user" 加一个 64 位哈希的十进制表示，
-// 最长 4+19 = 23 字符。此前是 10，超长的 key 会被 PadKey **静默截断**（见下），
-// 于是 YCSB 的 key 只有前 10 个字符参与区分——"user" 加 6 位数字，几万条就开始互相
-// 覆盖，而且一个错都不报。24 留一位余量，且仍是 8 的倍数。
+// 此前存储层会把每个 key 左补 '0' 到 KeyLength（曾是 10，后为 24）再存，取出时
+// TrimLeft 掉前导零。那个编码只在"key 是十进制整数"这个定义域上成立：
 //
-// 改这个常量会改变盘上的记录长度（每条记录 = 20 字节头 + KeyLength + value），
-// 因此**所有放大率数字都会平移**，旧数据目录也读不了。换值之后 results/ 下的放大率
-// 归档必须重跑才能与新数字比较。
-const KeyLength = 24
+//   - "7" 与 "007" 补齐后是同一个串，原始长度在写入时就丢了，后写的静默覆盖先写的；
+//   - 超过 KeyLength 的 key 被**截断**，前 KeyLength 个字符相同的 key 全部撞在一起，
+//     一个错都不报——标准 YCSB 的 key（"user" + 64 位哈希，最长 24 字符）正是这种。
+//
+// 把宽度从 10 调到 24 只是把悬崖往后推，没有取消它。真正的修法是把编码交回调用方：
+// 想让范围查询有**数值**语义，就由调用方把整数编码成定长字节串（见 internal/client 的
+// KeyPadWidth）。在"定长十进制"这个定义域里补零是单射的、可逆的；在任意字符串上不是。
+//
+// 记录格式本来就支持变长 key——20 字节头里带着 keySize，recover.go 就是按它步进的，
+// 所以这个改动不需要动盘上格式。
+
+// ReservedKeyPrefix 是元数据占用的首字节。恢复用的 applied index 与用户数据同库，
+// 靠首字节 0x00 区分（见 IsMetaKey），所以用户 key 不能以它开头。
+const ReservedKeyPrefix = byte(0)
+
+// ErrReservedKey 表示 key 落在存储层保留的命名空间里。
+var ErrReservedKey = errors.New("key must not start with a NUL byte: that prefix is reserved for store metadata")
+
+// ValidateKey 检查一个用户 key 能否安全存储。
+//
+// 只有一条限制，而且是显式报错而不是静默改写——静默改写正是此前那个 bug 的形态。
+func ValidateKey(key string) error {
+	if len(key) > 0 && key[0] == ReservedKeyPrefix {
+		return ErrReservedKey
+	}
+	return nil
+}
 
 var ErrKeyNotFound = errors.New("key not found")
 
-// var ErrNoKey = "NOKEY"
-
 type Persister struct {
-	// db *leveldb.DB
 	db   *grocksdb.DB
 	ro   *grocksdb.ReadOptions
 	wo   *grocksdb.WriteOptions
 	muRO sync.Mutex
 	muWO sync.Mutex
-}
-
-// PadKey 函数用于将给定的键填充到指定长度
-func (p *Persister) PadKey(key string) string {
-	// 检查键是否已经被填充：
-	// 1、首先检查键的长度是否已经等于 KeyLength。
-	// 2、如果长度相等，再检查是否以足够数量的 "0" 开头，这表明键可能已经被填充过。
-	if len(key) == KeyLength && strings.HasPrefix(key, strings.Repeat("0", KeyLength-4)) {
-		// 键已经被填充，直接返回
-		return key
-	}
-
-	if len(key) > KeyLength {
-		// 如果键长度超过指定长度，进行截断
-		return key[:KeyLength]
-	}
-
-	// 使用0在左侧填充
-	return fmt.Sprintf("%0*s", KeyLength, key)
-}
-
-// UnpadKey 去除键的填充。
-//
-// 已知局限：PadKey 是有损的——"0"、"00"、"000" 补齐后是同一个串，原始长度在
-// 写入时就丢了，这里无从还原。因此本函数只对"不含前导零的 key"成立，另加
-// key=="0" 这一个能判定的特例（全零串只可能来自它）。
-//
-// 换句话说 "007" 存进去、取出来会变成 "7"。要根治得换掉填充方案（例如用 0x00
-// 填充，它不会与十进制 key 的字符集相撞，且左填充的排序性质不变），那会改动
-// 存储格式并波及 SCAN、GC、sortedFileCache 所有读路径，不在本次修复范围内。
-func (p *Persister) UnpadKey(paddedKey string) string {
-	unpadded := strings.TrimLeft(paddedKey, "0")
-	if unpadded == "" && paddedKey != "" {
-		// 全零串：唯一可能的原始 key 就是 "0"。剥光后返回空串会让这个 key
-		// 在 SCAN 结果和 sortedFileCache 里彻底失踪。
-		return "0"
-	}
-	return unpadded
 }
 
 // disableWAL 关掉存储引擎自己的预写日志，供 PASV 使用。
@@ -195,11 +174,10 @@ func (p *Persister) Put_opt(key string, value int64) {
 	valueBytes := make([]byte, 9)
 	valueBytes[0] = TagOffset
 	binary.LittleEndian.PutUint64(valueBytes[1:], uint64(value))
-	paddedKey := p.PadKey(key)
 
 	p.muWO.Lock()
 	defer p.muWO.Unlock()
-	err := p.db.Put(p.wo, []byte(paddedKey), valueBytes)
+	err := p.db.Put(p.wo, []byte(key), valueBytes)
 	if err != nil {
 		util.EPrintf("Put key %v value ** failed, err: %v", key, err)
 	}
@@ -209,12 +187,9 @@ func (p *Persister) Put(key string, value string) {
 	// 不要创建新的 wo，使用对象中已经配置好的
 	// wo := grocksdb.NewDefaultWriteOptions()
 	// defer wo.Destroy()
-
-	paddedKey := p.PadKey(key)
-
 	p.muWO.Lock()
 	defer p.muWO.Unlock()
-	err := p.db.Put(p.wo, []byte(paddedKey), []byte(value))
+	err := p.db.Put(p.wo, []byte(key), []byte(value))
 	if err != nil {
 		util.EPrintf("Put key %v value ** failed, err: %v", key, err)
 	}
@@ -227,11 +202,10 @@ func (p *Persister) PutInline(key string, value string) {
 	buf := make([]byte, 1+len(value))
 	buf[0] = TagInline
 	copy(buf[1:], value)
-	paddedKey := p.PadKey(key)
 
 	p.muWO.Lock()
 	defer p.muWO.Unlock()
-	if err := p.db.Put(p.wo, []byte(paddedKey), buf); err != nil {
+	if err := p.db.Put(p.wo, []byte(key), buf); err != nil {
 		util.EPrintf("PutInline key %v failed, err: %v", key, err)
 	}
 }
@@ -242,7 +216,7 @@ func (p *Persister) GetInline(key string) (string, bool) {
 	ro := grocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
-	slice, err := p.db.Get(ro, []byte(p.PadKey(key)))
+	slice, err := p.db.Get(ro, []byte(key))
 	if err != nil {
 		return "", false
 	}
@@ -261,11 +235,9 @@ func (p *Persister) Get_opt(key string) (int64, error) {
 	ro := grocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
-	paddedKey := p.PadKey(key)
-	// fmt.Printf("Attempting to get key: %s (padded: %s)\n", key, paddedKey)
 	// p.muRO.Lock()
 	// defer p.muRO.Unlock()
-	slice, err := p.db.Get(ro, []byte(paddedKey))
+	slice, err := p.db.Get(ro, []byte(key))
 	if err != nil {
 		util.EPrintf("Get key %s failed, err: %s", key, err)
 		return 0, err
@@ -292,10 +264,9 @@ func (p *Persister) Get(key string) (string, error) {
 	ro := grocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
-	paddedKey := p.PadKey(key)
 	// p.muRO.Lock()
 	// defer p.muRO.Unlock()
-	slice, err := p.db.Get(ro, []byte(paddedKey))
+	slice, err := p.db.Get(ro, []byte(key))
 	if err != nil {
 		util.EPrintf("Get key %s failed, err: %s", key, err)
 		return "", err
@@ -316,21 +287,21 @@ func (p *Persister) ScanRange_opt(startKey, endKey string) (map[string]int64, er
 	defer ro.Destroy()
 	result := make(map[string]int64)
 
-	paddedStartKey := p.PadKey(startKey)
-	paddedEndKey := p.PadKey(endKey)
-
 	it := p.db.NewIterator(ro)
 	defer it.Close()
 
-	for it.Seek([]byte(paddedStartKey)); it.Valid(); it.Next() { // Valid判断键是否存在，不存在就直接下一个
+	for it.Seek([]byte(startKey)); it.Valid(); it.Next() { // Valid判断键是否存在，不存在就直接下一个
 		key := it.Key()
 		value := it.Value()
 		defer key.Free()
 		defer value.Free()
 
 		// 检查是否超出范围
-		if string(key.Data()) > paddedEndKey {
+		if string(key.Data()) > endKey {
 			break
+		}
+		if IsMetaKey(key.Data()) { // 恢复用的 applied index，不是用户数据
+			continue
 		}
 
 		// 解析值
@@ -339,9 +310,7 @@ func (p *Persister) ScanRange_opt(startKey, endKey string) (map[string]int64, er
 			return nil, fmt.Errorf("error parsing value: %v", err)
 		}
 
-		// 存储去除填充的键
-		originalKey := p.UnpadKey(string(key.Data()))
-		result[originalKey] = valueInt64
+		result[string(key.Data())] = valueInt64
 	}
 
 	if err := it.Err(); err != nil {
@@ -368,30 +337,29 @@ func (p *Persister) ScanRange(startKey, endKey string) (map[string]string, error
 	defer ro.Destroy()
 	result := make(map[string]string)
 
-	paddedStartKey := p.PadKey(startKey)
-	paddedEndKey := p.PadKey(endKey)
-	// fmt.Printf("startkey:%v,endkey:%v\n", paddedStartKey, paddedEndKey)
+	// fmt.Printf("startkey:%v,endkey:%v\n", startKey, endKey)
 
 	it := p.db.NewIterator(ro)
 	defer it.Close()
 
-	for it.Seek([]byte(paddedStartKey)); it.Valid(); it.Next() {
+	for it.Seek([]byte(startKey)); it.Valid(); it.Next() {
 		key := it.Key()
 		value := it.Value()
 		defer key.Free()
 		defer value.Free()
 
 		// 检查是否超出范围
-		if string(key.Data()) > paddedEndKey {
+		if string(key.Data()) > endKey {
 			break
+		}
+		if IsMetaKey(key.Data()) { // 恢复用的 applied index，不是用户数据
+			continue
 		}
 
 		// 直接使用字符串值
 		valueString := string(value.Data())
 
-		// 存储去除填充的键
-		originalKey := p.UnpadKey(string(key.Data()))
-		result[originalKey] = valueString
+		result[string(key.Data())] = valueString
 	}
 
 	if err := it.Err(); err != nil {
@@ -408,7 +376,7 @@ func (p *Persister) ScanRange(startKey, endKey string) (map[string]string, error
 // entry. One WriteBatch gives RocksDB atomicity, and under -syncWAL the marker has the same
 // durability as the data at no extra fsync.
 //
-// The key starts with 0x00. PadKey only ever produces printable keys, so there is no
+// The key starts with 0x00, which ValidateKey refuses for user keys, so there is no
 // collision; GC's full-store iteration and range scans skip it (see IsMetaKey).
 const appliedIndexKey = "\x00applied_index"
 
@@ -424,11 +392,11 @@ func encodeApplied(applied int) []byte {
 }
 
 // writeWithApplied writes one data row and the applied index in a single WriteBatch.
-func (p *Persister) writeWithApplied(paddedKey []byte, value []byte, applied int) error {
+func (p *Persister) writeWithApplied(key []byte, value []byte, applied int) error {
 	wb := grocksdb.NewWriteBatch()
 	defer wb.Destroy()
-	if paddedKey != nil {
-		wb.Put(paddedKey, value)
+	if key != nil {
+		wb.Put(key, value)
 	}
 	wb.Put([]byte(appliedIndexKey), encodeApplied(applied))
 	p.muWO.Lock()
@@ -441,7 +409,7 @@ func (p *Persister) PutOffsetApplied(key string, offset int64, applied int) {
 	valueBytes := make([]byte, 9)
 	valueBytes[0] = TagOffset
 	binary.LittleEndian.PutUint64(valueBytes[1:], uint64(offset))
-	if err := p.writeWithApplied([]byte(p.PadKey(key)), valueBytes, applied); err != nil {
+	if err := p.writeWithApplied([]byte(key), valueBytes, applied); err != nil {
 		util.EPrintf("PutOffsetApplied key %v failed, err: %v", key, err)
 	}
 }
@@ -451,14 +419,14 @@ func (p *Persister) PutInlineApplied(key string, value string, applied int) {
 	buf := make([]byte, 1+len(value))
 	buf[0] = TagInline
 	copy(buf[1:], value)
-	if err := p.writeWithApplied([]byte(p.PadKey(key)), buf, applied); err != nil {
+	if err := p.writeWithApplied([]byte(key), buf, applied); err != nil {
 		util.EPrintf("PutInlineApplied key %v failed, err: %v", key, err)
 	}
 }
 
 // PutValueApplied is Put (baseline: the value itself goes into the store) plus the applied index.
 func (p *Persister) PutValueApplied(key string, value string, applied int) {
-	if err := p.writeWithApplied([]byte(p.PadKey(key)), []byte(value), applied); err != nil {
+	if err := p.writeWithApplied([]byte(key), []byte(value), applied); err != nil {
 		util.EPrintf("PutValueApplied key %v failed, err: %v", key, err)
 	}
 }

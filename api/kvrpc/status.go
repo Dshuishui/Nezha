@@ -13,5 +13,9 @@ const (
 	// an unrecognised Err as an error (see internal/client.Get), so this needs no change
 	// on their side.
 	ErrInternal = "ErrInternal" // the read failed; the key's existence is unknown
-	NoKey       = "NOKEY"       // Value returned with ErrNoKey
+	// ErrInvalidKey rejects a key the store cannot represent, rather than silently
+	// rewriting it. The store reserves keys starting with a NUL byte for its own
+	// metadata; everything else is stored verbatim (see raft.ValidateKey).
+	ErrInvalidKey = "ErrInvalidKey"
+	NoKey         = "NOKEY" // Value returned with ErrNoKey
 )

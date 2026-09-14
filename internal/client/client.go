@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -29,6 +30,68 @@ type Options struct {
 	PutTimeout  time.Duration // default 120 s: a Put waits for the apply callback
 	GetTimeout  time.Duration // default 60 s
 	ScanTimeout time.Duration // default 600 s: full-range scans can be large
+
+	// KeyPadWidth left-pads decimal keys with '0' to this width before sending them.
+	//
+	// The store keeps keys verbatim and orders them bytewise, which is the contract every
+	// ordered KV store offers (RocksDB, LevelDB, TiKV). Bytewise order is not numeric
+	// order — "10" sorts before "9" — so a workload whose keys are integers and whose
+	// scans mean numeric ranges has to encode them itself. That encoding lives here, in
+	// one place, rather than in the store: it is only injective on integers, and the
+	// store must not assume its keys are integers. Applying it there is what silently
+	// merged "7" with "007" and truncated anything past KeyLength.
+	//
+	// 0 selects DefaultKeyPadWidth, which keeps every existing benchmark tool working
+	// unchanged. Set KeyPadNone for keys that are already order-preserving or not
+	// numeric at all — YCSB's "user"+hash keys, for instance.
+	KeyPadWidth int
+}
+
+const (
+	// DefaultKeyPadWidth covers the benchmark key space: keys are strconv.Itoa(i) for
+	// i < 10^10, so ten digits order correctly and match the width the store used to
+	// pad to internally.
+	DefaultKeyPadWidth = 10
+	// KeyPadNone sends keys exactly as given.
+	KeyPadNone = -1
+)
+
+// ErrLeadingZero rejects a key the padding could not tell apart from another one.
+//
+// Padding is injective only on canonical decimal integers: "7" and "007" pad to the same
+// ten-character string, and nothing downstream can separate them again. Refusing the
+// non-canonical form is what makes the encoding lossless, instead of merely documented as
+// lossy — that documentation is exactly what the old storage-layer padding had.
+var ErrLeadingZero = errors.New("client: key has a leading zero, which the fixed-width encoding cannot represent distinctly (use KeyPadNone to send keys verbatim)")
+
+// encodeKey applies KeyPadWidth. It never truncates: a key at least as long as the width
+// goes out untouched, so a wider key is stored in full rather than silently cut short.
+func (c *Client) encodeKey(key string) (string, error) {
+	w := c.opts.KeyPadWidth
+	if w <= 0 {
+		return key, nil
+	}
+	if len(key) > 1 && key[0] == '0' {
+		return "", ErrLeadingZero
+	}
+	if len(key) >= w {
+		return key, nil
+	}
+	return strings.Repeat("0", w-len(key)) + key, nil
+}
+
+// decodeKey undoes encodeKey. Only a key of exactly the padded width can have been padded
+// by us, so anything else is returned as it came back.
+func (c *Client) decodeKey(key string) string {
+	w := c.opts.KeyPadWidth
+	if w <= 0 || len(key) != w {
+		return key
+	}
+	trimmed := strings.TrimLeft(key, "0")
+	if trimmed == "" {
+		return "0" // an all-zero string can only have come from "0"
+	}
+	return trimmed
 }
 
 func (o *Options) defaults() {
@@ -49,6 +112,9 @@ func (o *Options) defaults() {
 	}
 	if o.ScanTimeout == 0 {
 		o.ScanTimeout = 600 * time.Second
+	}
+	if o.KeyPadWidth == 0 {
+		o.KeyPadWidth = DefaultKeyPadWidth
 	}
 }
 
@@ -147,6 +213,10 @@ func (c *Client) call(server int, timeout time.Duration, fn func(ctx context.Con
 // the leader sent it (Err is OK, or a server-side failure string such as "defeat");
 // transport errors and timeouts come back as err.
 func (c *Client) Put(key, value string) (*kvrpc.PutInRaftResponse, error) {
+	key, err := c.encodeKey(key)
+	if err != nil {
+		return nil, err
+	}
 	req := &kvrpc.PutInRaftRequest{Key: key, Value: value, Op: "Put", ClientId: c.clientID, SeqId: c.NextSeq()}
 	target := c.Leader()
 	for {
@@ -190,9 +260,13 @@ func (c *Client) Get(key string) (value string, found bool, err error) {
 // GetFrom reads key from one specific server without following redirects. Verification
 // tools use it to inspect a follower's local state.
 func (c *Client) GetFrom(server int, key string) (*kvrpc.GetInRaftResponse, error) {
+	key, err := c.encodeKey(key)
+	if err != nil {
+		return nil, err
+	}
 	req := &kvrpc.GetInRaftRequest{Key: key, ClientId: c.clientID, SeqId: c.NextSeq()}
 	var reply *kvrpc.GetInRaftResponse
-	err := c.call(server, c.opts.GetTimeout, func(ctx context.Context, kv kvrpc.KVClient) (e error) {
+	err = c.call(server, c.opts.GetTimeout, func(ctx context.Context, kv kvrpc.KVClient) (e error) {
 		reply, e = kv.GetInRaft(ctx, req)
 		return
 	})
@@ -216,13 +290,33 @@ func (c *Client) Scan(start, end string) (*kvrpc.ScanRangeResponse, error) {
 }
 
 // ScanFrom scans one specific server without following redirects.
+//
+// Both bounds go through encodeKey and the returned keys come back through decodeKey, so a
+// caller working in unpadded integers sees unpadded integers. Encoding the bounds is what
+// makes the range mean what the caller meant: the store compares bytes, and "9" > "10"
+// bytewise.
 func (c *Client) ScanFrom(server int, start, end string) (*kvrpc.ScanRangeResponse, error) {
+	start, err := c.encodeKey(start)
+	if err != nil {
+		return nil, err
+	}
+	end, err = c.encodeKey(end)
+	if err != nil {
+		return nil, err
+	}
 	req := &kvrpc.ScanRangeRequest{StartKey: start, EndKey: end}
 	var reply *kvrpc.ScanRangeResponse
-	err := c.call(server, c.opts.ScanTimeout, func(ctx context.Context, kv kvrpc.KVClient) (e error) {
+	err = c.call(server, c.opts.ScanTimeout, func(ctx context.Context, kv kvrpc.KVClient) (e error) {
 		reply, e = kv.ScanRangeInRaft(ctx, req)
 		return
 	})
+	if reply != nil && len(reply.KeyValuePairs) > 0 && c.opts.KeyPadWidth > 0 {
+		decoded := make(map[string]string, len(reply.KeyValuePairs))
+		for k, v := range reply.KeyValuePairs {
+			decoded[c.decodeKey(k)] = v
+		}
+		reply.KeyValuePairs = decoded
+	}
 	return reply, err
 }
 

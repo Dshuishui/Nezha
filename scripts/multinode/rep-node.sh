@@ -7,16 +7,18 @@
 # 与 two-node.sh 的区别：不每轮重编译（二进制比源码旧才重编），且支持 -race 版本。
 set -u
 
-# key_width —— 盘上定长 key 的宽度（internal/raft/persister.go 的 KeyLength）。
+# key_width —— 盘上定长 key 的宽度。存储层原样存 key，宽度由客户端决定：
+# internal/client 的 DefaultKeyPadWidth。
 # 本脚本被 deploy.sh 单独 scp 到服务器的 ~ 下执行，source 不到 scripts/lib/bench-common.sh，
-# 所以这里内联一份。写死过一次（10），KeyLength 改成 24 之后 gcThresholdGB 偏小约 10%，
+# 所以这里内联一份。写死过一次（10），改宽度之后 gcThresholdGB 就偏小，
 # 不报错、只是 GC 比预期早触发。解析不到就退出，不给默认值。
 key_width() {
-    local w; w=$(sed -n 's/^const KeyLength = \([0-9]*\).*/\1/p' \
-        "$HOME/work/Nezha/internal/raft/persister.go" 2>/dev/null | head -1)
-    [ -n "$w" ] || { echo "读不到 ~/work/Nezha/internal/raft/persister.go 里的 KeyLength" >&2; exit 1; }
+    local w; w=$(sed -n 's/^[[:space:]]*DefaultKeyPadWidth[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+        "$HOME/work/Nezha/internal/client/client.go" 2>/dev/null | head -1)
+    [ -n "$w" ] || { echo "读不到 ~/work/Nezha/internal/client/client.go 里的 DefaultKeyPadWidth" >&2; exit 1; }
     echo "$w"
 }
+
 
 source ~/env.sh
 cd ~/work/Nezha

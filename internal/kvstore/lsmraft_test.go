@@ -72,7 +72,7 @@ func spanForTest(t *testing.T, kvs *KVServer, start, end int, kv map[string]stri
 	t.Helper()
 	rows := map[string][]byte{}
 	for k, v := range kv {
-		rows[kvs.persister.PadKey(k)] = []byte(v)
+		rows[k] = []byte(v)
 	}
 	dir := filepath.Join(kvs.lsm.incomingDir, fmt.Sprintf("%d-%d", start, end))
 	if err := os.MkdirAll(dir, 0o755); err != nil {

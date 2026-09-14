@@ -122,10 +122,11 @@ func (rf *Raft) SetCurrentLog(currentLog string) {
 	}
 }
 
-// SetCurrentPersister is called by GC at a file switch. rf.persister is read only in
-// WriteEntryToFile (for PadKey, under logMu), so the same lock guards the swap; without it
-// the swap and the read race. PadKey has no instance state, so either pointer yields the
-// same key, but the pointer access itself still needs synchronisation.
+// SetCurrentPersister is called by GC at a file switch. The swap happens under logMu
+// because that is the lock the log-writing path holds; the pointer access itself needs
+// synchronising even though no reader now derives anything from the persister's identity.
+// (WriteEntryToFile used to call rf.persister.PadKey here, which is what originally made
+// the race visible. Keys are stored verbatim now, but the lock discipline still stands.)
 func (rf *Raft) SetCurrentPersister(persister *Persister) {
 	rf.logMu.Lock()
 	defer rf.logMu.Unlock()
@@ -176,7 +177,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 
 		paddedKey := ""
 		if !entry.NoOp {
-			paddedKey = rf.persister.PadKey(entry.Key) // 存入valuelog里面也用
+			paddedKey = entry.Key // 存储层原样存 key，见 persister.go 的契约说明
 		}
 		keySize := uint32(len(paddedKey))          // NoOp records have keySize==0; recovery relies on it
 		data := make([]byte, 20+keySize+valueSize) // 48 bytes for 6 uint64 + key + value

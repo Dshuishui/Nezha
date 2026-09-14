@@ -129,8 +129,8 @@ type Raft struct {
 	// 的条目 apply 完，此刻用本地状态应答读会返回旧值——租约保证的是"没有别的 leader"，
 	// 不保证"我已经知道了所有已提交的写"，后者靠这条 no-op 补齐（Raft 论文 §6.4 第一条）。
 	// 0 表示尚未记下，此时不发租约。
-	leaseTermNoop int
-	leaderId      int       // leader的id
+	leaseTermNoop  int
+	leaderId       int       // leader的id
 	lastActiveTime time.Time // 上次活跃时间（刷新时机：收到leader心跳、给其他candidates投票、请求其他节点投票）
 	// lastBroadcastTime time.Time // 作为leader，上次的广播时间
 
