@@ -273,6 +273,13 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persis
 		if key > endKey {
 			break
 		}
+		// 恢复用的 applied index 与用户数据同库，首字节 0x00，排在所有可打印 key 之前。
+		// 补齐是存储层做的那会儿，Seek 到一个补过零的 startKey 天然跳过它；现在 key 原样
+		// 存，一次 startKey 很小（或 KeyPadNone 下的 YCSB key）的扫描会 Seek 到库首，
+		// 把那一行喂给 decodeScanValue——8 字节的 applied index 会被当成一条用户记录。
+		if raft.IsMetaKey(iter.Key().Data()) {
+			continue
+		}
 
 		// 存储引擎里存的是什么，取决于当前配置——不能一律当成偏移解析。
 		// 三种形态由首字节的标记区分，baseline 则根本没有标记。

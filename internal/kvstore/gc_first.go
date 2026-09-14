@@ -282,63 +282,6 @@ func IsValidEntry(kvs *KVServer, entry *raft.Entry, entryOffset int64, cache *lr
 	// }
 }
 
-func (kvs *KVServer) CheckDatabaseContent() error {
-	if kvs.oldPersister == nil || kvs.oldPersister.GetDb() == nil {
-		return fmt.Errorf("database is not initialized")
-	}
-
-	ro := grocksdb.NewDefaultReadOptions()
-	defer ro.Destroy()
-
-	iter := kvs.oldPersister.GetDb().NewIterator(ro)
-	if iter == nil {
-		return fmt.Errorf("failed to create iterator")
-	}
-	defer iter.Close()
-
-	count := 0
-	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
-		key := iter.Key()
-		value := iter.Value()
-
-		if key == nil || value == nil {
-			fmt.Printf("DB entry %d: <nil key or value>\n", count)
-		} else {
-			keyStr := string(key.Data())
-			valueBytes := value.Data()
-
-			// 尝试将值解释为 int64
-			if len(valueBytes) == 8 {
-				intValue := int64(binary.LittleEndian.Uint64(valueBytes))
-				fmt.Printf("DB entry %d: key=%s, value as int64=%d\n", count, keyStr, intValue)
-			} else {
-				// 如果不是 8 字节，则显示十六进制表示
-				fmt.Printf("DB entry %d: key=%s, value (hex)=%x\n", count, keyStr, valueBytes)
-			}
-		}
-
-		key.Free()
-		value.Free()
-
-		count++
-		if count >= 10 {
-			fmt.Printf("Stopping after %v entries...\n", count)
-			break
-		}
-	}
-
-	if err := iter.Err(); err != nil {
-		return fmt.Errorf("iterator error: %v", err)
-	}
-
-	fmt.Printf("Total entries checked: %d\n", count)
-	if count == 0 {
-		fmt.Println("Warning: No entries found in the database.")
-	}
-
-	return nil
-}
-
 // waitOldVersionApplied blocks until every entry that lives in the old log file (version
 // oldVersion) has been applied.
 //

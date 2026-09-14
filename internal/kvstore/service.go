@@ -15,8 +15,15 @@ import (
 	"gitee.com/dong-shuishui/FlexSync/internal/raft"
 )
 
-// requireLeader 判断本节点现在能不能用本地状态应答一次读。不能的话填好 ErrWrongLeader
-// 与 leaderId，让客户端改投 leader（客户端的 Get/Scan/Put 都会跟随重定向）。
+// requireLeader 判断本节点现在能不能用本地状态应答一次读，并给出不能时该回哪个错误码。
+//
+// 两种"不能"要分开报，这一点不是风格问题：
+//   - **真的不是 leader** → `ErrWrongLeader` 加上 leaderId，客户端改投过去（Get/Scan/Put
+//     都会跟随重定向）。
+//   - **是 leader 但此刻证明不了读的一致性**（apply 落后追不上）→ `ErrInternal`。
+//     这一种绝不能报 ErrWrongLeader：leaderId 就是自己，而客户端的 redirect 在 hint 等于
+//     当前目标时只是 sleep 10ms 再试同一个节点，没有次数上限也没有总超时——一次 GC 造成
+//     的 apply 落后会变成一个无限重试循环，把延迟悄悄拉长而不报任何错。
 //
 // 为什么读需要它：读路径完全在本地完成——查 RocksDB 拿偏移、去 valuelog 取字节。
 // follower 的本地状态落后 leader 多少，取决于它的 apply 落后多少，于是一次打到
@@ -40,31 +47,39 @@ import (
 // **仍未覆盖的一处**：节点自己被冻住（长时间 STW、虚拟机被挂起）的时候，它醒来后看到
 // 的租约剩余时间是按单调时钟算的、已经过期，所以不会拿旧状态应答——但它也无从知道
 // 自己冻了多久，这一点靠的是单调时钟而非任何主动检测。
-func (kvs *KVServer) requireLeader() (int32, bool) {
+// 返回 (错误码, leaderId, 可以读吗)。错误码而不是"leaderId==0 兼表未知"：0 同时是一个
+// 合法的节点下标，这正是 raft.IsLeader 的注释里提到的那个歧义。
+func (kvs *KVServer) requireLeader() (string, int32, bool) {
 	if !kvs.leaderCheck {
-		return 0, true
+		return raft.OK, 0, true
 	}
 	if !kvs.raft.IsLeader() {
-		return kvs.raft.GetLeaderId(), false
+		return raft.ErrWrongLeader, kvs.raft.GetLeaderId(), false
 	}
 	if !kvs.leaseRead {
-		return 0, true
+		return raft.OK, 0, true
 	}
 	if kvs.raft.HoldsLease() {
-		return 0, true
+		return raft.OK, 0, true
 	}
 	// 租约不在手上：退回 ReadIndex。
 	readIndex, ok := kvs.raft.GetReadIndex()
 	if !ok {
-		return kvs.raft.GetLeaderId(), false
+		// 多数派不再认本任期的自己——这是真的"我不是 leader 了"，重定向是对的。
+		return raft.ErrWrongLeader, kvs.raft.GetLeaderId(), false
 	}
 	if !kvs.raft.WaitApplied(readIndex, readIndexApplyWait) {
-		// 多数派确认了身份，但状态机没在限时内追上那个位点。此时读本地仍可能是旧值，
-		// 所以不能放行；报 ErrWrongLeader 让客户端重试，是这里能给出的最诚实的答复。
-		fmt.Printf("[READ] ReadIndex=%d 等 apply 追上超时，本次读拒绝\n", readIndex)
-		return kvs.raft.GetLeaderId(), false
+		// 身份没问题，只是状态机没在限时内追上那个位点。**这一种不能报 ErrWrongLeader**：
+		// 本节点就是 leader，GetLeaderId 返回的是它自己，客户端的 redirect 发现 hint
+		// 等于当前目标就每 10ms 重试同一个节点（client.go 的 redirect），既没有次数上限
+		// 也没有总超时，于是一次 GC 造成的 apply 落后会变成一个看不见的无限重试循环——
+		// 延迟数字被悄悄拉长，而没有任何一处报错。
+		// ErrInternal 的语义正是"读失败了，这个 key 存不存在未知"，客户端会当成错误上报。
+		fmt.Printf("[READ] ReadIndex=%d 等 apply 追上超时（%v），本次读按 ErrInternal 上报\n",
+			readIndex, readIndexApplyWait)
+		return raft.ErrInternal, 0, false
 	}
-	return 0, true
+	return raft.OK, 0, true
 }
 
 // readIndexApplyWait 是 ReadIndex 之后等 apply 追上的上限。给得比一次 Put 的提交路径
@@ -74,8 +89,8 @@ const readIndexApplyWait = 2 * time.Second
 func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeRequest) (*kvrpc.ScanRangeResponse, error) {
 	reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
 
-	if leader, ok := kvs.requireLeader(); !ok {
-		reply.Err = raft.ErrWrongLeader
+	if code, leader, ok := kvs.requireLeader(); !ok {
+		reply.Err = code
 		reply.LeaderId = leader
 		return reply, nil
 	}
@@ -189,8 +204,8 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 }
 
 func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
-	if leader, ok := kvs.requireLeader(); !ok {
-		return &kvrpc.GetInRaftResponse{Err: raft.ErrWrongLeader, LeaderId: leader}, nil
+	if code, leader, ok := kvs.requireLeader(); !ok {
+		return &kvrpc.GetInRaftResponse{Err: code, LeaderId: leader}, nil
 	}
 	reply := kvs.StartGet(in)
 	if reply.Err == raft.ErrWrongLeader {
