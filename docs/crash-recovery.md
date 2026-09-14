@@ -46,7 +46,7 @@ has the same durability as the data.
 ## Changes to the on-disk log
 
 - Leader no-op entries (`TermLog`) are written to the log file as records with an empty
-  key (`keySize == 0`; real keys are always `KeyLength` bytes after padding), on both leader
+  key (`keySize == 0`; a real key is never empty), on both leader
   and follower. Without them the file had index gaps and could not be replayed. Every entry
   now owns an offset slot, which also makes the follower's conflict-overwrite offset
   arithmetic exact.
