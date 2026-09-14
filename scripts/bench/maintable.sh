@@ -60,6 +60,7 @@ die(){  echo -e "${RED}[FAIL]${NC} $*"; exit 1; }
 # 而 REPO_DIR 指向别的工作树时更是完全对不上。
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 cd "${REPO_DIR:-$SCRIPT_DIR/../..}" || die "无项目目录"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/bench-common.sh"
 source ~/env.sh 2>/dev/null || true
 export TMPDIR=${TMPDIR:-$HOME/work/tmp}; mkdir -p "$TMPDIR"
 
@@ -111,7 +112,7 @@ BIN=/tmp/nezha-maintable
 COMMIT=$(git rev-parse --short HEAD)
 
 # 每条 valuelog 记录约 20B 头 + 10B key + value（与 GC 阈值的算法保持一致）。
-entries_for(){ awk -v mb="$TOTAL_MB" -v v="$1" 'BEGIN{printf "%d", mb*1048576/(20+10+v)}'; }
+entries_for(){ awk -v mb="$TOTAL_MB" -v r="$(record_bytes "$1")" 'BEGIN{printf "%d", mb*1048576/r}'; }
 gc_threshold_gb(){ awk -v mb="$TOTAL_MB" 'BEGIN{printf "%.6f", mb/1024/3}'; }   # 总量的 1/3，确保触发
 
 info "构建 $COMMIT"
@@ -174,7 +175,11 @@ info "输出 $OUT"
 for sys in $SYSTEMS; do
  for vs in $VSIZES; do
   N=$(entries_for "$vs"); GCGB=$(gc_threshold_gb)
-  LOGICAL=$(awk -v n="$N" -v v="$vs" 'BEGIN{printf "%d", n*(10+v)}')   # 用户看到的 key+value 字节
+# 逻辑字节的分母沿用历史口径 (10 + value)：它把"补齐后的 key 宽度"当成用户数据，
+# 而 benchmark 的 key 是 strconv.Itoa(i)，实际只有 1~7 个字符。换成真实用户字节会让
+# 所有已发表的放大率数字整体移动，是个方法学决定，不在本次修复范围内——所以这里**故意
+# 保留 10**，不跟着 KeyLength 走。见 notes/TODO-avp.md。
+  LOGICAL=$(awk -v n="$N" -v v="$vs" 'BEGIN{printf "%d", n*(10+v)}')   # 历史口径：补齐宽度 10 + value
   for round in $(seq 1 "$ROUNDS"); do
     done_n=$((done_n+1))
     DATA="$TMPDIR/mt-$LABEL-$sys-$vs-$round"
@@ -255,7 +260,7 @@ for sys in $SYSTEMS; do
     GAP="$SCAN_GAP"
     if [ -z "$GAP" ] && [ -n "$SCAN_SPAN_PARTS" ] && [ -n "$SCAN_PART_MB" ]; then
       # 一个分区装 分区字节数/每条字节数 条；每条 = 20B 头 + 10B key + value
-      GAP=$(( SCAN_SPAN_PARTS * (SCAN_PART_MB * 1048576) / (20 + 10 + vs) ))
+      GAP=$(( SCAN_SPAN_PARTS * (SCAN_PART_MB * 1048576) / $(record_bytes "$vs") ))
     fi
     if [ -z "$GAP" ] && [ -n "$SCAN_FRAC" ]; then GAP=$(( N / SCAN_FRAC )); fi
     [ -n "$GAP" ] || die "gapkey 无法确定：SCAN_GAP/SCAN_SPAN_PARTS(+PARTITION_MB)/SCAN_FRAC 都没给"

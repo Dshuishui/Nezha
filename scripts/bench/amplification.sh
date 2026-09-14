@@ -42,6 +42,7 @@ warn(){ echo -e "${YEL}[WARN]${NC} $*"; }
 die(){  echo -e "${RED}[FAIL]${NC} $*"; exit 1; }
 
 cd "$(dirname "$0")/../.." || die "无项目目录"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/bench-common.sh"
 source ~/env.sh 2>/dev/null || true
 export TMPDIR=${TMPDIR:-$HOME/work/tmp}; mkdir -p "$TMPDIR"
 
@@ -69,7 +70,7 @@ COMMIT=$(git rev-parse --short HEAD)
 DEVSTAT="/sys/block/$DEV/stat"
 [ -r "$DEVSTAT" ] || die "读不到 $DEVSTAT —— 用 DEV=<disk>/<part> 指定，例如 DEV=sdc/sdc3"
 
-entries_for(){ awk -v mb="$TOTAL_MB" -v v="$1" 'BEGIN{printf "%d", mb*1048576/(20+10+v)}'; }
+entries_for(){ awk -v mb="$TOTAL_MB" -v r="$(record_bytes "$1")" 'BEGIN{printf "%d", mb*1048576/r}'; }
 gc_threshold_gb(){ awk -v mb="$TOTAL_MB" 'BEGIN{printf "%.6f", mb/1024/3}'; }
 
 # 设备写入字节：第 7 字段是写扇区数，扇区固定 512 字节。
@@ -146,6 +147,10 @@ info "输出 $OUT"
 for sys in $SYSTEMS; do
  for vs in $VSIZES; do
   N=$(entries_for "$vs"); GCGB=$(gc_threshold_gb)
+# 逻辑字节的分母沿用历史口径 (10 + value)：它把"补齐后的 key 宽度"当成用户数据，
+# 而 benchmark 的 key 是 strconv.Itoa(i)，实际只有 1~7 个字符。换成真实用户字节会让
+# 所有已发表的放大率数字整体移动，是个方法学决定，不在本次修复范围内——所以这里**故意
+# 保留 10**，不跟着 KeyLength 走。见 notes/TODO-avp.md。
   LOGICAL_LOAD=$(awk -v n="$N" -v v="$vs" 'BEGIN{printf "%d", n*(10+v)}')
   for pct in $OVERWRITE; do
     done_n=$((done_n+1))

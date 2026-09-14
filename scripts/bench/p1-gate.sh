@@ -32,6 +32,7 @@ BASE_COMMIT="${1:-}"
 LABEL="${2:-$(date +%m%d-%H%M)}"
 
 cd "$(dirname "$0")/../.." || die "无项目目录"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/bench-common.sh"
 REPO=$(pwd)
 NEW_COMMIT=$(git rev-parse --short HEAD)
 git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null || die "本地没有 commit $BASE_COMMIT"
@@ -85,10 +86,13 @@ run after  "$REPO"      "$PARTITION_MB"
 info "统计每格丢失的 key"
 {
   for tag in before after; do
+    # 记录宽度必须取**那一侧代码**的 KeyLength：改进前的工作树可能还是 10，
+    # 拿改进后的 24 去算条数，before 那半边全部对不上。
+    [ "$tag" = before ] && tree="$BASE_TREE" || tree="$REPO"
     for sys in nezha nezha-avp; do for vs in $VSIZES; do for r in $(seq 1 "$ROUNDS"); do
       d="$TMPDIR/mt-$LABEL-$tag-$sys-$vs-$r"
       [ -d "$d" ] || continue
-      n=$(awk -v mb="$TOTAL_MB" -v v="$vs" 'BEGIN{printf "%d", mb*1048576/(20+10+v)}')
+      n=$(awk -v mb="$TOTAL_MB" -v r="$(BENCH_REPO_DIR="$tree" record_bytes "$vs")" 'BEGIN{printf "%d", mb*1048576/r}')
       th=0; [ "$sys" = nezha-avp ] && th=512   # 内联的小值不在 valuelog 里，本工具数不准
       echo "$tag $sys v=$vs r=$r: $(python3 "$SCRIPTS/bench/lost-keys.py" "$d" "$n" "$vs" "$th" 2>&1 | grep -oE '丢失 [0-9]*|不适用')"
     done; done; done

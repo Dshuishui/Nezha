@@ -20,7 +20,8 @@ PROJECT_DIR="${PROJECT_DIR:-$HOME/autodl-tmp/work/Nezha}"; cd "$PROJECT_DIR" || 
 N="${1:-200000}"; VSIZE="${2:-64}"
 D=$(mktemp -d -p "${TMPDIR:-/tmp}")
 BIN=/tmp/nezha-vgp
-GB=$(awk -v n="$N" -v v="$VSIZE" 'BEGIN{printf "%.4f", n*(30+v)/1073741824/3}')
+# 30 曾是 20 字节头 + 写死的 key 宽度 10；宽度现在从 KeyLength 解析（见 bench-common.sh）
+GB=$(awk -v n="$N" -v v="$VSIZE" -v r="$(record_bytes "$VSIZE")" 'BEGIN{printf "%.4f", n*r/1073741824/3}')
 
 go build -o "$BIN" ./cmd/nezha/ || fail "编译失败"
 go build -o /tmp/countkeys ./cmd/bench/countkeys/ || fail "countkeys 编译失败"

@@ -6,6 +6,18 @@
 #   rep-node.sh report ROLE               GC 轮数 + 错误行
 # 与 two-node.sh 的区别：不每轮重编译（二进制比源码旧才重编），且支持 -race 版本。
 set -u
+
+# key_width —— 盘上定长 key 的宽度（internal/raft/persister.go 的 KeyLength）。
+# 本脚本被 deploy.sh 单独 scp 到服务器的 ~ 下执行，source 不到 scripts/lib/bench-common.sh，
+# 所以这里内联一份。写死过一次（10），KeyLength 改成 24 之后 gcThresholdGB 偏小约 10%，
+# 不报错、只是 GC 比预期早触发。解析不到就退出，不给默认值。
+key_width() {
+    local w; w=$(sed -n 's/^const KeyLength = \([0-9]*\).*/\1/p' \
+        "$HOME/work/Nezha/internal/raft/persister.go" 2>/dev/null | head -1)
+    [ -n "$w" ] || { echo "读不到 ~/work/Nezha/internal/raft/persister.go 里的 KeyLength" >&2; exit 1; }
+    echo "$w"
+}
+
 source ~/env.sh
 cd ~/work/Nezha
 export TMPDIR=$HOME/work/tmp; mkdir -p "$TMPDIR"
@@ -23,7 +35,7 @@ start)
     else go build -o "$EXE" ./cmd/nezha/ || { echo BUILD_FAIL; exit 1; }; fi
   fi
   rm -rf "$D"; mkdir -p "$D"
-  GB=$(awk -v n="$N" -v v="$VS" 'BEGIN{printf "%.6f", n*(20+10+v)/1073741824/3}')
+  GB=$(awk -v n="$N" -v v="$VS" -v k="$(key_width)" 'BEGIN{printf "%.6f", n*(20+k+v)/1073741824/3}')
   nohup "$EXE" -address "${SELF%:*}:3099" -internalAddress "$SELF" -peers "$L,$F" \
       -data "$D" -gap 1000000 -system "$SYSTEM" -syncWAL -gcThresholdGB "$GB" -commitTimeoutS 60 $EXTRA \
       > "$D/n.log" 2>&1 &
