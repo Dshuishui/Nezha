@@ -20,8 +20,13 @@ PROJECT_DIR="${PROJECT_DIR:-$HOME/autodl-tmp/work/Nezha}"; cd "$PROJECT_DIR" || 
 N="${1:-200000}"; VSIZE="${2:-64}"
 D=$(mktemp -d -p "${TMPDIR:-/tmp}")
 BIN=/tmp/nezha-vgp
-# 30 曾是 20 字节头 + 写死的 key 宽度 10；宽度现在由 key_width 解析（见 bench-common.sh）
-GB=$(awk -v n="$N" -v v="$VSIZE" -v r="$(record_bytes "$VSIZE")" 'BEGIN{printf "%.4f", n*r/1073741824/3}')
+# GC 阈值刻意设得**够不到**：这个脚本回答的是"写进去的条数对不对"，靠 countkeys 数存储
+# 引擎里的行数与写入条数做精确相等比较。而一轮 GC 之后 key 随 value 迁入分区文件、存储引擎
+# 里的行数趋近 0（实测就是 0），那个比较立刻失去意义。
+#
+# 此前阈值取的是数据量的三分之一（`n*r/3`），也就是**一定会触发 GC**——判定成不成立取决于
+# GC 有没有恰好跑完，这是个竞态。现在取数据量的 10 倍，再在取数前断言一轮都没跑过。
+GB=$(awk -v n="$N" -v r="$(record_bytes "$VSIZE")" 'BEGIN{printf "%.4f", n*r*10/1073741824}')
 
 go build -o "$BIN" ./cmd/nezha/ || fail "编译失败"
 go build -o /tmp/countkeys ./cmd/bench/countkeys/ || fail "countkeys 编译失败"
@@ -55,6 +60,8 @@ DB=$(find "$D" -name "CURRENT" -path "*/db*" 2>/dev/null | head -1 | xargs -r di
 [ -n "$DB" ] || fail "找不到 RocksDB 目录"
 info "RocksDB 目录: $DB"
 
+GCN=$(grep -c '垃圾回收完成' "$D/n.log" 2>/dev/null || true)
+[ "${GCN:-0}" = 0 ] || fail "GC 跑了 ${GCN} 轮：key 已迁入分区文件，countkeys 的计数不再等于写入条数，本次判定作废（调大 gcThresholdGB）"
 COUNT=$(/tmp/countkeys -db "$DB" | sed -n 's/^KEYCOUNT \([0-9]*\)/\1/p')
 [ -n "$COUNT" ] || fail "计数失败"
 

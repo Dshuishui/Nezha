@@ -74,7 +74,12 @@ func main() {
 			}
 		}
 	}
-	fmt.Printf("GET 校验: 正确 %d, 错误 %d, 取不到 %d, 非leader %d\n", ok, bad, missing, wrongLeader)
+	// 带上覆盖率。不带的话"正确 300, 错误 0"看起来像"全部数据都对"，而它其实是
+	// 300 / dnums 的抽样：一处只影响 0.07% 记录的损坏，抽 2.5% 的期望命中是 0.36 条，
+	// 也就是基本抽不到。全量覆盖的判据是 scripts/bench/lost-keys.py，不是这里。
+	fmt.Printf("GET 校验: 正确 %d, 错误 %d, 取不到 %d, 非leader %d（抽查 %d/%d = %.2f%%）\n",
+		ok, bad, missing, wrongLeader, ok+bad+missing+wrongLeader, *dnums,
+		100*float64(ok+bad+missing+wrongLeader)/float64(*dnums))
 
 	var st, sok, sbad, serr, swrong int
 	for s := 0; s < *sample; s++ {
@@ -101,7 +106,8 @@ func main() {
 			}
 		}
 	}
-	fmt.Printf("SCAN 校验: 返回 %d 条, 正确 %d, 错误 %d, 范围失败 %d, 非leader %d\n", st, sok, sbad, serr, swrong)
+	fmt.Printf("SCAN 校验: 返回 %d 条, 正确 %d, 错误 %d, 范围失败 %d, 非leader %d（%d 个区间 × %d 条 = %.2f%% 覆盖）\n",
+		st, sok, sbad, serr, swrong, *sample, *spanN, 100*float64(*sample**spanN)/float64(*dnums))
 	if wrongLeader > 0 || swrong > 0 {
 		// 单独的一条：这说明目标节点还没当选，不是数据有问题。要么等它当选，
 		// 要么用 -leaderCheck=false 启动节点以读取 follower 的本地状态。

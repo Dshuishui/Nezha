@@ -56,15 +56,26 @@ KEY_LEN = _key_len()
 
 
 def keys_in(path, stride):
+    """返回 (解析出的 key 集合, 解析不了的记录数)。
+
+    单条解析失败不能让整个工具崩掉：一个被篡改或截断的文件恰恰是最需要这个计数的时候。
+    此前这里直接 `int(...)`，遇到清零的 key 字节抛 ValueError，整个脚本带着 traceback
+    退出，crash-recovery.sh 拿到空串把它报成"盘上丢了 ? 条"——**唯一一个全量覆盖的闸门
+    在有损坏时反而不出数**。
+    """
     with open(path, "rb") as f:
         data = f.read()
     if len(data) % stride:
         print(f"  警告: {os.path.basename(path)} 长度 {len(data)} 不是 {stride} 的整数倍，"
               f"余 {len(data) % stride} 字节——可能不是定长负载，结果不可信")
-    out = set()
+    out, broken = set(), 0
     for i in range(len(data) // stride):
-        out.add(int(data[i * stride + HEADER:i * stride + HEADER + KEY_LEN]))
-    return out
+        raw = data[i * stride + HEADER:i * stride + HEADER + KEY_LEN]
+        try:
+            out.add(int(raw))
+        except ValueError:
+            broken += 1
+    return out, broken
 
 
 def main():
@@ -80,6 +91,7 @@ def main():
     vlog = os.path.join(d, "data", "valuelog")
 
     present = set()
+    broken_total = 0
     files = sorted(glob.glob(os.path.join(vlog, "*")))
     if not files:
         sys.exit(f"{vlog} 下没有文件")
@@ -88,11 +100,15 @@ def main():
             continue  # index/ 子目录：稀疏索引的旁挂文件，不是数据记录
         if p.endswith(".idx"):
             continue
-        got = keys_in(p, stride)
+        got, broken = keys_in(p, stride)
         present |= got
-        print(f"  {os.path.basename(p):40s} {len(got):>9d} 个 key")
+        broken_total += broken
+        note = f"  ({broken} 条解析不了)" if broken else ""
+        print(f"  {os.path.basename(p):40s} {len(got):>9d} 个 key{note}")
 
     lost = sorted(set(range(n)) - present)
+    if broken_total:
+        print(f"**{broken_total} 条记录解析不了**——盘上有损坏，下面的丢失数只是下界")
     print(f"写入 {n}，盘上 distinct {len(present)}，丢失 {len(lost)}")
     if lost:
         # Zipf(s=1.01) 下 rank k 的请求占比约 1/(k*(ln N + 0.5772))，据此估计

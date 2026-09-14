@@ -84,7 +84,9 @@ func main() {
 			}
 		}
 	}
-	fmt.Printf("GET 校验: 正确 %d, 错误 %d\n", getOK, getBad)
+	// 带上覆盖率：这是抽样，不是全量。全量覆盖的判据是 scripts/bench/lost-keys.py。
+	fmt.Printf("GET 校验: 正确 %d, 错误 %d（抽查 %d/%d = %.2f%%）\n",
+		getOK, getBad, getOK+getBad, *dnums, 100*float64(getOK+getBad)/float64(*dnums))
 
 	var total, ok, bad int
 	var scanErr int
@@ -112,7 +114,8 @@ func main() {
 			}
 		}
 	}
-	fmt.Printf("SCAN 校验: 返回 %d 条, 正确 %d, 错误 %d, 范围失败 %d\n", total, ok, bad, scanErr)
+	fmt.Printf("SCAN 校验: 返回 %d 条, 正确 %d, 错误 %d, 范围失败 %d（%d 个区间 × %d 条 = %.2f%% 覆盖）\n",
+		total, ok, bad, scanErr, *sample, *spanN, 100*float64(*sample**spanN)/float64(*dnums))
 	if bad > 0 || scanErr > 0 {
 		fmt.Println("VERIFY_FAIL")
 	} else if total == 0 {

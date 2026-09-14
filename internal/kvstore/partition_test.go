@@ -263,13 +263,76 @@ func TestPartitionManifestRoundTrip(t *testing.T) {
 		}
 	}
 
+	// 清单里存的是**文件名**，按 base 所在目录解析——这正是数据目录可搬动的依据。
+	for _, m := range metas {
+		if filepath.Base(m.Path) != m.Path {
+			t.Errorf("清单项 %q 不是纯文件名：存绝对路径会让数据目录搬动之后去读原目录", m.Path)
+		}
+	}
+
 	// 截断一个分区，重建必须失败而不是静默接受
-	if err := os.Truncate(metas[0].Path, metas[0].Size-1); err != nil {
+	victim := filepath.Join(filepath.Dir(base), metas[0].Path)
+	if err := os.Truncate(victim, metas[0].Size-1); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	if bad, err := kvs.loadPartitionSet(base, metas); err == nil {
 		bad.Close()
 		t.Error("分区被截断后 loadPartitionSet 应当报错")
+	}
+}
+
+// 数据目录整体搬到别处之后，必须读新位置的文件。
+//
+// 清单曾存绝对路径：把数据目录复制到 B 再以 -data B 启动，节点打开的是原目录 A 里的
+// 分区文件（实测 /proc/<pid>/fd 全部指向 A），B 自己那几个一个都不读。原目录还在且内容
+// 变了就读到变了的数据，原目录被删了才报错——最坏情况下它不报错。
+func TestPartitionSetFollowsRelocatedDataDir(t *testing.T) {
+	kvs := newTestServer(4096)
+	dirA := t.TempDir()
+	ps := writeEntries(t, kvs, filepath.Join(dirA, "sorted_1"), 200, 100)
+	metas := ps.manifest()
+	ps.Close()
+
+	// 把分区文件搬到 B（含旁挂索引子目录），A 一个不留
+	dirB := t.TempDir()
+	entries, err := os.ReadDir(dirA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		src, dst := filepath.Join(dirA, e.Name()), filepath.Join(dirB, e.Name())
+		if e.IsDir() {
+			if err := os.MkdirAll(dst, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			sub, err := os.ReadDir(src)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range sub {
+				if err := os.Rename(filepath.Join(src, f.Name()), filepath.Join(dst, f.Name())); err != nil {
+					t.Fatal(err)
+				}
+			}
+			continue
+		}
+		if err := os.Rename(src, dst); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reloaded, err := kvs.loadPartitionSet(filepath.Join(dirB, "sorted_1"), metas)
+	if err != nil {
+		t.Fatalf("搬到新目录后装载失败: %v", err)
+	}
+	defer reloaded.Close()
+	for _, p := range reloaded.Paths() {
+		if filepath.Dir(p) != dirB {
+			t.Fatalf("装载后仍指向 %s，应当在 %s 下", p, dirB)
+		}
+	}
+	if _, err := kvs.getFromPartitions(fmt.Sprintf("%010d", 7), reloaded); err != nil {
+		t.Fatalf("搬到新目录后读不到 key: %v", err)
 	}
 }
 

@@ -74,6 +74,32 @@ func loadKVState(path string) (kvState, bool, error) {
 	return st, true, nil
 }
 
+// rebase 把状态文件里的每个路径重新解析到**当前**数据目录下。
+//
+// 这些字段存的是绝对路径，于是一个数据目录搬到别处（归档、复现、换机器）之后，节点会去
+// 打开**原目录**里的文件。实测把数据目录复制到 B 再以 -data B 启动，/proc/<pid>/fd 全部
+// 指向原目录 A：B 自己那几个分区一个都没读。原目录还在且内容变了，读到的就是变了的数据；
+// 原目录被删了才会报错——也就是说最坏的情况下它不报错。
+//
+// 只取文件名重新拼接，所以对旧状态文件同样有效；GC 产物与存储引擎实例的目录是固定的
+// （data/valuelog 与 data/dbfile，见 New），不需要状态文件来告诉我们。
+func (st *kvState) rebase(dataDir string) {
+	vlog := filepath.Join(dataDir, "data", "valuelog")
+	dbdir := filepath.Join(dataDir, "data", "dbfile")
+	rebaseTo := func(dir, p string) string {
+		if p == "" {
+			return ""
+		}
+		return filepath.Join(dir, filepath.Base(p))
+	}
+	st.CurrentLog = rebaseTo(vlog, st.CurrentLog)
+	st.OldLog = rebaseTo(vlog, st.OldLog)
+	st.SortedFile = rebaseTo(vlog, st.SortedFile)
+	st.CurrentDB = rebaseTo(dbdir, st.CurrentDB)
+	st.OldDB = rebaseTo(dbdir, st.OldDB)
+	// Partitions[].Path 由 loadPartitionSet 自己按 base 所在目录解析。
+}
+
 // finishFirstGC completes round one after a successful migration; the trigger loop and
 // the recovery redo share it. Order matters: persist the new log base and the new state
 // first, delete the old file last. A crash in between leaves the old file on disk with
@@ -188,6 +214,8 @@ func (kvs *KVServer) recoverOrInit(initialDB string) (files []raft.LogFile, appl
 		kvs.saveKVState()
 		return nil, 0
 	}
+	// 状态文件里的路径一律按当前 -data 重新解析，见 rebase。
+	st.rebase(kvs.dataDir)
 
 	fmt.Printf("[RECOVER] state: numGC=%d currentLog=%s currentDB=%s sorted=%q gcInProgress=%v\n",
 		st.NumGC, st.CurrentLog, st.CurrentDB, st.SortedFile, st.GCInProgress)

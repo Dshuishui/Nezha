@@ -84,6 +84,14 @@ func main() {
 	}
 
 	fmt.Printf("KEYCOUNT %d\n", count)
+	// 说清这个数是什么：它是**存储引擎里的行数**。GC 之后 value 搬进了分区文件，
+	// key 也随之离开存储引擎，这个数会趋近 0 而数据完好——实测一轮 GC 之后
+	// KEYCOUNT 就是 0。所以它只在"GC 未发生"的前提下等于用户 key 数，
+	// 拿它与写入条数比较的调用方（verify-goodput.sh）必须自己保证那个前提。
+	if count == 0 {
+		fmt.Println("（存储引擎里没有用户行：若这组数据跑过 GC，key 已随 value 迁入分区文件，" +
+			"这个计数不代表数据丢失——请改用 scripts/bench/lost-keys.py 直接数分区）")
+	}
 	if meta > 0 {
 		fmt.Printf("（另有 %d 行存储层元数据，未计入）\n", meta)
 	}

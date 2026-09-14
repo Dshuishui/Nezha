@@ -137,6 +137,12 @@ func (ps *PartitionSet) Close() {
 // 稀疏索引不放在这里，而是每个分区一个旁挂文件（见 sparseindex.go 的持久化一节）：
 // 100GB 按 4KB 块是约 2500 万项，塞进这个每次保存 KV 状态都要重写的 JSON 里不合适。
 type partitionMeta struct {
+	// Path 存的是**文件名**，不是绝对路径。装载时按当前 -data 下的 valuelog 目录解析。
+	//
+	// 曾经存绝对路径，后果是数据目录不可搬动，而且失败方式极其阴险：把一个数据目录
+	// 复制到别处再启动，节点会打开**原目录**里的分区文件（实测 /proc/<pid>/fd 全部指向
+	// 原路径），副本自己那几个文件一个都不读。原目录还在且内容变了，读到的就是变了的
+	// 数据；原目录被删了，才会报错。归档、复现、搬机器这些动作都会踩上。
 	Path string `json:"path"`
 	Lo   string `json:"lo"`
 	Hi   string `json:"hi"`
@@ -152,7 +158,7 @@ func (ps *PartitionSet) manifest() []partitionMeta {
 	out := make([]partitionMeta, 0, len(ps.parts))
 	for _, p := range ps.parts {
 		out = append(out, partitionMeta{
-			Path: p.FilePath, Lo: p.Lo, Hi: p.Hi, Size: p.FileSize,
+			Path: filepath.Base(p.FilePath), Lo: p.Lo, Hi: p.Hi, Size: p.FileSize,
 			Entries: p.Entries,
 		})
 	}
@@ -176,24 +182,28 @@ func (kvs *KVServer) loadPartitionSet(base string, metas []partitionMeta) (*Part
 			len(metas), bytesTotal, time.Since(t0), loaded, scanned)
 	}()
 	ps := &PartitionSet{base: base, inline: NewInlineCache(kvs.inlineCacheBytes)}
+	// 清单里只有文件名，按当前数据目录解析——旧清单存的是绝对路径，取 Base 一样能用，
+	// 而且正好把"指向别处"这件事一并修掉。
+	dir := filepath.Dir(base)
 	for _, m := range metas {
 		bytesTotal += m.Size
+		path := filepath.Join(dir, filepath.Base(m.Path))
 		// 先比字节数再重建索引。反过来的话，被截断的分区会先在扫描时撞上
 		// "unexpected EOF"——那个错误既指不出是哪里不对，也不说明期望多长。
 		// 清单说的字节数与文件实际长度对不上，意味着这个分区没有完整落盘或被改动过；
 		// 继续用它会让读路径按错误的边界判定"这里没有这个 key"，那是静默丢数据。
-		st, err := os.Stat(m.Path)
+		st, err := os.Stat(path)
 		if err != nil {
 			ps.Close()
-			return nil, fmt.Errorf("partition %s: %v", m.Path, err)
+			return nil, fmt.Errorf("partition %s: %v", path, err)
 		}
 		if st.Size() != m.Size {
 			ps.Close()
-			return nil, fmt.Errorf("partition %s: manifest says %d bytes, file has %d", m.Path, m.Size, st.Size())
+			return nil, fmt.Errorf("partition %s: manifest says %d bytes, file has %d", path, m.Size, st.Size())
 		}
 		// 优先读旁挂索引：扫描重建的速率实测约 110MB/s，100GB 要 15 分钟才起得来。
 		// 旁挂文件缺失或校验不过就退回扫描，所以最坏只是慢，不会用到错的索引。
-		sparse, size, fromDisk, err := kvs.loadOrRebuildSparseIndex(m.Path, m.Size)
+		sparse, size, fromDisk, err := kvs.loadOrRebuildSparseIndex(path, m.Size)
 		if err != nil {
 			ps.Close()
 			return nil, err
@@ -203,16 +213,16 @@ func (kvs *KVServer) loadPartitionSet(base string, metas []partitionMeta) (*Part
 		} else {
 			scanned++
 		}
-		pool, err := NewFileDescriptorPool(m.Path, partitionPoolSize)
+		pool, err := NewFileDescriptorPool(path, partitionPoolSize)
 		if err != nil {
 			ps.Close()
-			return nil, fmt.Errorf("file descriptor pool for %s: %v", m.Path, err)
+			return nil, fmt.Errorf("file descriptor pool for %s: %v", path, err)
 		}
 		ps.parts = append(ps.parts, &SortedFileIndex{
 			Sparse:       sparse,
 			FileSize:     size,
 			InlineValues: ps.inline,
-			FilePath:     m.Path,
+			FilePath:     path,
 			Lo:           m.Lo,
 			Hi:           m.Hi,
 			pool:         pool,
