@@ -2,10 +2,14 @@ package kvstore
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 
 	"gitee.com/dong-shuishui/FlexSync/internal/raft"
@@ -211,4 +215,197 @@ func (sfi *SortedFileIndex) closePool() {
 		sfi.pool.Close()
 		sfi.pool = nil
 	}
+}
+
+// ---- 稀疏索引的持久化 ----
+//
+// 索引原先每次启动都靠扫描全部分区文件重建（BuildSparseIndex）。扫描速率实测约
+// 110MB/s，于是启动时长正比于数据量：10GB 约 1.5 分钟，**100GB 约 15.5 分钟**——
+// 那段时间节点不能服务，在三节点里会被判定为失联。而分区文件一旦封口就不可变，
+// 索引完全可以跟着它一起落盘。
+//
+// 存成每个分区一个旁挂文件（`<分区路径>.idx`）而不是写进清单：100GB 按 4KB 块是约
+// 2500 万项，塞进那个每次保存 KV 状态都要重写一遍的 JSON 里不合适。
+//
+// **安全退化**：旁挂文件缺失、版本不符、块粒度不同、长度或校验和对不上，一律退回扫描
+// 重建。所以它只可能让启动变慢，不可能让启动读到错的索引。崩在"数据文件已 fsync、
+// 旁挂文件还没写"的窗口里正是缺失这一种。
+
+const (
+	sparseIndexMagic   = "NZSI"
+	sparseIndexVersion = uint32(1)
+)
+
+// sparseIndexDir 是旁挂索引所在的子目录名（与分区文件同级）。
+//
+// 放进子目录而不是与分区文件并排，是因为一堆脚本用 `valuelog/*.p*` 数分区个数
+// （crash-recovery.sh、gc-rounds.sh），而 `xxx.p0.idx` 会被这个通配式匹配到——
+// 分区计数会凭空翻倍，断言和报告全部失真。子目录一次性挡掉全部现有和将来的这类通配，
+// 而 du 仍然把它算进目录大小（索引是我们真实占用的空间，本就该计入空间放大）。
+const sparseIndexDir = "index"
+
+// sparseIndexPath 是一个分区文件对应的旁挂索引路径。
+func sparseIndexPath(dataPath string) string {
+	return filepath.Join(filepath.Dir(dataPath), sparseIndexDir, filepath.Base(dataPath)+".idx")
+}
+
+// writeSparseIndex 把索引落到旁挂文件。必须在数据文件 fsync **之后**调用：
+// 反过来的话，旁挂文件可能描述一份还没落盘的数据。
+func writeSparseIndex(dataPath string, sparse []SparseEntry, blockBytes, dataSize int64) error {
+	var buf bytes.Buffer
+	buf.WriteString(sparseIndexMagic)
+	var hdr [4]byte
+	binary.LittleEndian.PutUint32(hdr[:], sparseIndexVersion)
+	buf.Write(hdr[:])
+	var num [8]byte
+	binary.LittleEndian.PutUint64(num[:], uint64(blockBytes))
+	buf.Write(num[:])
+	binary.LittleEndian.PutUint64(num[:], uint64(dataSize))
+	buf.Write(num[:])
+	binary.LittleEndian.PutUint32(hdr[:], uint32(len(sparse)))
+	buf.Write(hdr[:])
+	for _, e := range sparse {
+		binary.LittleEndian.PutUint32(hdr[:], uint32(len(e.PaddedKey)))
+		buf.Write(hdr[:])
+		buf.WriteString(e.PaddedKey)
+		binary.LittleEndian.PutUint64(num[:], uint64(e.Offset))
+		buf.Write(num[:])
+	}
+	binary.LittleEndian.PutUint32(hdr[:], crc32.ChecksumIEEE(buf.Bytes()))
+	buf.Write(hdr[:])
+
+	path := sparseIndexPath(dataPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(buf.Bytes()); err != nil {
+		f.Close()
+		os.Remove(path)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(path)
+		return err
+	}
+	return f.Close()
+}
+
+// readSparseIndex 读回旁挂索引，并校验它描述的正是这份数据、且是同一个块粒度。
+// 任何一项不符都返回错误，调用方应退回扫描重建。
+func readSparseIndex(dataPath string, blockBytes, dataSize int64) ([]SparseEntry, error) {
+	raw, err := os.ReadFile(sparseIndexPath(dataPath))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) < 32 { // 4 magic + 4 ver + 8 block + 8 size + 4 count + 4 crc
+		return nil, fmt.Errorf("sparse index too short: %d bytes", len(raw))
+	}
+	body, want := raw[:len(raw)-4], binary.LittleEndian.Uint32(raw[len(raw)-4:])
+	if got := crc32.ChecksumIEEE(body); got != want {
+		return nil, fmt.Errorf("sparse index checksum %08x, want %08x", got, want)
+	}
+	if string(body[:4]) != sparseIndexMagic {
+		return nil, errors.New("sparse index: bad magic")
+	}
+	if v := binary.LittleEndian.Uint32(body[4:8]); v != sparseIndexVersion {
+		return nil, fmt.Errorf("sparse index version %d, want %d", v, sparseIndexVersion)
+	}
+	if b := int64(binary.LittleEndian.Uint64(body[8:16])); b != blockBytes {
+		// 粒度变了（-indexBlockKB 改过）。旧索引仍然是正确的，但块大小决定点查要顺序
+		// 解析多少条 entry，沿用旧粒度会让实测口径与配置不符，所以重建。
+		return nil, fmt.Errorf("sparse index block size %d, configured %d", b, blockBytes)
+	}
+	if sz := int64(binary.LittleEndian.Uint64(body[16:24])); sz != dataSize {
+		return nil, fmt.Errorf("sparse index describes %d data bytes, file has %d", sz, dataSize)
+	}
+	count := int(binary.LittleEndian.Uint32(body[24:28]))
+	out := make([]SparseEntry, 0, count)
+	pos := 28
+	for i := 0; i < count; i++ {
+		if pos+4 > len(body) {
+			return nil, fmt.Errorf("sparse index truncated at entry %d", i)
+		}
+		klen := int(binary.LittleEndian.Uint32(body[pos : pos+4]))
+		pos += 4
+		if pos+klen+8 > len(body) {
+			return nil, fmt.Errorf("sparse index truncated at entry %d", i)
+		}
+		key := string(body[pos : pos+klen])
+		pos += klen
+		off := int64(binary.LittleEndian.Uint64(body[pos : pos+8]))
+		pos += 8
+		out = append(out, SparseEntry{PaddedKey: key, Offset: off})
+	}
+	if pos != len(body) {
+		return nil, fmt.Errorf("sparse index has %d trailing bytes", len(body)-pos)
+	}
+	return out, nil
+}
+
+// loadOrRebuildSparseIndex 取一个分区的稀疏索引：先试旁挂文件，不可用就扫描重建。
+//
+// 返回的第二个值是按记录逐条解析出来的字节数，装载路径用它与清单核对。走旁挂文件时
+// 没有逐条解析，只能以清单长度为准——**这里少掉了一层校验**：扫描重建会顺带发现
+// "长度对得上但内容被改过"（记录框架解析不下去）。截断一个字节这类改动仍然被
+// loadPartitionSet 的长度检查拦住（崩溃恢复场景 C），但同长度的内容篡改在快路径上
+// 不再被发现。要拿回那层校验就用 -verifyPartitions 启动，它强制扫描并与旁挂索引比对。
+//
+// 第三个返回值表示索引是从旁挂文件读来的（true）还是扫描重建的（false），供装载日志统计。
+func (kvs *KVServer) loadOrRebuildSparseIndex(path string, manifestSize int64) ([]SparseEntry, int64, bool, error) {
+	if kvs.verifyPartitions {
+		sparse, size, err := kvs.BuildSparseIndex(path, kvs.indexBlockBytes)
+		if err != nil {
+			return nil, 0, false, fmt.Errorf("rebuild sparse index for %s: %v", path, err)
+		}
+		if size != manifestSize {
+			return nil, 0, false, fmt.Errorf("partition %s: manifest says %d bytes, parsed %d", path, manifestSize, size)
+		}
+		// 旁挂索引在这条路径上不是被信任的，而是被检查的：它和扫描结果不一致说明
+		// 落盘的索引有 bug，此刻宁可直接失败，也不要带着一个错的索引去服务读。
+		if persisted, err := readSparseIndex(path, kvs.indexBlockBytes, manifestSize); err == nil {
+			if err := sameSparseIndex(persisted, sparse); err != nil {
+				return nil, 0, false, fmt.Errorf("partition %s: 旁挂索引与扫描结果不一致: %v", path, err)
+			}
+		}
+		return sparse, size, false, nil
+	}
+
+	if sparse, err := readSparseIndex(path, kvs.indexBlockBytes, manifestSize); err == nil {
+		return sparse, manifestSize, true, nil
+	} else if !os.IsNotExist(err) {
+		// 缺失是正常的（旧数据目录、或崩在数据已落盘而索引未写的窗口里），不值得报。
+		// 其它原因要说出来：它意味着落盘的索引有问题，而不只是没有。
+		fmt.Printf("[RECOVER] 分区 %s 的旁挂索引不可用，改为扫描重建: %v\n", path, err)
+	}
+	sparse, size, err := kvs.BuildSparseIndex(path, kvs.indexBlockBytes)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("rebuild sparse index for %s: %v", path, err)
+	}
+	if size != manifestSize {
+		// 长度对得上但解析出来的字节数不对：文件被改过内容而非长度
+		return nil, 0, false, fmt.Errorf("partition %s: manifest says %d bytes, parsed %d", path, manifestSize, size)
+	}
+	// 顺手把重建结果补写成旁挂文件，下次启动就不必再扫一遍。
+	if err := writeSparseIndex(path, sparse, kvs.indexBlockBytes, size); err != nil {
+		fmt.Printf("[RECOVER] 补写分区 %s 的旁挂索引失败（下次仍会扫描）: %v\n", path, err)
+	}
+	return sparse, size, false, nil
+}
+
+// sameSparseIndex 比较两份索引是否逐项相同。
+func sameSparseIndex(a, b []SparseEntry) error {
+	if len(a) != len(b) {
+		return fmt.Errorf("条目数 %d vs %d", len(a), len(b))
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return fmt.Errorf("第 %d 项 %v vs %v", i, a[i], b[i])
+		}
+	}
+	return nil
 }

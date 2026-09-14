@@ -103,8 +103,8 @@ func TestPartitionOverlapping(t *testing.T) {
 	}
 }
 
-// newTestServer 造一个够用的 KVServer：分区写入器只用到 persister 的 key padding
-// 与几个尺寸配置，不碰 Raft、不碰 RocksDB 实例。
+// newTestServer 造一个够用的 KVServer：分区写入器只用到几个尺寸配置，
+// 不碰 Raft、不碰 RocksDB 实例。
 func newTestServer(targetBytes int64) *KVServer {
 	return &KVServer{
 		persister:            &raft.Persister{},
@@ -324,7 +324,14 @@ func TestObsoleteFilesKeepsReusedPartitions(t *testing.T) {
 	}}
 
 	got := obsoleteFiles(prev, next)
-	want := map[string]bool{"/d/old.p0": true, "/d/old.p2": true}
+	// 每个被淘汰的分区带一个旁挂索引（.idx），两者必须一起删——留下描述已删文件的索引
+	// 不会读错，但会一直占着盘。
+	// 索引路径从 sparseIndexPath 派生，别在用例里写死：它曾与分区文件并排（xxx.p0.idx），
+	// 后来挪进 index/ 子目录以躲开脚本里的 `*.p*` 通配。
+	want := map[string]bool{
+		"/d/old.p0": true, sparseIndexPath("/d/old.p0"): true,
+		"/d/old.p2": true, sparseIndexPath("/d/old.p2"): true,
+	}
 	if len(got) != len(want) {
 		t.Fatalf("应删 %d 个，实际 %d 个: %v", len(want), len(got), got)
 	}
@@ -332,8 +339,8 @@ func TestObsoleteFilesKeepsReusedPartitions(t *testing.T) {
 		if !want[g] {
 			t.Errorf("不该删 %s", g)
 		}
-		if g == prev.parts[1].FilePath {
-			t.Errorf("删掉了仍被复用的分区 %s——这是丢数据", g)
+		if g == prev.parts[1].FilePath || g == sparseIndexPath(prev.parts[1].FilePath) {
+			t.Errorf("删掉了仍被复用的分区（或它的索引）%s——这是丢数据", g)
 		}
 	}
 

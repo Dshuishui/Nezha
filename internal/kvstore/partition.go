@@ -134,8 +134,8 @@ func (ps *PartitionSet) Close() {
 // partitionMeta 是清单里的一项，随 KV 状态一起写盘。重启时按它直接重建分区边界，
 // 不必先扫描全部数据文件才知道被切成了几段、各覆盖哪一段 key。
 //
-// 稀疏索引本身仍要扫文件重建（与改造前的 CreateSortedFileIndex 一样）——把索引也持久化
-// 是另一件事，不在 P1 范围内。
+// 稀疏索引不放在这里，而是每个分区一个旁挂文件（见 sparseindex.go 的持久化一节）：
+// 100GB 按 4KB 块是约 2500 万项，塞进这个每次保存 KV 状态都要重写的 JSON 里不合适。
 type partitionMeta struct {
 	Path string `json:"path"`
 	Lo   string `json:"lo"`
@@ -159,10 +159,25 @@ func (ps *PartitionSet) manifest() []partitionMeta {
 	return out
 }
 
-// loadPartitionSet 按清单重建一组分区：边界取自清单，稀疏索引扫文件重建。
+// loadPartitionSet 按清单重建一组分区：边界取自清单，稀疏索引优先读旁挂文件。
+//
+// 这一步的耗时要打出来。它正比于数据量（走扫描重建时实测约 110MB/s，100GB 约 15 分钟），
+// 期间节点不能服务、在三节点里会被判失联——跑大规模实验时这是启动慢的第一嫌疑，
+// 而"到底是读了旁挂索引还是扫了一遍"只有日志能说清。
 func (kvs *KVServer) loadPartitionSet(base string, metas []partitionMeta) (*PartitionSet, error) {
+	t0 := time.Now()
+	var loaded, scanned int
+	var bytesTotal int64
+	defer func() {
+		if len(metas) == 0 {
+			return
+		}
+		fmt.Printf("[RECOVER] 装载 %d 个分区（%dB）耗时 %v：旁挂索引 %d 个，扫描重建 %d 个\n",
+			len(metas), bytesTotal, time.Since(t0), loaded, scanned)
+	}()
 	ps := &PartitionSet{base: base, inline: NewInlineCache(kvs.inlineCacheBytes)}
 	for _, m := range metas {
+		bytesTotal += m.Size
 		// 先比字节数再重建索引。反过来的话，被截断的分区会先在扫描时撞上
 		// "unexpected EOF"——那个错误既指不出是哪里不对，也不说明期望多长。
 		// 清单说的字节数与文件实际长度对不上，意味着这个分区没有完整落盘或被改动过；
@@ -176,15 +191,17 @@ func (kvs *KVServer) loadPartitionSet(base string, metas []partitionMeta) (*Part
 			ps.Close()
 			return nil, fmt.Errorf("partition %s: manifest says %d bytes, file has %d", m.Path, m.Size, st.Size())
 		}
-		sparse, size, err := kvs.BuildSparseIndex(m.Path, kvs.indexBlockBytes)
+		// 优先读旁挂索引：扫描重建的速率实测约 110MB/s，100GB 要 15 分钟才起得来。
+		// 旁挂文件缺失或校验不过就退回扫描，所以最坏只是慢，不会用到错的索引。
+		sparse, size, fromDisk, err := kvs.loadOrRebuildSparseIndex(m.Path, m.Size)
 		if err != nil {
 			ps.Close()
-			return nil, fmt.Errorf("rebuild sparse index for %s: %v", m.Path, err)
+			return nil, err
 		}
-		if size != m.Size {
-			// 长度对得上但解析出来的字节数不对：文件被改过内容而非长度
-			ps.Close()
-			return nil, fmt.Errorf("partition %s: manifest says %d bytes, parsed %d", m.Path, m.Size, size)
+		if fromDisk {
+			loaded++
+		} else {
+			scanned++
 		}
 		pool, err := NewFileDescriptorPool(m.Path, partitionPoolSize)
 		if err != nil {
@@ -224,7 +241,9 @@ func obsoleteFiles(prev, next *PartitionSet) []string {
 	var out []string
 	for _, p := range prev.Paths() {
 		if !keep[p] {
-			out = append(out, p)
+			// 旁挂索引跟着它的数据文件一起走：留下一个描述已删除文件的 .idx 没有害处
+			// （下次装载读不到对应的数据文件），但会一直占着盘。
+			out = append(out, p, sparseIndexPath(p))
 		}
 	}
 	return out
@@ -233,13 +252,22 @@ func obsoleteFiles(prev, next *PartitionSet) []string {
 // removePartitionFiles 删除一组分区留下的全部文件。崩溃重做前要先清掉上次写了一半的产物，
 // 否则残留的 .pN 会被下一次写入跳过或覆盖到一半。
 func removePartitionFiles(base string) error {
-	matches, err := filepath.Glob(base + ".p*")
-	if err != nil {
-		return err
+	// 旁挂索引在 index/ 子目录里（见 sparseIndexPath），不在 base.p* 的通配范围内，
+	// 所以要单独清一遍——留下一个描述已删分区的索引虽然读不错，但会一直占着盘，
+	// 而且下一轮写到同名分区时那份旧索引的 dataSize 校验会失败、白扫一遍。
+	patterns := []string{
+		base + ".p*",
+		filepath.Join(filepath.Dir(base), sparseIndexDir, filepath.Base(base)+".p*.idx"),
 	}
-	for _, m := range matches {
-		if err := os.Remove(m); err != nil && !os.IsNotExist(err) {
+	for _, pat := range patterns {
+		matches, err := filepath.Glob(pat)
+		if err != nil {
 			return err
+		}
+		for _, m := range matches {
+			if err := os.Remove(m); err != nil && !os.IsNotExist(err) {
+				return err
+			}
 		}
 	}
 	return nil
@@ -375,12 +403,19 @@ func (pw *partitionWriter) seal() error {
 	}
 	pw.file, pw.w = nil, nil
 
+	sparse := pw.sparse.Build()
+	// 旁挂索引写在数据 fsync **之后**，所以它描述的一定是已经落盘的内容。
+	// 写失败不算这一轮失败：索引缺失只会让下次启动退回扫描重建，不影响正确性。
+	if err := writeSparseIndex(path, sparse, pw.kvs.indexBlockBytes, pw.offset); err != nil {
+		fmt.Printf("[GC] 写分区 %s 的旁挂索引失败（下次启动会扫描重建）: %v\n", path, err)
+	}
+
 	pool, err := NewFileDescriptorPool(path, partitionPoolSize)
 	if err != nil {
 		return fmt.Errorf("file descriptor pool for %s: %v", path, err)
 	}
 	pw.done = append(pw.done, &SortedFileIndex{
-		Sparse:       pw.sparse.Build(),
+		Sparse:       sparse,
 		FileSize:     pw.offset,
 		InlineValues: pw.inline,
 		FilePath:     path,

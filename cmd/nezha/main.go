@@ -58,6 +58,9 @@ func main() {
 	// the role until it learns otherwise, and answers stale reads meanwhile. With the lease
 	// held a read still costs no RPC; only a cold lease falls back to a ReadIndex round.
 	flag.BoolVar(&cfg.LeaseRead, "leaseRead", true, "serve reads only while the leader lease is held, else fall back to ReadIndex (needs -leaderCheck)")
+	// 装载分区时扫描重建索引并与落盘的旁挂索引比对。默认关：那是正比于数据量的启动耗时
+	// （实测约 110MB/s，100GB 要 15 分钟）。排查索引可疑时打开。
+	flag.BoolVar(&cfg.VerifyPartitions, "verifyPartitions", false, "on load, rebuild each partition's sparse index by scanning and check the persisted one against it")
 	flag.StringVar(&cfg.VizAddr, "vizAddr", "", "listen address for the AVP placement visualiser, e.g. :8080 (empty = disabled)")
 	flag.IntVar(&cfg.SSTSpanMB, "sstSpanMB", 32, "lsm-raft: applied value bytes per shipped SSTable span")
 	flag.IntVar(&cfg.SSTIdleMs, "sstIdleMs", 1000, "lsm-raft: cut the open span after this many ms without writes")

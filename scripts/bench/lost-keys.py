@@ -85,6 +85,8 @@ def main():
         sys.exit(f"{vlog} 下没有文件")
     for p in files:
         if os.path.isdir(p):
+            continue  # index/ 子目录：稀疏索引的旁挂文件，不是数据记录
+        if p.endswith(".idx"):
             continue
         got = keys_in(p, stride)
         present |= got

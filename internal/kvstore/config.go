@@ -53,6 +53,13 @@ type Config struct {
 	// nothing to prove. See requireLeader in service.go.
 	LeaseRead bool
 
+	// VerifyPartitions rebuilds every partition's sparse index by scanning the file on
+	// load and checks the persisted index against it, instead of trusting the persisted
+	// one. It restores the whole-file content check that scanning used to give for free
+	// and catches a wrong persisted index, at the cost of a startup proportional to the
+	// data size (~110MB/s measured). Off by default.
+	VerifyPartitions bool
+
 	VizAddr string // AVP placement visualiser listen address, "" = off
 
 	// PartitionTargetMB is the target size of one GC output partition (partition.go).

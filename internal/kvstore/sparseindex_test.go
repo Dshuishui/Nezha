@@ -2,6 +2,8 @@ package kvstore
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -121,4 +123,94 @@ func TestSparseIndexMemoryReduction(t *testing.T) {
 		t.Fatalf("压缩比仅 %.0fx（%d key -> %d 索引项），期望 >100x", ratio, keys, n)
 	}
 	t.Logf("%d 个 key -> %d 个索引项，压缩 %.0fx", keys, n, ratio)
+}
+
+// 稀疏索引的持久化。索引原先每次启动都扫全部分区重建（约 110MB/s，100GB 要 15 分钟），
+// 现在跟着分区文件一起落盘。这一组钉住"落盘的索引与扫描出来的一模一样"以及
+// "任何一处对不上就退回扫描，而不是用一个错的索引"。
+func TestSparseIndexPersistRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	data := filepath.Join(dir, "part.p0")
+	if err := os.WriteFile(data, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := []SparseEntry{
+		{PaddedKey: "0000000000", Offset: 0},
+		{PaddedKey: "0000000042", Offset: 4096},
+		{PaddedKey: "user18446744073709551615", Offset: 8192}, // 变长 key 也要能存
+	}
+	if err := writeSparseIndex(data, want, 4096, 7); err != nil {
+		t.Fatalf("writeSparseIndex: %v", err)
+	}
+	got, err := readSparseIndex(data, 4096, 7)
+	if err != nil {
+		t.Fatalf("readSparseIndex: %v", err)
+	}
+	if err := sameSparseIndex(got, want); err != nil {
+		t.Fatalf("往返不一致: %v", err)
+	}
+}
+
+func TestSparseIndexRejectsMismatch(t *testing.T) {
+	dir := t.TempDir()
+	data := filepath.Join(dir, "part.p0")
+	if err := os.WriteFile(data, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries := []SparseEntry{{PaddedKey: "0000000000", Offset: 0}}
+	if err := writeSparseIndex(data, entries, 4096, 7); err != nil {
+		t.Fatal(err)
+	}
+
+	// 数据长度不符：这份索引描述的不是现在盘上这个文件
+	if _, err := readSparseIndex(data, 4096, 8); err == nil {
+		t.Error("数据长度不符时应当拒绝")
+	}
+	// 块粒度不符：索引仍然正确，但点查代价的口径会与配置不符
+	if _, err := readSparseIndex(data, 8192, 7); err == nil {
+		t.Error("块粒度不符时应当拒绝")
+	}
+	// 内容被改：校验和必须抓到
+	raw, err := os.ReadFile(sparseIndexPath(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[len(raw)/2] ^= 0xff
+	if err := os.WriteFile(sparseIndexPath(data), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readSparseIndex(data, 4096, 7); err == nil {
+		t.Error("内容被改动时应当拒绝")
+	}
+	// 缺失：崩在"数据已 fsync、索引未写"的窗口里就是这一种，必须是 IsNotExist
+	os.Remove(sparseIndexPath(data))
+	if _, err := readSparseIndex(data, 4096, 7); !os.IsNotExist(err) {
+		t.Errorf("索引缺失应当报 IsNotExist，实际 %v", err)
+	}
+}
+
+// 落盘的索引必须与扫描重建的逐项相同——这是 -verifyPartitions 那条路径的判据，
+// 也是"信任落盘索引"这件事唯一的依据。
+func TestPersistedSparseIndexMatchesRebuild(t *testing.T) {
+	kvs := newTestServer(4096) // 小目标值，强制切出多个分区
+	base := filepath.Join(t.TempDir(), "sorted")
+	ps := writeEntries(t, kvs, base, 4000, 64)
+	defer ps.Close()
+
+	for _, p := range ps.parts {
+		rebuilt, size, err := kvs.BuildSparseIndex(p.FilePath, kvs.indexBlockBytes)
+		if err != nil {
+			t.Fatalf("BuildSparseIndex(%s): %v", p.FilePath, err)
+		}
+		persisted, err := readSparseIndex(p.FilePath, kvs.indexBlockBytes, size)
+		if err != nil {
+			t.Fatalf("分区 %s 没有可用的旁挂索引: %v", p.FilePath, err)
+		}
+		if err := sameSparseIndex(persisted, rebuilt); err != nil {
+			t.Errorf("分区 %s 的旁挂索引与扫描结果不一致: %v", p.FilePath, err)
+		}
+		if err := sameSparseIndex(persisted, p.Sparse); err != nil {
+			t.Errorf("分区 %s 的旁挂索引与内存里的不一致: %v", p.FilePath, err)
+		}
+	}
 }
