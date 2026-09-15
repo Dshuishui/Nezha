@@ -247,5 +247,5 @@ Two verification notes worth keeping, because both cost time:
   against an install by `stateMu`, but the GC loop is excluded by a pair of refusal flags
   rather than by the lock. A GC round and an install therefore cannot overlap at all, which
   is stricter than necessary.
-- `snapshotNeeded` is evaluated per replication round, so the decision to snapshot can lag
-  the condition by one round of the replication loop's idle tick.
+- The snapshot decision is made inside `maybeSendSnapshot`, once per replication round, so
+  it can lag the condition by one round of the replication loop's idle tick.

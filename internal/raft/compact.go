@@ -229,13 +229,6 @@ func (rf *Raft) dropLogPrefix(n int) {
 	rf.log = newLog
 }
 
-// LogFootprint 报告内存日志的条数与字节数，供诊断与测试。
-func (rf *Raft) LogFootprint() (entries int, bytes int64) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	return len(rf.log), rf.logBytes
-}
-
 // budgetFloorLocked 返回"至少保留最近 budget 字节"所允许的最小压缩点。
 //
 // 从日志末尾往前累加，攒够预算就停，所以工作量正比于**预算本身**而不是日志长度——

@@ -69,25 +69,6 @@ func (rf *Raft) InstallSnapshotState(base int, baseTerm int32, logFile LogFile, 
 	return last, nil
 }
 
-// SnapshotNeeded reports whether peerId has fallen behind what the in-memory log can
-// still serve, which is the condition the Raft paper gives for sending a snapshot:
-// "Leaders resort to sending a snapshot only when they have already discarded the next
-// log entry needed to replicate entries to the follower with AppendEntries."
-//
-// It is deliberately not a "how many entries behind" threshold. etcd does the same thing
-// -- maybeSendAppend switches to a snapshot exactly when it cannot read term(Next-1) or
-// entries(Next, ...) -- and the reason is that any separate threshold would be a second,
-// independently tunable definition of "too far behind" that could disagree with the one
-// the truncation policy already implies.
-func (rf *Raft) SnapshotNeeded(peerId int) bool {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	if rf.role != ROLE_LEADER || rf.nextIndex == nil || peerId == rf.me {
-		return false
-	}
-	return rf.index2LogPos(rf.nextIndex[peerId]) < 0
-}
-
 // ---- leader 侧：什么时候发、发完怎么算 ----
 //
 // 在此之前 leader 对每个 peer 只有 nextIndex / matchIndex 两个数，没有"这个 peer 正在收
