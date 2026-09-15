@@ -247,6 +247,10 @@ func New(cfg Config) (*KVServer, error) {
 			return nil, err
 		}
 	}
+	// 上次没走完的快照导出留下的 store.sst 在这里作废：传输不可续传（三家业界实现都选
+	// 幂等可重来），半成品没有用处，留着只占盘。必须在恢复之前清，否则一份属于上一轮
+	// GC 的导出会被下一次传输当成本轮产物。
+	kvs.clearSnapshotWork()
 	kvs.InitialRaftStateLog = filepath.Join(cfg.DataDir, "data", "valuelog", "RaftState.log")
 	kvs.currentLog = kvs.InitialRaftStateLog
 	InitGCPaths(cfg.DataDir)

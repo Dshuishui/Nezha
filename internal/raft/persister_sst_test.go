@@ -2,6 +2,7 @@ package raft
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -16,7 +17,7 @@ func openStore(t *testing.T, name string) *Persister {
 	return p
 }
 
-// spanFile writes the rows of one span the way the leader does (store keys padded).
+// spanFile writes the rows of one span the way the leader does.
 func spanFile(t *testing.T, p *Persister, name string, applied int, kv map[string]string) string {
 	t.Helper()
 	rows := map[string][]byte{}
@@ -104,4 +105,102 @@ func TestSpanOverReplayedRows(t *testing.T) {
 func TestSpanMetaKeySortsFirst(t *testing.T) {
 	leader := openStore(t, "leader")
 	spanFile(t, leader, "meta.sst", 3, map[string]string{"": "empty-key", "\x00zz": "nul-prefixed", "0": "digit"})
+}
+
+// 快照的存储引擎导出必须与"把那些写入重放一遍"等价：行一样，applied 一样。
+// 位点是返回值而不是入参，所以这里也钉住"返回的 applied 就是导出文件里那一条"——
+// 一份位点与数据不符的快照会让接收端声称自己在一个它其实没到的位置上。
+func TestExportStoreRoundTrip(t *testing.T) {
+	leader, follower := openStore(t, "leader"), openStore(t, "follower")
+	kv := map[string]string{}
+	for i := 1; i <= 500; i++ {
+		k, v := fmt.Sprintf("k%04d", i), fmt.Sprintf("v%d", i)
+		leader.PutValueApplied(k, v, i)
+		kv[k] = v
+	}
+	path := filepath.Join(t.TempDir(), "store.sst")
+	rows, applied, err := leader.ExportStoreSST(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied != 500 {
+		t.Errorf("导出报的 applied = %d; want 500", applied)
+	}
+	// 500 个用户行 + 1 个 applied 标记
+	if rows != 501 {
+		t.Errorf("导出 %d 行; want 501（500 个 key 加 applied 标记）", rows)
+	}
+
+	if err := follower.IngestSSTables([]string{path}); err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range kv {
+		got, err := follower.Get(k)
+		if err != nil {
+			t.Fatalf("导入之后读 %q: %v", k, err)
+		}
+		if got != want {
+			t.Fatalf("导入之后 %q = %q; want %q", k, got, want)
+		}
+	}
+	got, ok, err := follower.GetApplied()
+	if err != nil || !ok {
+		t.Fatalf("导入之后读 applied: ok=%v err=%v", ok, err)
+	}
+	if got != applied {
+		t.Errorf("导入之后 applied = %d; 导出时报的是 %d——位点与数据不符", got, applied)
+	}
+}
+
+// 空库不该产出文件：SstFileWriter 拒绝 finish 一个没有条目的文件，而接收端也没什么可做的。
+// 全新节点当 leader 时会走到这里。
+func TestExportStoreEmpty(t *testing.T) {
+	p := openStore(t, "empty")
+	path := filepath.Join(t.TempDir(), "store.sst")
+	rows, applied, err := p.ExportStoreSST(path)
+	if err != nil {
+		t.Fatalf("空库导出应当成功而不是报错: %v", err)
+	}
+	if rows != 0 || applied != 0 {
+		t.Errorf("空库导出 rows=%d applied=%d; want 0 0", rows, applied)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("空库不该留下文件 %s（err=%v）", path, err)
+	}
+}
+
+// 覆盖写之后导出的必须是**最新**那一版，而不是两版都在。
+// SstFileWriter 要求严格升序，同一个 key 出现两次它会直接报错——所以这条也顺带证明
+// 导出走的是迭代器给出的当前视图，而不是把历史版本也写了出去。
+func TestExportStoreTakesLatestVersion(t *testing.T) {
+	leader, follower := openStore(t, "leader"), openStore(t, "follower")
+	for i := 1; i <= 50; i++ {
+		leader.PutValueApplied(fmt.Sprintf("k%02d", i), "old", i)
+	}
+	for i := 1; i <= 50; i++ {
+		leader.PutValueApplied(fmt.Sprintf("k%02d", i), "new", 100+i)
+	}
+	path := filepath.Join(t.TempDir(), "store.sst")
+	rows, applied, err := leader.ExportStoreSST(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 51 {
+		t.Errorf("导出 %d 行; want 51——每个 key 只该有最新一版", rows)
+	}
+	if applied != 150 {
+		t.Errorf("applied = %d; want 150", applied)
+	}
+	if err := follower.IngestSSTables([]string{path}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 50; i++ {
+		got, err := follower.Get(fmt.Sprintf("k%02d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != "new" {
+			t.Fatalf("k%02d = %q; want \"new\"", i, got)
+		}
+	}
 }

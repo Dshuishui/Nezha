@@ -319,3 +319,57 @@ func (rf *Raft) ReadValueFromFile(filename string, offset int64) (string, string
 
 	return key, value, nil
 }
+
+// LogCut 是当前日志文件的一个一致切点，用来构造快照。
+//
+// 为什么不能直接 os.Stat 那个文件：写入走 bufio，缓冲里的字节还不在文件里，而且一次写入
+// 可能只落了半条记录。两者都会让接收端拿到一个尾部撕裂的日志——recovery 能容忍最后一个
+// 文件末尾的半条记录（截掉它），但那是崩溃恢复的兜底，不该是正常传输的常态。
+type LogCut struct {
+	Path  string // 当前日志文件
+	Bytes int64  // 前这么多字节已刷净且按记录对齐
+	// BaseIndex / BaseTerm 是这个文件第一条记录之前那一条的 index/term，也就是快照的
+	// lastIncludedIndex/Term：比它更早的数据已经被 GC 搬进分区文件，不在日志里了。
+	BaseIndex int
+	BaseTerm  int32
+	// LastIndex / LastTerm 是切点处最后一条记录。接收端装完快照之后日志就到这里，
+	// leader 于是从 LastIndex+1 继续正常复制。
+	LastIndex int
+	LastTerm  int32
+}
+
+// CutLog 刷净日志缓冲并返回一个记录对齐的切点。
+//
+// fsync 一并做掉：接收端要按这个长度去读文件，而"已经交给内核但还没落盘"的字节在断电后
+// 可能不存在。这一次 fsync 只发生在制作快照时，不在写路径上。
+func (rf *Raft) CutLog() (LogCut, error) {
+	rf.logMu.Lock()
+	if rf.logWriter != nil {
+		if err := rf.logWriter.Flush(); err != nil {
+			rf.logMu.Unlock()
+			return LogCut{}, fmt.Errorf("flush log: %w", err)
+		}
+	}
+	if rf.logFile != nil {
+		if err := rf.logFile.Sync(); err != nil {
+			rf.logMu.Unlock()
+			return LogCut{}, fmt.Errorf("fsync log: %w", err)
+		}
+	}
+	cut := LogCut{
+		Path:      rf.currentLog,
+		Bytes:     rf.logOffset,
+		LastIndex: rf.lastWrittenIndex,
+		LastTerm:  rf.lastWrittenTerm,
+	}
+	rf.logMu.Unlock()
+
+	// fileBaseIndex 在 rf.mu 下，不在 logMu 下。分两段取而不是嵌套加锁，与
+	// PersistLogBase 的做法一致（它也是先 logMu 后 rf.mu，顺序执行不嵌套）。
+	// 两段之间可能夹进一次 GC 切换，所以调用方在用完之后必须复核轮次没有变——
+	// 见 createSnapshot 的收尾检查。
+	rf.mu.Lock()
+	cut.BaseIndex, cut.BaseTerm = rf.fileBaseIndex, rf.fileBaseTerm
+	rf.mu.Unlock()
+	return cut, nil
+}

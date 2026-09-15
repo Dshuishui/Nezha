@@ -149,7 +149,7 @@ func (kvs *KVServer) lsmResetLeaderState() {
 	}
 	l.spanOpen, l.spanBytes, l.rows = false, 0, map[string][]byte{}
 	for _, s := range l.catalog {
-		os.RemoveAll(filepath.Dir(s.Files[0]))
+		os.RemoveAll(filepath.Dir(s.Files[0].Path))
 	}
 	l.catalog = nil
 	util.DPrintf("[LSM-Raft] no longer leader: open span and catalog dropped")
@@ -214,9 +214,10 @@ func (kvs *KVServer) lsmCutSpan() {
 	// snapshot path share one transport, and a reader of either should not have to know
 	// which kind the zero value happens to mean.
 	l.catalog = append(l.catalog, raft.SSTableSpan{
-		Kind: raftrpc.InstallSSTableKind_SPAN, Start: start, End: end, Files: []string{file}})
+		Kind: raftrpc.InstallSSTableKind_SPAN, Start: start, End: end,
+		Files: []raft.SSTableFile{{Path: file}}})
 	for len(l.catalog) > l.catalogMax {
-		os.RemoveAll(filepath.Dir(l.catalog[0].Files[0]))
+		os.RemoveAll(filepath.Dir(l.catalog[0].Files[0].Path))
 		l.catalog = l.catalog[1:]
 	}
 	util.DPrintf("[LSM-Raft] span [%d,%d] cut: %d rows in %v", start, end, len(rows), time.Since(t0))
@@ -336,7 +337,7 @@ func (kvs *KVServer) lsmInstall(span raft.SSTableSpan) (int, raftrpc.InstallSSTa
 		}
 	}
 	t0 := time.Now()
-	if err := kvs.persister.IngestSSTables(span.Files); err != nil {
+	if err := kvs.persister.IngestSSTables(span.Paths()); err != nil {
 		util.EPrintf("[LSM-Raft] ingest span [%d,%d]: %v", span.Start, span.End, err)
 		return la, raftrpc.InstallSSTableStatus_FAILED
 	}
@@ -348,7 +349,7 @@ func (kvs *KVServer) lsmInstall(span raft.SSTableSpan) (int, raftrpc.InstallSSTa
 	}
 	kvs.lastAppliedIndex = span.End
 	kvs.lsmDropHeld(span.End)
-	os.RemoveAll(filepath.Dir(span.Files[0])) // RocksDB consumed the files; drop the span directory
+	os.RemoveAll(filepath.Dir(span.Files[0].Path)) // RocksDB consumed the files; drop the span directory
 	util.DPrintf("[LSM-Raft] ingested span [%d,%d] (%d files) in %v; held=%d", span.Start, span.End, len(span.Files), time.Since(t0), len(l.held))
 	return span.End, raftrpc.InstallSSTableStatus_INGESTED
 }

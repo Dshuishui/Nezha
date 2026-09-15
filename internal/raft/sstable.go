@@ -48,7 +48,7 @@ type SSTableSpan struct {
 	// End is the last log index the files cover, inclusive. For SNAPSHOT this is the
 	// snapshot's lastIncludedIndex.
 	End   int
-	Files []string // absolute paths, ingestion order
+	Files []SSTableFile // ingestion order
 	// OldestAvailable is the Start of the oldest span the leader can still send. A
 	// follower that is behind it must replay entries up to OldestAvailable-1 itself.
 	// SPAN only.
@@ -57,6 +57,27 @@ type SSTableSpan struct {
 	// there: End becomes the follower's log base, so it has to be able to answer a
 	// later AppendEntries consistency check at that index.
 	LastIncludedTerm int
+}
+
+// SSTableFile is one file to ship.
+type SSTableFile struct {
+	Path string // absolute path on the sender; the local path on the receiver
+	// Limit caps how many bytes of Path are sent, 0 meaning the whole file. It exists
+	// for the one file in a snapshot that is still being written to: the current value
+	// log is append-only, so a prefix of it is a consistent cut, but its length has to
+	// be the length at the moment the rest of the snapshot was read. Without the cap the
+	// sender would ship whatever the writers have appended since, which is both
+	// unbounded and inconsistent with the store export's index.
+	Limit int64
+}
+
+// Paths returns just the file paths, for the callers that only need those.
+func (s SSTableSpan) Paths() []string {
+	out := make([]string, 0, len(s.Files))
+	for _, f := range s.Files {
+		out = append(out, f.Path)
+	}
+	return out
 }
 
 // dirName is where a transfer is reassembled under the incoming directory. The two kinds
@@ -92,7 +113,7 @@ func (rf *Raft) InstallSSTable(stream raftrpc.Raft_InstallSSTableServer) error {
 	var (
 		dir      string
 		files    = map[string]*os.File{} // by basename
-		order    []string                // by FileSeq
+		order    []SSTableFile           // by FileSeq
 		span     SSTableSpan
 		header   *raftrpc.InstallSSTableRequest
 		received int64
@@ -139,7 +160,7 @@ func (rf *Raft) InstallSSTable(stream raftrpc.Raft_InstallSSTableServer) error {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return err
 			}
-			order = make([]string, req.FileCount)
+			order = make([]SSTableFile, req.FileCount)
 		}
 		if req.FileName != "" {
 			f, ok := files[req.FileName]
@@ -152,7 +173,7 @@ func (rf *Raft) InstallSSTable(stream raftrpc.Raft_InstallSSTableServer) error {
 				}
 				files[req.FileName] = f
 				if int(req.FileSeq) < len(order) {
-					order[req.FileSeq] = f.Name()
+					order[req.FileSeq] = SSTableFile{Path: f.Name()}
 				}
 			}
 			if len(req.Data) > 0 {
@@ -176,7 +197,7 @@ func (rf *Raft) InstallSSTable(stream raftrpc.Raft_InstallSSTableServer) error {
 	}
 	files = nil
 	for i, p := range order {
-		if p == "" {
+		if p.Path == "" {
 			os.RemoveAll(dir)
 			return fmt.Errorf("InstallSSTable: %s %s is missing file %d of %d",
 				span.Kind, span.dirName(), i, len(order))
@@ -232,12 +253,16 @@ func (rf *Raft) SendSSTable(peerId int, span SSTableSpan) (*raftrpc.InstallSSTab
 	rf.mu.Unlock()
 
 	var total int64
-	for _, p := range span.Files {
-		st, err := os.Stat(p)
+	for _, f := range span.Files {
+		st, err := os.Stat(f.Path)
 		if err != nil {
 			return nil, err
 		}
-		total += st.Size()
+		n := st.Size()
+		if f.Limit > 0 && f.Limit < n {
+			n = f.Limit
+		}
+		total += n
 	}
 	conn, err := rf.pools[peerId].Get()
 	if err != nil {
@@ -264,16 +289,26 @@ func (rf *Raft) SendSSTable(peerId int, span SSTableSpan) (*raftrpc.InstallSSTab
 		}
 	}
 	buf := make([]byte, sstChunkSize)
-	for seq, p := range span.Files {
-		f, err := os.Open(p)
+	for seq, sf := range span.Files {
+		f, err := os.Open(sf.Path)
 		if err != nil {
 			return nil, err
 		}
 		var off int64
 		for {
-			n, rerr := f.Read(buf)
+			chunk := buf
+			if sf.Limit > 0 {
+				left := sf.Limit - off
+				if left <= 0 {
+					break // 到了这一份的截断点，后面新追加的字节不属于这次快照
+				}
+				if left < int64(len(chunk)) {
+					chunk = chunk[:left]
+				}
+			}
+			n, rerr := f.Read(chunk)
 			if n > 0 {
-				if err := stream.Send(newMsg(filepath.Base(p), int32(seq), off, buf[:n], false)); err != nil {
+				if err := stream.Send(newMsg(filepath.Base(sf.Path), int32(seq), off, chunk[:n], false)); err != nil {
 					f.Close()
 					return nil, err
 				}
@@ -290,7 +325,7 @@ func (rf *Raft) SendSSTable(peerId int, span SSTableSpan) (*raftrpc.InstallSSTab
 		f.Close()
 		if off == 0 {
 			// An empty file still has to be created on the far side.
-			if err := stream.Send(newMsg(filepath.Base(p), int32(seq), 0, nil, false)); err != nil {
+			if err := stream.Send(newMsg(filepath.Base(sf.Path), int32(seq), 0, nil, false)); err != nil {
 				return nil, err
 			}
 		}

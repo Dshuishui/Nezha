@@ -14,7 +14,8 @@ import (
 func catalog(spans ...[2]int) *lsmRaft {
 	l := &lsmRaft{catalogMax: 16}
 	for _, s := range spans {
-		l.catalog = append(l.catalog, raft.SSTableSpan{Start: s[0], End: s[1], Files: []string{"x"}})
+		l.catalog = append(l.catalog, raft.SSTableSpan{Start: s[0], End: s[1],
+			Files: []raft.SSTableFile{{Path: "x"}}})
 	}
 	return l
 }
@@ -82,7 +83,8 @@ func spanForTest(t *testing.T, kvs *KVServer, start, end int, kv map[string]stri
 	if err := kvs.persister.WriteSpanSST(file, rows, end); err != nil {
 		t.Fatal(err)
 	}
-	return raft.SSTableSpan{Start: start, End: end, Files: []string{file}, OldestAvailable: start}
+	return raft.SSTableSpan{Start: start, End: end,
+		Files: []raft.SSTableFile{{Path: file}}, OldestAvailable: start}
 }
 
 // TestInstallSkipAndGap: the follower rule a-1 <= lastApplied < b in its two refusals.

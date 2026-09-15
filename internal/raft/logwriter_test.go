@@ -221,3 +221,99 @@ func TestOverwriteTruncatesStaleTail(t *testing.T) {
 		t.Fatalf("after overwrite: last %d, log[1] term %d value %q; want 2 / 2 / short", last, rf.log[1].Term, rf.log[1].Command.Value)
 	}
 }
+
+// 快照要发的是当前日志的一个**记录对齐**的前缀。长度必须取自写入端自己维护的
+// rf.logOffset，不能 os.Stat 那个文件：冲突覆盖会 Seek 回退再写，覆盖点之后的字节
+// 已经不属于日志了，而文件长度在截断之前仍然把它们算在内。按 os.Stat 的长度发过去，
+// 接收端就会把那些陈旧字节当成记录读出来。
+func TestCutLogIsRecordAligned(t *testing.T) {
+	dir := t.TempDir()
+	rf := newTestRaft(t, dir)
+	rf.fileBaseIndex, rf.fileBaseTerm = 15000, 3
+
+	var entries []*Entry
+	var want int64
+	for i := 1; i <= 20; i++ {
+		e := entryOf(uint32(15000+i), fmt.Sprintf("key%02d", i), "value-bytes")
+		entries = append(entries, e)
+		want += recordLen(rf, e)
+	}
+	rf.mu.Lock()
+	rf.WriteEntryToFile(entries, 0)
+	rf.mu.Unlock()
+
+	cut, err := rf.CutLog()
+	if err != nil {
+		t.Fatalf("CutLog: %v", err)
+	}
+	if cut.Bytes != want {
+		t.Errorf("切点 %d 字节; want %d（20 字节头 + key + value 逐条累加）", cut.Bytes, want)
+	}
+	st, err := os.Stat(rf.currentLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Size() != cut.Bytes {
+		t.Errorf("切点说 %d 字节，文件里实际 %d 字节——切点必须已经刷净", cut.Bytes, st.Size())
+	}
+	if cut.Path != rf.currentLog {
+		t.Errorf("切点指向 %s; want %s", cut.Path, rf.currentLog)
+	}
+	if cut.BaseIndex != 15000 || cut.BaseTerm != 3 {
+		t.Errorf("切点基址 (%d,%d); want (15000,3)——这就是快照的 lastIncludedIndex/Term",
+			cut.BaseIndex, cut.BaseTerm)
+	}
+	if cut.LastIndex != 15020 {
+		t.Errorf("切点最后一条 index = %d; want 15020", cut.LastIndex)
+	}
+}
+
+// 冲突覆盖之后再取切点：长度必须是覆盖后的真实日志长度，不是覆盖前的文件长度。
+// 这是"别用 os.Stat"那条理由的用例化。
+func TestCutLogAfterOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	rf := newTestRaft(t, dir)
+
+	var long []*Entry
+	for i := 1; i <= 30; i++ {
+		long = append(long, entryOf(uint32(i), fmt.Sprintf("k%02d", i), "aaaaaaaaaa"))
+	}
+	rf.mu.Lock()
+	rf.WriteEntryToFile(long, 0)
+	rf.mu.Unlock()
+	full, err := rf.CutLog()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 从第 11 条的位置起覆盖 3 条（leader 与本节点在那里分叉）
+	startPos := int64(0)
+	for i := 0; i < 10; i++ {
+		startPos += recordLen(rf, long[i])
+	}
+	replacement := []*Entry{
+		entryOf(11, "k11", "bb"), entryOf(12, "k12", "bb"), entryOf(13, "k13", "bb"),
+	}
+	rf.mu.Lock()
+	rf.WriteEntryToFile(replacement, startPos)
+	rf.mu.Unlock()
+
+	cut, err := rf.CutLog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want int64 = startPos
+	for _, e := range replacement {
+		want += recordLen(rf, e)
+	}
+	if cut.Bytes != want {
+		t.Errorf("覆盖之后切点 %d 字节; want %d", cut.Bytes, want)
+	}
+	if cut.Bytes >= full.Bytes {
+		t.Errorf("覆盖之后的日志应当比覆盖前短（%d vs %d）——否则陈旧字节还在日志里",
+			cut.Bytes, full.Bytes)
+	}
+	if cut.LastIndex != 13 {
+		t.Errorf("覆盖之后最后一条 index = %d; want 13", cut.LastIndex)
+	}
+}

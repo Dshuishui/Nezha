@@ -510,11 +510,17 @@ func (pw *partitionWriter) Abort() {
 // 没有分区组时返回 (nil, 非 nil 的空操作)，调用方不必判空。
 func (kvs *KVServer) pinPartitions() (*PartitionSet, func()) {
 	kvs.mu.Lock()
+	defer kvs.mu.Unlock()
+	return kvs.pinPartitionsLocked()
+}
+
+// pinPartitionsLocked 同 pinPartitions，但由调用方持有 kvs.mu。快照制作要在**同一个**
+// 临界区里既钉住分区又读下 numGC / 当前日志名，否则钉住的那一组可能属于另一轮。
+func (kvs *KVServer) pinPartitionsLocked() (*PartitionSet, func()) {
 	ps := kvs.lastPartitions
 	if ps != nil {
 		ps.refs.Add(1)
 	}
-	kvs.mu.Unlock()
 	var once sync.Once
 	return ps, func() {
 		once.Do(func() {
