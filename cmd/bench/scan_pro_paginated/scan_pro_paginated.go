@@ -20,8 +20,6 @@ var (
 	ser        = flag.String("servers", "", "the Server, Client Connects to")
 	cnums      = flag.Int("cnums", 1, "Client Threads Number")
 	dnums      = flag.Int("dnums", 1000000, "data num")
-	k1         = flag.Int("startkey", 0, "first key")
-	k2         = flag.Int("endkey", 20, "last key")
 	outputFile = flag.String("output", "scan_benchmark_results.txt", "输出结果文件名")
 	// 新增：分页参数，用于控制每次scan的最大key数量
 	// 计算方式：假设value为16KB，每次scan最多返回1.5GB数据
@@ -33,17 +31,15 @@ type KVClient struct {
 	Kvservers []string
 	c         *client.Client
 
-	goodPut      int
-	valuesize    int
-	totalLatency time.Duration
-	goodscan     int
+	goodPut   int
+	valuesize int
+	goodscan  int
 }
 
 type scanResult struct {
 	totalCount    int
 	scanCount     int
 	avgLatency    time.Duration
-	throughput    float64
 	valueSize     int
 	totalDataSize float64
 	totalLatency  time.Duration

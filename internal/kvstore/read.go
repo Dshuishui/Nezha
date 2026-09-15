@@ -470,28 +470,26 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 		}()
 
 		// 首先检查新文件的结果
-		select {
-		case result := <-newFileResult:
-			if result.err != nil {
-				panic("去新的rocksdb中拿取key对应的index有问题")
-			}
-			if result.found {
-				reply.Value = result.value
-				return reply
-			}
-			// 如果新文件没找到，等待旧文件的结果
-			result = <-oldFileResult
-			if result.err != nil {
-				panic("去旧的rocksdb中拿取key对应的index有问题")
-			}
-			if result.found {
-				reply.Value = result.value
-				return reply
-			}
-			reply.Err = raft.ErrNoKey
-			reply.Value = raft.NoKey
+		result := <-newFileResult
+		if result.err != nil {
+			panic("去新的rocksdb中拿取key对应的index有问题")
+		}
+		if result.found {
+			reply.Value = result.value
 			return reply
 		}
+		// 如果新文件没找到，等待旧文件的结果
+		result = <-oldFileResult
+		if result.err != nil {
+			panic("去旧的rocksdb中拿取key对应的index有问题")
+		}
+		if result.found {
+			reply.Value = result.value
+			return reply
+		}
+		reply.Err = raft.ErrNoKey
+		reply.Value = raft.NoKey
+		return reply
 	}
 
 	return reply
@@ -543,24 +541,22 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 		}()
 
 		// 首先检查新文件的结果
-		select {
-		case result := <-oldFileResult:
-			if result.err != nil {
-				panic("去新的rocksdb中拿取key对应的index有问题")
-			}
-			if result.found {
-				reply.Value = result.value
-				return reply
-			}
-			// 如果新文件没找到，等待排序文件的结果
-			result = <-lastSortedFileResult
-			if result.err == nil {
-				reply.Value = result.value
-			} else {
-				setReadFailure(reply, result.err)
-			}
+		result := <-oldFileResult
+		if result.err != nil {
+			panic("去新的rocksdb中拿取key对应的index有问题")
+		}
+		if result.found {
+			reply.Value = result.value
 			return reply
 		}
+		// 如果新文件没找到，等待排序文件的结果
+		result = <-lastSortedFileResult
+		if result.err == nil {
+			reply.Value = result.value
+		} else {
+			setReadFailure(reply, result.err)
+		}
+		return reply
 	}
 	// during-GC
 	if !kvs.anotherEndGC {
@@ -626,32 +622,30 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 		}()
 
 		// 首先检查新文件的结果，再旧文件，再排序文件
-		select {
-		case result := <-newFileResult:
-			if result.err != nil {
-				panic(fmt.Sprintf("去新的rocksdb中拿取key对应的index有问题: %v", result.err))
-			}
-			if result.found {
-				reply.Value = result.value
-				return reply
-			}
-			result = <-oldFileResult
-			if result.err != nil {
-				panic(fmt.Sprintf("去旧的rocksdb中拿取key对应的index有问题: %v", result.err))
-			}
-			if result.found {
-				reply.Value = result.value
-				return reply
-			}
-			// 如果新文件没找到，等待排序文件的结果
-			result = <-lastSortedFileResult
-			if result.err == nil {
-				reply.Value = result.value
-			} else {
-				setReadFailure(reply, result.err)
-			}
+		result := <-newFileResult
+		if result.err != nil {
+			panic(fmt.Sprintf("去新的rocksdb中拿取key对应的index有问题: %v", result.err))
+		}
+		if result.found {
+			reply.Value = result.value
 			return reply
 		}
+		result = <-oldFileResult
+		if result.err != nil {
+			panic(fmt.Sprintf("去旧的rocksdb中拿取key对应的index有问题: %v", result.err))
+		}
+		if result.found {
+			reply.Value = result.value
+			return reply
+		}
+		// 如果新文件没找到，等待排序文件的结果
+		result = <-lastSortedFileResult
+		if result.err == nil {
+			reply.Value = result.value
+		} else {
+			setReadFailure(reply, result.err)
+		}
+		return reply
 	}
 	// post-GC
 	// 创建用于接收结果的通道
@@ -692,24 +686,22 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 	}()
 
 	// 首先检查新文件的结果
-	select {
-	case result := <-newFileResult:
-		if result.err != nil {
-			panic("去新的rocksdb中拿取key对应的index有问题")
-		}
-		if result.found {
-			reply.Value = result.value
-			return reply
-		}
-		// 如果新文件没找到，等待排序文件的结果
-		result = <-anotherSortedFileResult
-		if result.err == nil {
-			reply.Value = result.value
-		} else {
-			setReadFailure(reply, result.err)
-		}
+	result := <-newFileResult
+	if result.err != nil {
+		panic("去新的rocksdb中拿取key对应的index有问题")
+	}
+	if result.found {
+		reply.Value = result.value
 		return reply
 	}
+	// 如果新文件没找到，等待排序文件的结果
+	result = <-anotherSortedFileResult
+	if result.err == nil {
+		reply.Value = result.value
+	} else {
+		setReadFailure(reply, result.err)
+	}
+	return reply
 }
 
 // getFromPartitions 把一次点查路由到唯一可能含有该 key 的分区。
@@ -844,16 +836,6 @@ func ReadEntryFromMMap(data []byte) (*raft.Entry, int, error) {
 	entry.Value = string(data[20+keySize : entrySize])
 
 	return &entry, entrySize, nil
-}
-
-// scanFromSortedFile returns every key in [startKey, endKey] from a sorted file, using the
-// sparse index to bound the byte range and a memory map to walk it.
-func (kvs *KVServer) scanFromSortedFile(startKey, endKey string, index *SortedFileIndex) (map[string]string, error) {
-	result := make(map[string]string)
-	if err := kvs.scanFromSortedFileInto(result, startKey, endKey, index); err != nil {
-		return nil, err
-	}
-	return result, nil
 }
 
 // scanFromSortedFileInto 把命中的键值写进调用方给的 map，供跨分区扫描共用一个结果集。

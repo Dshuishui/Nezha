@@ -22,8 +22,6 @@ var (
 	ser   = flag.String("servers", "", "the Server, Client Connects to")
 	cnums = flag.Int("cnums", 1, "Client Threads Number")
 	dnums = flag.Int("dnums", 1000000, "data num")
-	k1    = flag.Int("startkey", 0, "first key")
-	k2    = flag.Int("endkey", 20, "last key")
 	// 扫描长度。原先写死为 4000000——那比任何一次实验的数据量都大，于是每轮
 	// SCAN 都在扫全库，测的是"顺序读整个数据集有多快"，而不是 range query。
 	// 稀疏索引的价值（二分定位 + 块内顺序扫）在全库扫描下被完全稀释。
@@ -49,17 +47,15 @@ type KVClient struct {
 	Kvservers []string
 	c         *client.Client
 
-	goodPut      int
-	valuesize    int
-	totalLatency time.Duration // 添加总延迟字段
-	goodscan     int
+	goodPut   int
+	valuesize int
+	goodscan  int
 }
 
 type scanResult struct {
 	totalCount    int // 总读取数量
 	scanCount     int // 执行的scan次数
 	avgLatency    time.Duration
-	throughput    float64
 	valueSize     int
 	totalDataSize float64
 	totalLatency  time.Duration

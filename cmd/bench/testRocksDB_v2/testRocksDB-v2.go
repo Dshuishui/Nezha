@@ -47,16 +47,6 @@ func (wt *WALTest) logfToFile(format string, args ...interface{}) {
 	}
 }
 
-// 同时输出到控制台和文件（保留关键信息用）
-func (wt *WALTest) logf(format string, args ...interface{}) {
-	message := fmt.Sprintf(format, args...)
-	fmt.Print(message)
-	if wt.LogFile != nil {
-		wt.LogFile.WriteString(message)
-		wt.LogFile.Sync()
-	}
-}
-
 // 配置RocksDB选项，控制WAL大小
 func (wt *WALTest) setupDBOptions() {
 	wt.Options = grocksdb.NewDefaultOptions()

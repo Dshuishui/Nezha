@@ -29,17 +29,15 @@ type KVClient struct {
 	Kvservers []string
 	c         *client.Client
 
-	goodPut      int
-	valuesize    int
-	totalLatency time.Duration
-	goodscan     int
+	goodPut   int
+	valuesize int
+	goodscan  int
 }
 
 type scanResult struct {
 	totalCount    int
 	scanCount     int
 	avgLatency    time.Duration
-	throughput    float64
 	valueSize     int
 	totalDataSize float64
 	totalLatency  time.Duration

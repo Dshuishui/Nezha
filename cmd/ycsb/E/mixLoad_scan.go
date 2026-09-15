@@ -73,7 +73,6 @@ type mixedWorkloadResult struct {
 	totalLatency time.Duration
 	valueSize    int
 	dataSize     int64 // 这个goroutine处理的总数据量
-	scanCount    int   // 执行的scan次数
 	avgLatency   time.Duration
 }
 
@@ -86,12 +85,6 @@ func min(a, b int) int {
 }
 
 // 辅助函数：返回两个整数中的较大值
-func max(a, b int) int {
-	if a < b {
-		return b
-	}
-	return a
-}
 
 func (kvc *KVClient) mixedWorkload(writeRatio float64, value string) *WorkloadStats {
 	stats := &WorkloadStats{

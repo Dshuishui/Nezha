@@ -41,10 +41,14 @@ func (kvc *KVClient) scan(gapkey int) {
 	for i := 0; i < *cnums; i++ {
 		go func(i int) {
 			defer wg.Done()
-			localGoodPut := 0                           // 本地变量，用于统计当前 goroutine 的 goodPut
-			rand.Seed(time.Now().UnixNano() + int64(i)) // 使用不同的种子
+			localGoodPut := 0 // 本地变量，用于统计当前 goroutine 的 goodPut
+			// 每个 goroutine 一个独立随机源。原先是 rand.Seed(...)，Go 1.20 起它已废弃
+			// （全局源本身已随机播种），而且**全局播种会互相覆盖**：N 个 goroutine 各播一次
+			// 全局种子，谁最后播谁说话，"每个 goroutine 不同的序列"这个意图根本没实现。
+			// rand.New(rand.NewSource(...)) 才是每个 goroutine 各自一份。
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(i)))
 			for j := 0; j < base; j++ {
-				k1 := rand.Intn(100000)
+				k1 := rng.Intn(100000)
 				k2 := k1 + gapkey
 				startKey := strconv.Itoa(k1)
 				endKey := strconv.Itoa(k2)

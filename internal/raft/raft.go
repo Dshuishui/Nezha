@@ -802,11 +802,14 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) RegisterRaftServer(ctx context.Context, address string) { // 传入的地址是internalAddress，节点间交流用的地址（用于类似日志同步等）
 	util.DPrintf("RegisterRaftServer: %s", address)
-	for { // 创建一个TCP监听器，并在指定的地址（）上监听传入的连接。如果监听失败，则会打印错误信息。
-		lis, err := net.Listen("tcp", address)
-		if err != nil {
-			util.FPrintf("failed to listen: %v", err)
-		}
+	// 同 RegisterKVServer：没有重试循环（原先的 `for { ... break }` 一次都不重转），
+	// 而且 listen 失败必须真的退出——util.FPrintf 只打印不退出，lis 为 nil 时
+	// Serve(nil) 会空指针 panic。
+	lis, err := net.Listen("tcp", address)
+	if err != nil {
+		log.Fatalf("RaftNode[%d] cannot listen on %s: %v", rf.me, address, err)
+	}
+	{
 		grpcServer := grpc.NewServer(
 			grpc.InitialWindowSize(pool.InitialWindowSize),
 			grpc.InitialConnWindowSize(pool.InitialConnWindowSize),
@@ -836,7 +839,6 @@ func (rf *Raft) RegisterRaftServer(ctx context.Context, address string) { // 传
 		}
 
 		util.DPrintf("RaftNode[%d] Raft gRPC server stopped", rf.me)
-		break
 	}
 }
 

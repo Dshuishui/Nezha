@@ -30,6 +30,9 @@ func EPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 // FPrintf logs a fatal-class line (prefix "[Fatalf]") without exiting.
+// FPrintf 打印一条 [Fatalf] 前缀的日志。**它不退出进程**——前缀只是历史沿用的名字。
+// 需要真的终止时用 log.Fatalf；把 FPrintf 当致命错误用过一次，代价是 listen 失败之后
+// 带着 nil 监听器继续走、炸在 Serve 里（见 RegisterKVServer 的注释）。
 func FPrintf(format string, a ...interface{}) (n int, err error) {
 	log.SetPrefix("[Fatalf] ")
 	log.SetFlags(log.Ldate | log.Ltime)

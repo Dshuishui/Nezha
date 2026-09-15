@@ -7,6 +7,7 @@ package kvstore
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -144,11 +145,16 @@ func (kv *KVServer) killed() bool {
 
 func (kvs *KVServer) RegisterKVServer(ctx context.Context, address string) { // 传入的是客户端与服务器之间的代理服务器的地址
 	util.DPrintf("RegisterKVServer: %s", address) // 打印格式化后Debug信息
-	for {
-		lis, err := net.Listen("tcp", address)
-		if err != nil {
-			util.FPrintf("failed to listen: %v", err)
-		}
+	// 没有重试循环。这里原先是 `for { ... break }`，一次都不会重转——staticcheck 的
+	// SA4004 正是指它。而更要紧的是 listen 失败之后的路：util.FPrintf 的前缀写着
+	// [Fatalf]，但它**只打印、不退出**，于是 lis 是 nil，接着 Serve(nil) 空指针 panic。
+	// 节点绑不上自己的端口就无法服务，这里让它明确地死，而不是先打一行看起来致命的日志
+	// 再炸在别处。固定端口 + pkill 重启的测试脚本撞上残留进程走的就是这条。
+	lis, err := net.Listen("tcp", address)
+	if err != nil {
+		log.Fatalf("KV server cannot listen on %s: %v", address, err)
+	}
+	{
 		grpcServer := grpc.NewServer( // 设置自定义的grpc连接
 			grpc.InitialWindowSize(pool.InitialWindowSize),
 			grpc.InitialConnWindowSize(pool.InitialConnWindowSize),
@@ -180,7 +186,6 @@ func (kvs *KVServer) RegisterKVServer(ctx context.Context, address string) { // 
 			util.FPrintf("failed to serve: %v", err)
 		}
 		util.DPrintf("KV gRPC server stopped")
-		break
 	}
 }
 

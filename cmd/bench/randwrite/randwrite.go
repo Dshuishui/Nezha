@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -114,15 +113,6 @@ func (kvc *KVClient) batchRawPut(value string) {
 // 		util.DPrintf("The raft pool has been closed")
 // 	}
 // }
-
-func generateUniqueRandomInts(min, max int) []int {
-	nums := make([]int, max-min+1)
-	for i := range nums {
-		nums[i] = min + i
-	}
-	rand.Shuffle(len(nums), func(i, j int) { nums[i], nums[j] = nums[j], nums[i] })
-	return nums
-}
 
 // InitPool builds the shared cluster client (one connection pool per server).
 func (kvc *KVClient) InitPool() {
