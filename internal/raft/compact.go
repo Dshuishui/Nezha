@@ -12,8 +12,11 @@ import (
 // 取得比 catchUpEntries 大一截：保留窗口内的落后是正常的。
 const logPinWarnEntries = 50000
 
-// estimatedEntryBytes 是一条内存日志条目的粗略占用，用于把"按住多少条"换算成 MB。
-// 实测 216B/条（空 value），带 64B value 约 280B；取 280 报一个不至于偏低的数。
+// estimatedEntryBytes 把条数换算成 MB，是一个**下界**：条目本身（protobuf 三层
+// []*LogEntry + LogEntry + DetailCod）约 216 B 且与 value 无关，再加 value 本身，
+// 所以 64B value 约 280 B、256B value 约 472 B。取 280 意味着大 value 下会低估——
+// 小规模实测 150000 条 × 256B，RSS 涨 139MB 而此式只给出 38MB。
+// 不按实际条目求和：那是 O(n)，而 n 可以到十亿级，压缩循环持着 rf.mu 走不起。
 const estimatedEntryBytes = 280
 
 // In-memory log compaction and the index arithmetic that depends on it.
@@ -71,10 +74,19 @@ func (rf *Raft) compactLog() {
 		// 真正的修法是 InstallSnapshot：压缩点可以越过落后的 follower，再用状态快照把它
 		// 补齐。那是一个未实现的特性，不是这里能顺手补的。
 		if pinnedBy >= 0 && pinnedAt-safeIndex >= logPinWarnEntries {
-			fmt.Printf("[LOG-PINNED] peer[%d] 只复制到 %d，压缩点被从 %d 按到 %d（%d 条、约 %dMB 常驻）"+
-				"——内存随它的落后程度线性增长，补齐它需要 InstallSnapshot（未实现）\n",
+			// 报**实际驻留的条数** `len(rf.log)`，而不只是"压缩点被推回了多少"：
+			// 被按住期间根本不会发生压缩（下面的 safeIndex <= lastIncludedIndex 会 continue），
+			// 所以真正占着内存的是整个 rf.log，而"推回了多少"只是它的一个下界。
+			//
+			// MB 是**下界估算**，按 64B value 的 280 B/条算。value 越大越低估：
+			// 条目本身（protobuf 三层）约 216 B 与 value 无关，再加上 value 本身，
+			// 256B value 时一条就是约 472 B。小规模实测（150000 条 × 256B）RSS 涨了
+			// 139MB，而按 280 B/条估出来只有 38MB——所以这个数只能当"至少这么多"读。
+			fmt.Printf("[LOG-PINNED] peer[%d] 只复制到 %d，压缩点被从 %d 按到 %d："+
+				"内存日志驻留 %d 条（下界估算 ≥%dMB，value 越大越低估）"+
+				"——随它的落后程度线性增长，补齐它需要 InstallSnapshot（未实现）\n",
 				pinnedBy, rf.matchIndex[pinnedBy], pinnedAt, safeIndex,
-				pinnedAt-safeIndex, int64(pinnedAt-safeIndex)*estimatedEntryBytes>>20)
+				len(rf.log), int64(len(rf.log))*estimatedEntryBytes>>20)
 		}
 
 		if safeIndex <= rf.lastIncludedIndex {
