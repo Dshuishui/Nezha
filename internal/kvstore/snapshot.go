@@ -552,3 +552,25 @@ func (kvs *KVServer) installPayload(span raft.SSTableSpan) (int, raftrpc.Install
 		return kvs.appliedIndexNow(), raftrpc.InstallSSTableStatus_FAILED
 	}
 }
+
+// snapshotForRaft 是 Raft 侧的 SnapshotSource：把 createSnapshot 的产物翻译成
+// Raft 认识的形状，并把"现在做不了"翻译成 raft.ErrSnapshotUnavailable。
+//
+// 为什么要翻译这一层而不是让 Raft 直接认识 kvstore 的类型：Raft 不该知道什么是分区、
+// 什么是存储引擎导出。它只需要"位点 + 一串文件 + 一个释放函数"。
+func (kvs *KVServer) snapshotForRaft() (raft.SnapshotPayload, error) {
+	snap, err := kvs.createSnapshot()
+	if errors.Is(err, errSnapshotBusy) {
+		return raft.SnapshotPayload{}, raft.ErrSnapshotUnavailable
+	}
+	if err != nil {
+		return raft.SnapshotPayload{}, err
+	}
+	return raft.SnapshotPayload{
+		LastIncludedIndex: snap.manifest.LastIncludedIndex,
+		LastIncludedTerm:  snap.manifest.LastIncludedTerm,
+		LastIndex:         snap.manifest.LastIndex,
+		Files:             snap.files,
+		Release:           snap.release,
+	}, nil
+}

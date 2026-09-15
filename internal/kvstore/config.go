@@ -20,6 +20,11 @@ type Config struct {
 	// commit window (microseconds, 0 = off). GroupCommit only matters with SyncWAL.
 	SyncWAL       bool
 	GroupCommitUs int
+	// SnapshotRateMB 限制发快照的速率（MiB/s），0 表示不限。默认 100，与实测的 GC
+	// 搬运速率 110 MB/s 同量级，也与 TiKV 的 snap-io-max-bytes-per-sec 默认值一致。
+	// 不要调得很低：发送方在传输期间会挡住日志截断，传得太慢反而让 leader 的内存
+	// 压得更久——CockroachDB 为此给快照速率设了下限。
+	SnapshotRateMB int
 
 	// System selects a preset of the switches below by the name used in the paper:
 	// original, pasv, dwisckey, lsm-raft, nezha-nogc, nezha. Empty keeps the switches

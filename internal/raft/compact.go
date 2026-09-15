@@ -44,6 +44,19 @@ func (rf *Raft) compactLog() {
 			continue
 		}
 
+		// 快照在飞的时候整个跳过压缩，传输结束之后还要再保持一段（见
+		// releaseDelayAfterSnapshot）。etcd 在 inflightSnapshots != 0 时同样是直接跳过
+		// 整轮压缩，而 CockroachDB 为此给快照速率设了**下限**，理由就是发送方在传输期间
+		// 会挡住日志截断。
+		//
+		// 省掉这一条的后果 CockroachDB 的注释里有原话：快照做完、发完、装完期间日志继续
+		// 截断，落后节点追到的位点又落在新的 first index 之前，于是 "likely entering a
+		// never ending loop of snapshots"（cockroachdb#8629）。
+		if rf.snapshotsInFlightLocked() {
+			rf.mu.Unlock()
+			continue
+		}
+
 		// 压缩上界：只能压缩已应用的条目
 		safeIndex := rf.lastApplied - catchUpEntries
 

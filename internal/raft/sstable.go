@@ -57,6 +57,11 @@ type SSTableSpan struct {
 	// follower that is behind it must replay entries up to OldestAvailable-1 itself.
 	// SPAN only.
 	OldestAvailable int
+	// RateBytesPerSec 限制这次传输的速率，0 表示不限。快照会占满链路，而同一条链路还要
+	// 送 AppendEntries——一个正在收快照的 peer 之外，其余 peer 的复制不该被拖慢。
+	// 上限不是越低越好：CockroachDB 给快照速率设了**下限** 1 MiB/s，理由是发送方在传输
+	// 期间会挡住日志截断，传得太慢反而让 leader 的内存压得更久。
+	RateBytesPerSec int64
 }
 
 // SSTableFile is one file to ship.
@@ -269,8 +274,15 @@ func (rf *Raft) SendSSTable(peerId int, span SSTableSpan) (*raftrpc.InstallSSTab
 	}
 	defer conn.Close()
 	// Budget: 30 s plus one second per 8 MB, so a slow link never trips the deadline
-	// before a large span is through.
+	// before a large span is through. When the transfer is rate-limited the limit itself
+	// is the binding constraint, so the budget has to cover it too -- otherwise the
+	// throttle we added to protect the link would make every large snapshot time out.
 	timeout := 30*time.Second + time.Duration(total/(8<<20))*time.Second
+	if span.RateBytesPerSec > 0 {
+		if paced := 30*time.Second + time.Duration(float64(total)/float64(span.RateBytesPerSec))*time.Second*2; paced > timeout {
+			timeout = paced
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	stream, err := raftrpc.NewRaftClient(conn.Value()).InstallSSTable(ctx)
@@ -287,6 +299,20 @@ func (rf *Raft) SendSSTable(peerId int, span SSTableSpan) (*raftrpc.InstallSSTab
 		}
 	}
 	buf := make([]byte, sstChunkSize)
+	// 限速是"已发字节数应当至少花掉这么多时间"，按累计量算而不是每块 sleep 固定值：
+	// 后者会把误差一路累积，前者自动纠偏。
+	var sentBytes int64
+	startedAt := time.Now()
+	pace := func(n int) {
+		if span.RateBytesPerSec <= 0 || n <= 0 {
+			return
+		}
+		sentBytes += int64(n)
+		want := time.Duration(float64(sentBytes) / float64(span.RateBytesPerSec) * float64(time.Second))
+		if d := want - time.Since(startedAt); d > 0 {
+			time.Sleep(d)
+		}
+	}
 	for seq, sf := range span.Files {
 		f, err := os.Open(sf.Path)
 		if err != nil {
@@ -311,6 +337,7 @@ func (rf *Raft) SendSSTable(peerId int, span SSTableSpan) (*raftrpc.InstallSSTab
 					return nil, err
 				}
 				off += int64(n)
+				pace(n)
 			}
 			if rerr == io.EOF {
 				break

@@ -161,6 +161,16 @@ type Raft struct {
 	// 由 rf.mu 保护（只在 doAppendEntries 的持锁段里读写）。
 	stuckReported map[int]bool
 
+	// ---- 给落后 peer 发快照（见 snapshot.go）----
+	snapSource    SnapshotSource
+	snapRate      int64          // 快照传输的字节/秒上限，0 = 不限
+	peerSnap      []peerSnapshot // 每个 peer 的快照进度
+	peerActiveAt  []time.Time    // 每个 peer 最近一次回执的时刻，etcd 的 RecentActive
+	inflightSnaps int            // 正在传的快照数；> 0 时压缩整个跳过
+	snapReleaseAt time.Time      // 传输结束之后继续保护日志到这个时刻
+	// sendSnapshotFn 是传输的测试接缝（生产路径上为 nil，走 SendSSTable）。
+	sendSnapshotFn func(peerId int, span SSTableSpan) (*raftrpc.InstallSSTableResponse, error)
+
 	// heardFromLeader 表示本节点曾收到过某个 leader 的 AppendEntries/心跳。
 	// 只用于 §4.2.3 的防打扰判据，一旦置真不再复位——它回答的是"这个集群里有没有过
 	// leader"，而"多久之前"由 LastAppendTime 回答。
@@ -314,6 +324,9 @@ func (rf *Raft) setRole(role string) {
 		// 退位即撤租约。挂在这里而不是每个退位点各写一遍：setRole 是改身份的唯一入口，
 		// 漏掉任何一处都意味着一个已被罢免的节点还在用本地状态应答读。
 		rf.clearLease()
+		// 同理，本任期的快照进度也在这里一并丢掉。在飞的传输仍会走到 finishSnapshot，
+		// 那里会再判一次角色。
+		rf.resetPeerSnapLocked()
 	}
 }
 
@@ -1131,9 +1144,16 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				rf.stuckReported = make(map[int]bool, len(rf.peers))
 			}
 			rf.stuckReported[peerId] = true
-			fmt.Printf("[LOG-STUCK] peer[%d] 的 nextIndex=%d 已落在压缩点 %d 之前，它再也追不上了"+
-				"——补齐需要 InstallSnapshot（未实现）。这个 peer 从此不再接收日志\n",
-				peerId, rf.nextIndex[peerId], rf.lastIncludedIndex)
+			if rf.snapSource != nil {
+				// 有快照能力时这不是永久卡住：复制循环下一轮就会把它交给 maybeSendSnapshot。
+				// 仍然报一次，因为"落到压缩点之前"本身是值得知道的事件。
+				fmt.Printf("[LOG-STUCK] peer[%d] 的 nextIndex=%d 已落在压缩点 %d 之前"+
+					"——交给快照补齐\n", peerId, rf.nextIndex[peerId], rf.lastIncludedIndex)
+			} else {
+				fmt.Printf("[LOG-STUCK] peer[%d] 的 nextIndex=%d 已落在压缩点 %d 之前，它再也追不上了"+
+					"——补齐需要快照，而本节点没有启用。这个 peer 从此不再接收日志\n",
+					peerId, rf.nextIndex[peerId], rf.lastIncludedIndex)
+			}
 		}
 		util.DPrintf("RaftNode[%d] peer[%d] nextIndex[%d] 落后于已压缩点[%d]，跳过本轮日志同步",
 			rf.me, peerId, rf.nextIndex[peerId], rf.lastIncludedIndex)
@@ -1193,6 +1213,9 @@ func (rf *Raft) doAppendEntries(peerId int) {
 
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
+			// 回执到了就说明这个 peer 还在。成功与否无关——这个字段回答的是
+			// "它还在不在"，不是"它跟上了没有"。见 snapshot.go 的 notePeerActive。
+			rf.notePeerActive(peerId)
 			// defer func() {
 			// 	util.DPrintf("RaftNode[%d] appendEntries ends,  currentTerm[%d]  peer[%d] logIndex=[%d] nextIndex[%d] matchIndex[%d] commitIndex[%d]",
 			// 		rf.me, rf.currentTerm, peerId, rf.lastIndex(), rf.nextIndex[peerId], rf.matchIndex[peerId], rf.commitIndex)
@@ -1542,6 +1565,12 @@ func (rf *Raft) appendEntriesLoop() {
 			if inFlight[i] && time.Since(sentAt[i]) > budget {
 				util.DPrintf("RaftNode[%d] peer %d 的复制轮次超过 %v 未回执，重发", rf.me, i, budget)
 				inFlight[i] = false
+			}
+			// 落后到内存日志已经服务不了的 peer 走快照，不走日志。这一判断必须在
+			// 发日志**之前**：日志发过去也只会在起点算出负数时被跳过，而那正是
+			// "每轮都跳过、每轮都重试"的老症状。
+			if rf.maybeSendSnapshot(i) {
+				continue
 			}
 			if !inFlight[i] {
 				inFlight[i] = true
@@ -1897,6 +1926,10 @@ func (rf *Raft) heartbeatLoop() {
 				}
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
+				// 心跳回执也算"这个 peer 还在"。这条很重要：一个落后到要走快照的 peer
+				// 不再收日志，于是它的活跃证据只能来自心跳——少了这一笔，
+				// 它会永远被判成失联，永远等不到快照。
+				rf.notePeerActive(id)
 				if reply.Term > int32(rf.currentTerm) { // 任期落后，退位（setRole 连带撤租约）
 					rf.setRole(ROLE_FOLLOWER)
 					rf.currentTerm = int(reply.Term)
