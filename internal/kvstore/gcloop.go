@@ -66,44 +66,63 @@ func (kvs *KVServer) gcLoop(ctx context.Context) {
 		if kvs.gcInProgress {
 			continue // the previous round (possibly a post-restart redo) has not finished
 		}
-		// 第一轮GC
-		if kvs.FirstGC {
-			fmt.Printf("文件 %s 大小 %.1fMB 达到阈值 %.1fMB，开始第一轮 GC\n",
-				kvs.currentLog, float64(tailBytes)/1048576, float64(need)/1048576)
-			startTime := time.Now()
-			err = kvs.FirstGarbageCollection()
-			if err != nil {
-				// 失败就停在这里：状态不推进、旧文件不删。此前的做法是照样推进 numGC
-				// 并且 os.Remove(kvs.oldLog)——可数据还没完整搬进排序文件，删掉源文件
-				// 就是永久丢数据。下一轮 5 秒检查会重试。
-				fmt.Println("垃圾回收出现了错误，本轮不推进状态、不删除旧文件: ", err)
-				continue
-			}
-			if kvs.firstPartitions == nil {
-				fmt.Println("垃圾回收返回成功但未建立排序文件索引，本轮不推进状态")
-				continue
-			}
-			kvs.finishFirstGC(startTime)
-		} else if kvs.lastGCFinish {
-			if kvs.lastPartitions == nil {
-				fmt.Println("缺少上一轮排序文件索引，跳过本轮迭代 GC")
-				continue
-			}
-			kvs.lastGCFinish = false // make sure last gc process is finished
-			startTime := time.Now()
-			err = kvs.AnotherGarbageCollection()
-			if err != nil {
-				fmt.Println("垃圾回收出现了错误，本轮不推进状态、不删除旧文件: ", err)
-				kvs.lastGCFinish = true
-				continue
-			}
-			if kvs.anotherPartitions == nil {
-				fmt.Println("垃圾回收返回成功但未建立排序文件索引，本轮不推进状态")
-				kvs.lastGCFinish = true
-				continue
-			}
-			kvs.finishAnotherGC(startTime)
+		// 与装快照互斥。装快照会把 persister、当前日志、分区组三样一起换掉，GC 一轮里
+		// 三样都要用，撞上就是拿着一半新一半旧的状态搬数据。两边都是"看见对方在跑就退回"：
+		// 谁也不等谁，因为 GC 一轮可以长到数分钟，等下去会把读一起挡住。
+		kvs.mu.Lock()
+		if kvs.installing {
+			kvs.mu.Unlock()
+			continue
 		}
-
+		kvs.gcActive = true
+		kvs.mu.Unlock()
+		// 包一层匿名函数只为了 defer：gcActive 必须在**每一条**退出路径上清掉，
+		// 而下面有五处提前返回。漏掉任何一处，装快照就会永久被这个标志挡住，
+		// 而且是静默的——那个副本从此只是个摆设。所以里面的 continue 都改成 return。
+		func() {
+			defer func() {
+				kvs.mu.Lock()
+				kvs.gcActive = false
+				kvs.mu.Unlock()
+			}()
+			// 第一轮GC
+			if kvs.FirstGC {
+				fmt.Printf("文件 %s 大小 %.1fMB 达到阈值 %.1fMB，开始第一轮 GC\n",
+					kvs.currentLog, float64(tailBytes)/1048576, float64(need)/1048576)
+				startTime := time.Now()
+				err = kvs.FirstGarbageCollection()
+				if err != nil {
+					// 失败就停在这里：状态不推进、旧文件不删。此前的做法是照样推进 numGC
+					// 并且 os.Remove(kvs.oldLog)——可数据还没完整搬进排序文件，删掉源文件
+					// 就是永久丢数据。下一轮 5 秒检查会重试。
+					fmt.Println("垃圾回收出现了错误，本轮不推进状态、不删除旧文件: ", err)
+					return
+				}
+				if kvs.firstPartitions == nil {
+					fmt.Println("垃圾回收返回成功但未建立排序文件索引，本轮不推进状态")
+					return
+				}
+				kvs.finishFirstGC(startTime)
+			} else if kvs.lastGCFinish {
+				if kvs.lastPartitions == nil {
+					fmt.Println("缺少上一轮排序文件索引，跳过本轮迭代 GC")
+					return
+				}
+				kvs.lastGCFinish = false // make sure last gc process is finished
+				startTime := time.Now()
+				err = kvs.AnotherGarbageCollection()
+				if err != nil {
+					fmt.Println("垃圾回收出现了错误，本轮不推进状态、不删除旧文件: ", err)
+					kvs.lastGCFinish = true
+					return
+				}
+				if kvs.anotherPartitions == nil {
+					fmt.Println("垃圾回收返回成功但未建立排序文件索引，本轮不推进状态")
+					kvs.lastGCFinish = true
+					return
+				}
+				kvs.finishAnotherGC(startTime)
+			}
+		}()
 	}
 }

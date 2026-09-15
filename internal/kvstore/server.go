@@ -90,7 +90,20 @@ type KVServer struct {
 	lastPartitions *PartitionSet
 	// retiredPartitions 是已被取代、但引用还没归零的分区组。快照传输会钉住它读到的那一组，
 	// 期间 GC 不能删它的文件。见 partition.go 的"生命周期"一节。
-	retiredPartitions   []*PartitionSet
+	retiredPartitions []*PartitionSet
+	// stateMu 保护"状态机被整体换掉"这一件事，只有装快照会做。
+	//
+	// 读路径与 apply 路径按**读锁**持有它，装快照按**写锁**。为什么 kvs.mu 不够：
+	// 一次读要同时用到 persister、currentLog 和 lastPartitions 三样，而装快照把三样
+	// 一起换掉。只用 kvs.mu 护住各自的赋值，读路径仍可能取到新的 persister 配旧的
+	// currentLog——那读出来是别的记录的 value，而且不报错。
+	stateMu sync.RWMutex
+	// gcActive 与 installing 让 GC 与装快照互斥，两者都在 kvs.mu 下读写。
+	// 不用 stateMu 让它们互相等：GC 一轮要数秒到数分钟，装快照等在写锁上会把读也一起
+	// 挡住（Go 的 RWMutex 在有写者等待时不再放新读者进来）。所以改成"看见对方在跑就
+	// 退回、让对方稍后重试"——leader 侧本来就有重发退避。
+	gcActive            bool
+	installing          bool
 	InitialRaftStateLog string
 	lastGCFinish        bool
 
@@ -275,9 +288,18 @@ func New(cfg Config) (*KVServer, error) {
 
 	raftStateFile := filepath.Join(cfg.DataDir, "data", "raft_state.json")
 	kvs.raft = raft.Make(kvs.peers, kvs.me, kvs.persister, kvs.applyCh, raftStateFile)
+	// 一个安装器，按载荷类型分派：span 归基线，snapshot 归状态机整体替换。
+	// 收件目录必须与分区、日志同一个文件系统——安装靠 rename 落位，跨文件系统的
+	// rename 会失败，退化成拷字节就把"原子落位"这个性质丢了。
+	incoming := filepath.Join(cfg.DataDir, "data", "incoming")
 	if kvs.lsm != nil {
-		kvs.raft.SetSSTableInstaller(kvs.lsm.incomingDir, kvs.lsmInstall)
+		incoming = kvs.lsm.incomingDir
 	}
+	// 上次没收完的留在盘上没有用处：传输不可续传，一律丢弃重来。
+	if err := os.RemoveAll(incoming); err != nil {
+		return nil, fmt.Errorf("clear the incoming dir %s: %w", incoming, err)
+	}
+	kvs.raft.SetSSTableInstaller(incoming, kvs.installPayload)
 	if kvs.extraPersistence {
 		// Dwisckey: the value is persisted once more outside the Raft log. Written, never
 		// read; it only makes the cost of that persistence measurable.

@@ -50,6 +50,10 @@ func (kvs *KVServer) applyLoop() {
 // applyCommand applies one committed entry to the store and wakes the client waiting on
 // it. Caller holds kvs.mu.
 func (kvs *KVServer) applyCommand(msg raft.ApplyMsg) {
+	// 与装快照互斥：一条 apply 要往 persister 里写一行、并按当前日志的偏移记账，
+	// 中途被换掉状态机就是把这一行写进新库、偏移却指着旧日志。装快照持写锁。
+	kvs.stateMu.RLock()
+	defer kvs.stateMu.RUnlock()
 	cmd := msg.Command
 	index := msg.CommandIndex
 	cmdTerm := msg.CommandTerm

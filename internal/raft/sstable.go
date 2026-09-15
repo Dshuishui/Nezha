@@ -26,6 +26,10 @@ import (
 //     InstallSnapshot plays in standard Raft, and the only way a follower that has
 //     fallen behind the leader's compaction point can ever catch up.
 //
+// A SNAPSHOT carries its own manifest file, so the Raft metadata it implies (the
+// snapshot point, the applied index, the partition list) is not duplicated on the wire:
+// one source of truth, and no field that the installer would have to choose between.
+//
 // The two share everything below because the hard parts -- chunking a large file set
 // over a client-streaming RPC, reassembling it by name and offset, the term rules, a
 // transfer deadline that scales with the payload -- are the same for both. What differs
@@ -53,10 +57,6 @@ type SSTableSpan struct {
 	// follower that is behind it must replay entries up to OldestAvailable-1 itself.
 	// SPAN only.
 	OldestAvailable int
-	// LastIncludedTerm is the term of the entry at End. SNAPSHOT only, and required
-	// there: End becomes the follower's log base, so it has to be able to answer a
-	// later AppendEntries consistency check at that index.
-	LastIncludedTerm int
 }
 
 // SSTableFile is one file to ship.
@@ -153,8 +153,7 @@ func (rf *Raft) InstallSSTable(stream raftrpc.Raft_InstallSSTableServer) error {
 			}
 			span = SSTableSpan{Kind: req.Kind,
 				Start: int(req.SpanStart), End: int(req.SpanEnd),
-				OldestAvailable:  int(req.OldestAvailable),
-				LastIncludedTerm: int(req.LastIncludedTerm)}
+				OldestAvailable: int(req.OldestAvailable)}
 			dir = filepath.Join(incoming, span.dirName())
 			os.RemoveAll(dir) // a previous attempt at the same transfer left half of it here
 			if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -282,10 +281,9 @@ func (rf *Raft) SendSSTable(peerId int, span SSTableSpan) (*raftrpc.InstallSSTab
 		return &raftrpc.InstallSSTableRequest{
 			Term: int32(term), LeaderId: int32(me), Kind: span.Kind,
 			SpanStart: int64(span.Start), SpanEnd: int64(span.End),
-			OldestAvailable:  int64(span.OldestAvailable),
-			LastIncludedTerm: int32(span.LastIncludedTerm),
-			FileCount:        int32(len(span.Files)),
-			FileName:         name, FileSeq: seq, Offset: off, Data: data, Last: last,
+			OldestAvailable: int64(span.OldestAvailable),
+			FileCount:       int32(len(span.Files)),
+			FileName:        name, FileSeq: seq, Offset: off, Data: data, Last: last,
 		}
 	}
 	buf := make([]byte, sstChunkSize)

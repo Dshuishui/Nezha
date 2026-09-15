@@ -87,6 +87,11 @@ func (kvs *KVServer) requireLeader() (string, int32, bool) {
 const readIndexApplyWait = 2 * time.Second
 
 func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeRequest) (*kvrpc.ScanRangeResponse, error) {
+	// 一次读要同时用到 persister、当前日志和分区组三样，而装快照会把三样一起换掉。
+	// 读锁保证这一次读全程看到的是**同一份**状态机；装快照持写锁，所以它要么在这次读
+	// 之前完成，要么等它结束。见 KVServer.stateMu。
+	kvs.stateMu.RLock()
+	defer kvs.stateMu.RUnlock()
 	reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
 
 	if code, leader, ok := kvs.requireLeader(); !ok {
@@ -204,6 +209,8 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 }
 
 func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
+	kvs.stateMu.RLock() // 同 ScanRangeInRaft：整次读看同一份状态机
+	defer kvs.stateMu.RUnlock()
 	if code, leader, ok := kvs.requireLeader(); !ok {
 		return &kvrpc.GetInRaftResponse{Err: code, LeaderId: leader}, nil
 	}

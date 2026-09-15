@@ -71,7 +71,9 @@ enum InstallSSTableKind {
   SPAN = 0;
   // SNAPSHOT: the files hold the complete state as of SpanEnd. There is no lower-bound
   // requirement on the receiver -- that is the whole point of a snapshot. SpanStart and
-  // OldestAvailable are unused; LastIncludedTerm is required.
+  // OldestAvailable are unused. Everything else the receiver needs (the snapshot point,
+  // the partition list, the applied index) travels in the snapshot's own manifest file,
+  // so it is not duplicated here.
   SNAPSHOT = 1;
 }
 
@@ -88,10 +90,6 @@ message InstallSSTableRequest{
   bytes Data = 10;
   bool Last = 11;             // final chunk of the transfer
   InstallSSTableKind Kind = 12;
-  // LastIncludedTerm is the term of the entry at SpanEnd, required for SNAPSHOT: after
-  // installing, SpanEnd becomes the follower's log base and it must be able to answer a
-  // later AppendEntries consistency check at that index. Unused for SPAN.
-  int32 LastIncludedTerm = 13;
 }
 
 enum InstallSSTableStatus {

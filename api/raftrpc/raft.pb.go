@@ -32,7 +32,9 @@ const (
 	InstallSSTableKind_SPAN InstallSSTableKind = 0
 	// SNAPSHOT: the files hold the complete state as of SpanEnd. There is no lower-bound
 	// requirement on the receiver -- that is the whole point of a snapshot. SpanStart and
-	// OldestAvailable are unused; LastIncludedTerm is required.
+	// OldestAvailable are unused. Everything else the receiver needs (the snapshot point,
+	// the partition list, the applied index) travels in the snapshot's own manifest file,
+	// so it is not duplicated here.
 	InstallSSTableKind_SNAPSHOT InstallSSTableKind = 1
 )
 
@@ -568,12 +570,8 @@ type InstallSSTableRequest struct {
 	Data            []byte                 `protobuf:"bytes,10,opt,name=Data,proto3" json:"Data,omitempty"`
 	Last            bool                   `protobuf:"varint,11,opt,name=Last,proto3" json:"Last,omitempty"` // final chunk of the transfer
 	Kind            InstallSSTableKind     `protobuf:"varint,12,opt,name=Kind,proto3,enum=InstallSSTableKind" json:"Kind,omitempty"`
-	// LastIncludedTerm is the term of the entry at SpanEnd, required for SNAPSHOT: after
-	// installing, SpanEnd becomes the follower's log base and it must be able to answer a
-	// later AppendEntries consistency check at that index. Unused for SPAN.
-	LastIncludedTerm int32 `protobuf:"varint,13,opt,name=LastIncludedTerm,proto3" json:"LastIncludedTerm,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *InstallSSTableRequest) Reset() {
@@ -690,13 +688,6 @@ func (x *InstallSSTableRequest) GetKind() InstallSSTableKind {
 	return InstallSSTableKind_SPAN
 }
 
-func (x *InstallSSTableRequest) GetLastIncludedTerm() int32 {
-	if x != nil {
-		return x.LastIncludedTerm
-	}
-	return 0
-}
-
 type InstallSSTableResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Term          int32                  `protobuf:"varint,1,opt,name=Term,proto3" json:"Term,omitempty"`
@@ -795,7 +786,7 @@ const file_raft_proto_rawDesc = "" +
 	"\vLastLogTerm\x18\x04 \x01(\x05R\vLastLogTerm\"K\n" +
 	"\x13RequestVoteResponse\x12\x12\n" +
 	"\x04Term\x18\x01 \x01(\x05R\x04Term\x12 \n" +
-	"\vVoteGranted\x18\x02 \x01(\bR\vVoteGranted\"\x92\x03\n" +
+	"\vVoteGranted\x18\x02 \x01(\bR\vVoteGranted\"\xe6\x02\n" +
 	"\x15InstallSSTableRequest\x12\x12\n" +
 	"\x04Term\x18\x01 \x01(\x05R\x04Term\x12\x1a\n" +
 	"\bLeaderId\x18\x02 \x01(\x05R\bLeaderId\x12\x1c\n" +
@@ -809,8 +800,7 @@ const file_raft_proto_rawDesc = "" +
 	"\x04Data\x18\n" +
 	" \x01(\fR\x04Data\x12\x12\n" +
 	"\x04Last\x18\v \x01(\bR\x04Last\x12'\n" +
-	"\x04Kind\x18\f \x01(\x0e2\x13.InstallSSTableKindR\x04Kind\x12*\n" +
-	"\x10LastIncludedTerm\x18\r \x01(\x05R\x10LastIncludedTerm\"u\n" +
+	"\x04Kind\x18\f \x01(\x0e2\x13.InstallSSTableKindR\x04Kind\"u\n" +
 	"\x16InstallSSTableResponse\x12\x12\n" +
 	"\x04Term\x18\x01 \x01(\x05R\x04Term\x12\x18\n" +
 	"\aApplied\x18\x02 \x01(\x03R\aApplied\x12-\n" +

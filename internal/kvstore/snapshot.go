@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
 
+	"gitee.com/dong-shuishui/FlexSync/api/raftrpc"
 	"gitee.com/dong-shuishui/FlexSync/internal/raft"
+	"gitee.com/dong-shuishui/FlexSync/internal/util"
 )
 
 // 给落后太多的副本发快照
@@ -260,4 +263,292 @@ func baseNameOrEmpty(p string) string {
 func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir()
+}
+
+// ---- 接收端：安装 ----
+//
+// 安装要么整体生效要么整体不生效，判据是 `kv_state.json`：它是最后一步写的，与 GC 完成
+// 的提交顺序一致（先落数据，最后落状态文件）。崩在它之前，节点重启后仍是**原来**的状态，
+// 这份快照只是没装上，leader 会重发；崩在它之后，新状态已经完整。
+//
+// 为此，收到的文件一律落在**快照专属的名字**下，绝不覆盖本节点自己的文件：
+// 分区是 `<sorted>_snap<位点>.pN`、日志是 `RaftState_snap<位点>.log`、
+// 库是 `dbfile/keyIndex_snap<位点>`。如果直接用 leader 那边的名字，两边名字撞上时
+// （轮次相同就会撞）就会在旧状态文件还指着旧文件的时候把旧文件毁掉——那是不可恢复的。
+// 顺带也让"崩在中途"留下的东西一眼能认出来是快照产物。
+//
+// 不做断点续传：接收端的半成品一律丢弃重来（TiKV 接收端崩了从头重放、CockroachDB 是一次
+// 原子 ingest-and-excise，三家都选幂等可重来）。所以这里不需要记录"收到哪了"。
+
+// snapshotInstallNames 给一份位点为 idx 的快照产出本节点上的落位名字。
+type snapshotInstallNames struct {
+	valuelog   string // 分区与日志所在目录
+	indexDir   string // 旁挂索引所在目录
+	logPath    string // 日志文件的落位
+	sortedBase string // 分区组的基名（不含 .pN）
+	storePath  string // 新库的目录
+}
+
+func (kvs *KVServer) snapshotInstallNames(idx int) snapshotInstallNames {
+	vlog := filepath.Join(kvs.dataDir, "data", "valuelog")
+	return snapshotInstallNames{
+		valuelog:   vlog,
+		indexDir:   filepath.Join(vlog, sparseIndexDir),
+		logPath:    filepath.Join(vlog, fmt.Sprintf("RaftState_snap%d.log", idx)),
+		sortedBase: filepath.Join(vlog, fmt.Sprintf("RaftState_sorted_snap%d", idx)),
+		storePath:  filepath.Join(kvs.dataDir, "data", "dbfile", fmt.Sprintf("keyIndex_snap%d", idx)),
+	}
+}
+
+// installSnapshot 是接收端的 SSTableInstaller 对 SNAPSHOT 载荷的处理。
+// 返回值是安装之后本节点日志覆盖到的 index，leader 据此从下一个 index 继续正常复制。
+func (kvs *KVServer) installSnapshot(span raft.SSTableSpan) (int, raftrpc.InstallSSTableStatus) {
+	t0 := time.Now()
+	byName := map[string]string{}
+	for _, f := range span.Files {
+		byName[filepath.Base(f.Path)] = f.Path
+	}
+	sm, err := readSnapshotManifest(byName[snapshotManifestName])
+	if err != nil {
+		util.EPrintf("[SNAPSHOT] 收到的快照没有可用的清单: %v", err)
+		return kvs.appliedIndexNow(), raftrpc.InstallSSTableStatus_FAILED
+	}
+	// 清单说有的文件必须都收到了。少一个就装出一个**静默残缺**的状态机：读路径把
+	// "这一处没有"当作常态（数据分散在几处，一次读并发查），所以缺一个分区只会在某次
+	// GET 上变成一个 NOKEY，不报错。
+	if err := checkSnapshotFiles(sm, byName); err != nil {
+		util.EPrintf("[SNAPSHOT] %v", err)
+		return kvs.appliedIndexNow(), raftrpc.InstallSSTableStatus_FAILED
+	}
+
+	// 整体替换期间不能有人在读旧状态，也不能有 GC 在换文件。
+	kvs.stateMu.Lock()
+	defer kvs.stateMu.Unlock()
+
+	kvs.mu.Lock()
+	if kvs.gcActive || kvs.gcInProgress {
+		// 让 leader 稍后重试而不是勉强安装：GC 正在搬运时盘上有两个日志文件和两个库，
+		// 等它这一轮结束，状态会回到单文件单库的形态。leader 侧的重发退避负责节奏。
+		kvs.mu.Unlock()
+		util.DPrintf("[SNAPSHOT] GC 正在跑，本次安装退回，等 leader 重发")
+		return kvs.lastAppliedIndex, raftrpc.InstallSSTableStatus_FAILED
+	}
+	if kvs.lastAppliedIndex >= sm.LastIndex {
+		// 比本节点还旧的快照直接忽略。Raft 层同样有这条（index <= committed 就丢掉）。
+		la := kvs.lastAppliedIndex
+		kvs.mu.Unlock()
+		util.DPrintf("[SNAPSHOT] 快照到 %d，本节点已 applied 到 %d，跳过", sm.LastIndex, la)
+		return la, raftrpc.InstallSSTableStatus_SKIPPED
+	}
+	kvs.installing = true
+	prevPartitions, prevLog, prevStore := kvs.lastPartitions, kvs.currentLog, kvs.currentDBPath
+	kvs.mu.Unlock()
+	defer func() {
+		kvs.mu.Lock()
+		kvs.installing = false
+		kvs.mu.Unlock()
+	}()
+
+	names := kvs.snapshotInstallNames(sm.LastIncludedIndex)
+	fail := func(format string, a ...any) (int, raftrpc.InstallSSTableStatus) {
+		util.EPrintf("[SNAPSHOT] 安装失败（本节点仍是原来的状态）: "+format, a...)
+		// 落位一半的文件留在盘上也不影响正确性——状态文件还没写，没人引用它们。
+		// 下次启动清空收件目录时会带走没落位的那些，落位了的则成为孤儿文件。
+		return kvs.appliedIndexNow(), raftrpc.InstallSSTableStatus_FAILED
+	}
+	if err := os.MkdirAll(names.indexDir, 0o755); err != nil {
+		return fail("建索引目录: %v", err)
+	}
+
+	// 1) 分区与旁挂索引落位，同时把清单里的文件名改成落位后的名字。
+	//    用 rename：收件目录就在 dataDir 下，同一个文件系统，原子且不拷字节。
+	metas := make([]partitionMeta, 0, len(sm.Partitions))
+	for i, m := range sm.Partitions {
+		dst := partitionPath(names.sortedBase, i)
+		if err := os.Rename(byName[m.Path], dst); err != nil {
+			return fail("分区 %s 落位: %v", m.Path, err)
+		}
+		if src, ok := byName[filepath.Base(sparseIndexPath(m.Path))]; ok {
+			if err := os.Rename(src, sparseIndexPath(dst)); err != nil {
+				// 索引可有可无：装载时读不到就扫描重建，只是慢。
+				util.EPrintf("[SNAPSHOT] 分区 %s 的旁挂索引落位失败（启动时会扫描重建）: %v", dst, err)
+			}
+		}
+		m.Path = filepath.Base(dst)
+		metas = append(metas, m)
+	}
+
+	// 2) 日志落位。
+	if err := os.Rename(byName[sm.CurrentLog], names.logPath); err != nil {
+		return fail("日志落位: %v", err)
+	}
+
+	// 3) 新建一个库并 ingest 导出。库必须是新的：ingest 是"加进去当最新的数据"，
+	//    并进本节点原来那个库会让旧历史里的 key 残留下来——它们的偏移指向一个已经
+	//    不是当前日志的文件，读出来是别的记录的 value，而且不报错。
+	store := &raft.Persister{}
+	if _, err := store.Init(names.storePath, true); err != nil {
+		return fail("建新库 %s: %v", names.storePath, err)
+	}
+	if sm.StoreSST != "" {
+		if err := store.IngestSSTables([]string{byName[sm.StoreSST]}); err != nil {
+			store.Close()
+			return fail("ingest 存储引擎导出: %v", err)
+		}
+	} else {
+		// leader 那边库里一行都没有（上一轮 GC 之后没写过）。applied 仍要落一笔，
+		// 否则重启时 applied=0 与日志基址矛盾，恢复直接放弃。
+		store.SetApplied(sm.AppliedIndex)
+	}
+	if got, ok, err := store.GetApplied(); err != nil || !ok || got != sm.AppliedIndex {
+		store.Close()
+		return fail("ingest 之后库里的 applied=%d（ok=%v err=%v），清单说的是 %d",
+			got, ok, err, sm.AppliedIndex)
+	}
+
+	// 4) 重建分区组。放在写状态文件之前：装不起来就整份作废，本节点仍是原来的状态。
+	newParts, err := kvs.loadPartitionSet(names.sortedBase, metas)
+	if err != nil {
+		store.Close()
+		return fail("装载快照的分区组: %v", err)
+	}
+
+	// 5) 换掉内存里的状态机指针，再让 Raft 接上新日志。
+	kvs.mu.Lock()
+	kvs.persister = store
+	kvs.currentDBPath = names.storePath
+	kvs.currentLog = names.logPath
+	kvs.numGC = sm.NumGC
+	kvs.lastAppliedIndex = sm.AppliedIndex
+	if len(metas) > 0 {
+		kvs.sortedFilePath = names.sortedBase
+		kvs.retirePartitions(newParts)
+		// 与 recoverOrInit 同一套读路径开关：有分区就意味着 GC 至少完成过一轮。
+		switch {
+		case sm.NumGC >= 2:
+			kvs.anotherSortedFilePath = names.sortedBase
+			kvs.anotherPartitions = newParts
+		default:
+			kvs.firstSortedFilePath = names.sortedBase
+			kvs.firstPartitions = newParts
+		}
+		kvs.FirstGC = false
+		kvs.startGC = true
+		kvs.lastGCFinish = true
+	}
+	kvs.raft.SetCurrentPersister(store)
+	kvs.mu.Unlock()
+
+	last, err := kvs.raft.InstallSnapshotState(
+		sm.LastIncludedIndex, sm.LastIncludedTerm,
+		raft.LogFile{Path: names.logPath, Version: int32(sm.NumGC)}, sm.AppliedIndex)
+	if err != nil {
+		// 这里已经把指针换过去了，回滚不回来（旧库的句柄还在，但 Raft 的日志状态是半的）。
+		// 与其带着一个半装好的状态继续服务，不如停下：下一次启动会从状态文件恢复，
+		// 而状态文件还没写，所以恢复出来的是**原来**的状态，leader 会重发。
+		log.Fatalf("[SNAPSHOT] 接上快照的日志失败，状态已半换、无法回滚: %v", err)
+	}
+
+	// 6) 最后写状态文件——这一步之前崩，等于这份快照没装过。
+	kvs.mu.Lock()
+	kvs.saveKVState()
+	kvs.mu.Unlock()
+
+	// 7) 旧的东西：分区组已经进退役队列（引用归零才删文件），库与日志现在可以删了——
+	//    读者都被 stateMu 挡在外面，没人再持有它们。
+	kvs.reapPartitions()
+	if prevStore != "" && prevStore != names.storePath {
+		if err := os.RemoveAll(prevStore); err != nil {
+			util.EPrintf("[SNAPSHOT] 删除被替换的库 %s 失败: %v", prevStore, err)
+		}
+	}
+	if prevLog != "" && prevLog != names.logPath {
+		if err := os.Remove(prevLog); err != nil && !os.IsNotExist(err) {
+			util.EPrintf("[SNAPSHOT] 删除被替换的日志 %s 失败: %v", prevLog, err)
+		}
+	}
+	fmt.Printf("[SNAPSHOT] 装好一份：位点=(%d,%d) applied=%d 日志到=%d 分区=%d(%dB) "+
+		"库行数=%d 耗时=%v（原状态：分区=%d 日志=%s）\n",
+		sm.LastIncludedIndex, sm.LastIncludedTerm, sm.AppliedIndex, last,
+		newParts.Len(), newParts.TotalSize(), sm.StoreRows, time.Since(t0),
+		prevPartitions.Len(), filepath.Base(prevLog))
+	return last, raftrpc.InstallSSTableStatus_INGESTED
+}
+
+func (kvs *KVServer) appliedIndexNow() int {
+	kvs.mu.Lock()
+	defer kvs.mu.Unlock()
+	return kvs.lastAppliedIndex
+}
+
+func readSnapshotManifest(path string) (snapshotManifest, error) {
+	var sm snapshotManifest
+	if path == "" {
+		return sm, fmt.Errorf("快照里没有 %s", snapshotManifestName)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return sm, err
+	}
+	if err := json.Unmarshal(data, &sm); err != nil {
+		return sm, fmt.Errorf("parse %s: %v", snapshotManifestName, err)
+	}
+	if sm.CurrentLog == "" {
+		return sm, fmt.Errorf("快照清单没有指明日志文件")
+	}
+	if sm.AppliedIndex > sm.LastIndex {
+		return sm, fmt.Errorf("快照清单自相矛盾：applied=%d 超过日志末尾 %d", sm.AppliedIndex, sm.LastIndex)
+	}
+	if sm.LastIncludedIndex > sm.AppliedIndex {
+		return sm, fmt.Errorf("快照清单自相矛盾：位点 %d 超过 applied %d", sm.LastIncludedIndex, sm.AppliedIndex)
+	}
+	return sm, nil
+}
+
+func checkSnapshotFiles(sm snapshotManifest, byName map[string]string) error {
+	if byName[sm.CurrentLog] == "" {
+		return fmt.Errorf("快照缺日志文件 %s", sm.CurrentLog)
+	}
+	if sm.StoreSST != "" && byName[sm.StoreSST] == "" {
+		return fmt.Errorf("快照缺存储引擎导出 %s", sm.StoreSST)
+	}
+	for _, m := range sm.Partitions {
+		p := byName[m.Path]
+		if p == "" {
+			return fmt.Errorf("快照缺分区 %s", m.Path)
+		}
+		st, err := os.Stat(p)
+		if err != nil {
+			return fmt.Errorf("快照的分区 %s: %v", m.Path, err)
+		}
+		// 长度对不上意味着没收全或者收错了。让它在这里失败，而不是等 loadPartitionSet
+		// 去撞一个说不出哪里不对的 "unexpected EOF"。
+		if st.Size() != m.Size {
+			return fmt.Errorf("快照的分区 %s 清单说 %d 字节，收到 %d 字节", m.Path, m.Size, st.Size())
+		}
+	}
+	return nil
+}
+
+// installPayload 是本节点唯一的 SSTableInstaller，按载荷类型分派。
+//
+// 一个入口而不是两个：传输只有一条，SetSSTableInstaller 也只记一个回调。分派放在这里
+// 而不是让传输层去认类型，是因为"收到之后做什么"本来就是状态机的决定——传输层只搬字节、
+// 只管任期。
+func (kvs *KVServer) installPayload(span raft.SSTableSpan) (int, raftrpc.InstallSSTableStatus) {
+	switch span.Kind {
+	case raftrpc.InstallSSTableKind_SNAPSHOT:
+		return kvs.installSnapshot(span)
+	case raftrpc.InstallSSTableKind_SPAN:
+		if kvs.lsm == nil {
+			// 只有 LSM-Raft 基线会发 span。不是基线却收到一个，说明对端跑的是另一个
+			// 系统配置——按失败上报，不要把它当快照装上。
+			util.EPrintf("[SNAPSHOT] 收到 span 载荷，但本节点没有启用 LSM-Raft 基线")
+			return kvs.appliedIndexNow(), raftrpc.InstallSSTableStatus_FAILED
+		}
+		return kvs.lsmInstall(span)
+	default:
+		util.EPrintf("[SNAPSHOT] 未知的载荷类型 %v", span.Kind)
+		return kvs.appliedIndexNow(), raftrpc.InstallSSTableStatus_FAILED
+	}
 }
