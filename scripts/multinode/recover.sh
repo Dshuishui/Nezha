@@ -4,6 +4,8 @@
 #   MODE=midgc          : S3 node2 在 GC 切换之后、搬运之前被 kill -9，重启后重做 GC
 set -u
 cd "$(dirname "$0")"
+# shellcheck source=scripts/multinode/gate.sh
+. ./gate.sh
 MODE=${MODE:-restart}; LOG=recover-$MODE.log; : > "$LOG"
 r() { ssh -o ConnectTimeout=40 -o ServerAliveInterval=15 "$@" 2>/dev/null; }
 say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
@@ -12,7 +14,14 @@ ALL="192.168.1.240:3099,192.168.1.241:3099,192.168.1.241:3100"
 fail=0
 host_of() { case $1 in 0) echo tikv240;; *) echo tikv241;; esac; }
 addr_of() { case $1 in 0) echo 192.168.1.240:3099;; 1) echo 192.168.1.241:3099;; 2) echo 192.168.1.241:3100;; esac; }
-report_all() { for i in 0 1 2; do rep=$(r "$(host_of $i)" "~/three-node.sh report $i"); echo "$rep" | sed 's/^/    /' | tee -a "$LOG"; echo "$rep" | grep -qE 'races=0 err_lines=0' || fail=1; done; }
+# 本脚本的整个立意就是三个节点最后都活着并且追平了，所以三个都要求 alive=yes。
+# 只查 races/err_lines 的话，一个重启之后又死掉的节点会静默判过——而那恰恰是
+# 崩溃恢复最该抓的失效。
+report_all() { local i rep why; for i in 0 1 2; do
+  rep=$(r "$(host_of $i)" "~/three-node.sh report $i"); echo "$rep" | sed 's/^/    /' | tee -a "$LOG"
+  why=$(gate_report_ok "$rep" yes "node$i") || fail=1
+  [ -n "$why" ] && echo "$why" | tee -a "$LOG"
+done; }
 wait_gc() { local prev="" cur k spec h i g ok nodes=("$@")
   for k in $(seq 1 24); do sleep 15; cur=""; ok=1
     for i in "${nodes[@]}"; do g=$(r "$(host_of $i)" "~/three-node.sh report $i" | grep -oE 'gc_done=[0-9]+'); cur="$cur $g"; [ "${g#gc_done=}" -ge 1 ] 2>/dev/null || ok=0; done

@@ -52,9 +52,18 @@ stop)
 report)
   alive=no; [ -f "$D/pid" ] && kill -0 "$(cat "$D/pid")" 2>/dev/null && alive=yes
   idx=$(grep -c '建立了索引' "$D/n.log") || idx=0
-  done_=$(grep -c '垃圾回收完成' "$D/n.log") || done_=0
-  err=$(grep -c -E 'panic|DATA RACE|垃圾回收出现了错误|读取旧库记录失败|合并中止|failed to read entry|EOF' "$D/n.log") || err=0
-  echo "REPORT $ROLE alive=$alive gc_index=$idx gc_done=$done_ err_lines=$err"
-  grep -E -m 5 'panic|DATA RACE|垃圾回收出现了错误|读取旧库记录失败|合并中止|failed to read entry|EOF' "$D/n.log" | cut -c1-200
+  # "轮垃圾回收完成" 而不是 "垃圾回收完成"：后者还会匹配到它前面那行横幅
+  # （finishFirstGC 先打 "垃圾回收完成，共花费了…"，再打 "第 N 轮垃圾回收完成…"），
+  # 于是一轮被报成两轮。three-node.sh 早就改过了，这份一直没跟上——
+  # 两份节点脚本对同一件事的判据漂移了。
+  done_=$(grep -c '轮垃圾回收完成' "$D/n.log") || done_=0
+  # 错误定义与 three-node.sh 保持一致（那边的注释解释了每一条的取舍）。
+  # 此前这份少了 fatal、RECOVER 失败与快照相关的几条，同一次运行在两个脚本下
+  # 会得出不同的 err_lines。
+  ERRPAT='panic|DATA RACE|LOG-STUCK.*再也追不上|垃圾回收出现了错误|读取旧库记录失败|合并中止|failed to read entry|EOF|fatal|RECOVER\] .*失败|\[SNAPSHOT\] 安装失败|制作快照失败|没装上快照'
+  err=$(grep -c -E "$ERRPAT" "$D/n.log") || err=0
+  races=$(grep -c 'WARNING: DATA RACE' "$D/n.log") || races=0
+  echo "REPORT $ROLE alive=$alive gc_index=$idx gc_done=$done_ races=$races err_lines=$err"
+  grep -E -m 5 "$ERRPAT" "$D/n.log" | cut -c1-200
   ;;
 esac

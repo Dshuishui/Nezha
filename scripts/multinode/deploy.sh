@@ -68,6 +68,11 @@ for h in $HOSTS; do
     ssh "$h" "source ~/env.sh; cd ~/work/Nezha && go build -o /tmp/nezha-three-normal ./cmd/nezha/" || {
       echo "DEPLOY_FAIL $h: build"; exit 1; }
   fi
-  scp -q scripts/multinode/three-node.sh "$h:~/three-node.sh"
+  # 两份节点脚本都要送。rep-node.sh 此前不在这里，于是对它的改动（比如把 gc_done 的
+  # 计数从 '垃圾回收完成' 改成 '轮垃圾回收完成'）**根本到不了服务器**：本地改完、
+  # 提交完、部署完，跑起来还是旧逻辑，而且不报错。
+  for f in three-node.sh rep-node.sh; do
+    scp -q "scripts/multinode/$f" "$h:~/$f" || { echo "DEPLOY_FAIL $h: scp $f"; exit 1; }
+  done
   echo "DEPLOY_OK $h ${WANT:0:7}"
 done

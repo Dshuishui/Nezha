@@ -28,7 +28,19 @@ D=$HOME/work/three-$IDX
 PEERS="192.168.1.240:30991,192.168.1.241:30991,192.168.1.241:30992"
 BIN=${BIN:-race}; EXE=/tmp/nezha-three-$BIN
 SYSTEM=${SYSTEM:-nezha}; EXTRA=${EXTRA:-}
-ERRPAT='panic|DATA RACE|LOG-STUCK|垃圾回收出现了错误|读取旧库记录失败|合并中止|failed to read entry|EOF|fatal|RECOVER\] .*失败|\[Error\].*LSM-Raft'
+# 什么算"错误行"。这里的取舍很要紧：漏了真错误是漏报，收进良性行是**假失败**，
+# 而假失败会训练人去忽略这个闸门，所以两个方向都不能松。
+#
+# `LOG-STUCK` 曾经在这份名单里，现在按措辞区分：
+#   "交给快照补齐"        —— 良性。快照路径接手了，这只是一条值得知道的事件。
+#   "它再也追不上了"      —— 真失效。本节点没启用快照，那个副本从此是个摆设。
+# 不区分的后果是：任何真的跑到快照的运行都会被判成失败。
+#
+# 新增的三条是快照路径**静默**的失效：安装失败会退回原状态并等 leader 重发，
+# 反复失败的话那个副本永远追不上，而它不 panic、不崩、日志之外没有任何迹象。
+# `发快照失败` 刻意**不**收进来：对端宕机、任期陈旧都会让它发生，和
+# "[LSM-Raft] ship" 一样是设计上的瞬时失败。
+ERRPAT='panic|DATA RACE|LOG-STUCK.*再也追不上|垃圾回收出现了错误|读取旧库记录失败|合并中止|failed to read entry|EOF|fatal|RECOVER\] .*失败|\[Error\].*LSM-Raft|\[SNAPSHOT\] 安装失败|制作快照失败|没装上快照'
 # "[LSM-Raft] ship" errors are transient by design (peer down, stale term) and not counted.
 errlines() { cat "$D"/n*.log | grep -E "$ERRPAT" | grep -v 'LSM-Raft\] ship'; }
 case $CMD in

@@ -20,6 +20,8 @@ say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 ALL="192.168.1.240:3099,192.168.1.241:3099,192.168.1.241:3100"
 NODE_ENV="BIN=$BIN SYSTEM=lsm-raft EXTRA='-sstSpanMB $SPAN_MB'"
 fail=0
+# shellcheck source=scripts/multinode/gate.sh
+. "$(dirname "$0")/gate.sh"
 
 field() { grep -o "$2=[0-9a-z]*" <<<"$1" | head -1 | cut -d= -f2; }
 # report HOST IDX: the node's REPORT line; an empty answer means the SSH hop timed out,
@@ -77,7 +79,15 @@ write_verify 0 "$N" "$VS_A"
 wait_ingested "tikv240 0" "tikv241 1" "tikv241 2"
 say "===== 3. read node1 and node2 directly (data arrived only by ingestion) ====="
 for a in 192.168.1.241:3099 192.168.1.241:3100; do read_direct "$a" "$N" "$VS_A"; done
-for i in 1 2; do rep=$(report tikv241 $i); [ -z "$rep" ] || [ "$(field "$rep" lsm_replays)" = 0 ] || { say "node$i replayed entries locally: $rep"; fail=1; }; done
+# `report` sets fail=1 when it gives up, but it is called in a command substitution --
+# a subshell -- so that assignment never reaches this shell. Combined with the old
+# `[ -z "$rep" ] ||` skip, an SSH timeout silently passed this gate: no report, no check,
+# no failure. Check the emptiness here instead of skipping on it.
+for i in 1 2; do
+  rep=$(report tikv241 $i)
+  if [ -z "$rep" ]; then say "no report from node$i: cannot judge lsm_replays"; fail=1; continue; fi
+  [ "$(field "$rep" lsm_replays)" = 0 ] || { say "node$i replayed entries locally: $rep"; fail=1; }
+done
 
 say "===== 4. kill -9 node0 (leader) ====="
 say "$(r tikv240 '~/three-node.sh kill9 0')"; sleep 20
@@ -96,9 +106,11 @@ wait_ingested "tikv241 $L" "tikv240 0"
 read_direct 192.168.1.240:3099 "$N" "$VS_B"
 
 say "===== 7. reports ====="
+# node0 was restarted in step 6, so all three must be alive here.
 for spec in "tikv240 0" "tikv241 1" "tikv241 2"; do
   rep=$(report "${spec% *}" "${spec#* }"); echo "$rep" | sed 's/^/    /' | tee -a "$LOG"
-  echo "$rep" | grep -qE 'races=0 err_lines=0' || fail=1
+  why=$(gate_report_ok "$rep" yes "node${spec#* }") || fail=1
+  [ -n "$why" ] && echo "$why" | tee -a "$LOG"
 done
 for spec in "tikv240 0" "tikv241 1" "tikv241 2"; do r "${spec% *}" "~/three-node.sh stop ${spec#* }" >/dev/null; done
 [ $fail = 0 ] && say "LSMRAFT_OK" || say "LSMRAFT_FAIL"

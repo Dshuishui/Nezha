@@ -2,7 +2,9 @@
 # 三节点故障切换，-race 构建。稳态 race 轮次没走到的路径：选举、上任空指令、
 # follower 在新 leader 下继续写入与 GC。node0 死后不重启（原型没有崩溃恢复）。
 set -u
-cd "$(dirname "$0")"; LOG=failover-race.log; : > "$LOG"
+cd "$(dirname "$0")"
+# shellcheck source=scripts/multinode/gate.sh
+. ./gate.sh
 r() { ssh -o ConnectTimeout=40 -o ServerAliveInterval=15 "$@" 2>/dev/null; }
 say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 N=20000; VS_A=1024; VS_B=512; BIN=${BIN:-race}; KEEP=${KEEP:-0}
@@ -46,6 +48,16 @@ for a in 192.168.1.241:3099 192.168.1.241:3100; do
   R=$(r tikv240 "source ~/env.sh; /tmp/readonly -servers $a -dnums $N -vsize $VS_B -check 300 -sample 30" | grep -vE 'new pool success'); echo "$R" | tail -3 | sed "s/^/    [$a] /" | tee -a "$LOG"; echo "$R" | grep -q FAILOVER_VERIFY_OK || fail=1
 done
 say "===== 7. 三个节点的日志 ====="
-for spec in "tikv240 0" "tikv241 1" "tikv241 2"; do h=${spec% *}; i=${spec#* }; rep=$(r "$h" "~/three-node.sh report $i"); echo "$rep" | sed 's/^/    /' | tee -a "$LOG"; echo "$rep" | grep -qE 'races=0 err_lines=0' || fail=1; done
+# node0 是本轮**故意**杀掉且不重启的，所以它该是 alive=no；1 和 2 必须还活着。
+# 此前三个节点都只查 races/err_lines，于是 node1 或 node2 静默死掉（OOM 正是这次
+# 快照改造要防的那种死法，日志里一行解释都没有）照样判过。
+for spec in "tikv240 0 no" "tikv241 1 yes" "tikv241 2 yes"; do
+  read -r h i want <<<"$spec"
+  rep=$(r "$h" "~/three-node.sh report $i"); echo "$rep" | sed 's/^/    /' | tee -a "$LOG"
+  # 一次调用：命令替换是子 shell，但**退出状态**传得回来，所以 `|| fail=1` 在本 shell 生效。
+  # 调两遍（一遍打印一遍取状态）是另一种写法，但那等于把判据跑两次。
+  why=$(gate_report_ok "$rep" "$want" "node$i") || fail=1
+  [ -n "$why" ] && echo "$why" | tee -a "$LOG"
+done
 [ "$KEEP" = 1 ] || for spec in "tikv241 1" "tikv241 2"; do h=${spec% *}; i=${spec#* }; r "$h" "~/three-node.sh stop $i" >/dev/null; done
 [ $fail = 0 ] && say "FAILOVER_RACE_OK" || say "FAILOVER_RACE_FAIL"
