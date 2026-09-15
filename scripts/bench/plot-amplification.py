@@ -26,9 +26,14 @@ HATCHES = ["", "///", "...", "xxx"]
 VSIZES = [64, 256, 1024]
 OVERWRITES = [25, 50, 100]
 
+# 带 -user 的两个用真实用户字节做分母，是正确的口径；不带的沿用历史口径 n*(10+v)，
+# 留着是为了与 2026-09-12 之前归档的数据对照。差别只取决于 N 与 value 大小，
+# 见 scripts/bench/amplification.sh 里分母那段注释。
 METRIC = {
     "write-amp": ("write_amp_total", "Write amplification", "lower is better"),
     "space-amp": ("space_amp", "Space amplification", "lower is better"),
+    "write-amp-user": ("write_amp_total_user", "Write amplification (user bytes)", "lower is better"),
+    "space-amp-user": ("space_amp_user", "Space amplification (user bytes)", "lower is better"),
 }
 
 

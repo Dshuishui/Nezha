@@ -71,6 +71,16 @@ DEVSTAT="/sys/block/$DEV/stat"
 [ -r "$DEVSTAT" ] || die "读不到 $DEVSTAT —— 用 DEV=<disk>/<part> 指定，例如 DEV=sdc/sdc3"
 
 entries_for(){ awk -v mb="$TOTAL_MB" -v r="$(record_bytes "$1")" 'BEGIN{printf "%d", mb*1048576/r}'; }
+
+# user_key_bytes N —— 键 0..N-1 的**真实**字节数之和，即 sum(len(strconv.Itoa(i)))。
+# 按位数分段累加，循环次数是 N 的位数（不到 10 次），不是 O(N)。
+user_key_bytes(){
+    awk -v n="$1" 'BEGIN{
+        s=0; lo=0; d=1; hi=9
+        while (lo < n) { u = (hi < n-1 ? hi : n-1); s += (u-lo+1)*d; lo = hi+1; d++; hi = hi*10+9 }
+        printf "%d", s
+    }'
+}
 gc_threshold_gb(){ awk -v mb="$TOTAL_MB" 'BEGIN{printf "%.6f", mb/1024/3}'; }
 
 # 设备写入字节：第 7 字段是写扇区数，扇区固定 512 字节。
@@ -108,7 +118,9 @@ go build -o "$BIN" ./cmd/nezha/ || die "节点编译失败"
 go build -o /tmp/amp-randwrite ./cmd/bench/randwrite_goroutine/ || die "写入工具编译失败"
 
 if [ ! -f "$OUT" ]; then
-  echo "commit,label,system,syncwal,vsize,entries,total_mb,overwrite_pct,dist,gc_done,quiesced,dev_bytes_load,dev_bytes_update,proc_bytes_total,logical_load,logical_update,live_logical,write_amp_total,write_amp_update,space_amp,space_amp_valuelog,space_amp_store,dir_bytes_valuelog,dir_bytes_store,put_ops_s_load,put_ops_s_update" > "$OUT"
+  # 带 _user 后缀的列用真实用户字节做分母，是正确的那一组；不带后缀的沿用历史口径
+  # `n*(10+v)`，留着是为了与已归档的数据对照。两者的差见分母那段注释。
+  echo "commit,label,system,syncwal,vsize,entries,total_mb,overwrite_pct,dist,gc_done,quiesced,dev_bytes_load,dev_bytes_update,proc_bytes_total,logical_load,logical_update,live_logical,write_amp_total,write_amp_update,space_amp,space_amp_valuelog,space_amp_store,dir_bytes_valuelog,dir_bytes_store,put_ops_s_load,put_ops_s_update,logical_load_user,logical_update_user,write_amp_total_user,write_amp_update_user,space_amp_user,space_amp_valuelog_user,space_amp_store_user" > "$OUT"
 fi
 
 PID=""
@@ -147,15 +159,37 @@ info "输出 $OUT"
 for sys in $SYSTEMS; do
  for vs in $VSIZES; do
   N=$(entries_for "$vs"); GCGB=$(gc_threshold_gb)
-# 逻辑字节的分母沿用历史口径 (10 + value)：它把"补齐后的 key 宽度"当成用户数据，
-# 而 benchmark 的 key 是 strconv.Itoa(i)，实际只有 1~7 个字符。换成真实用户字节会让
-# 所有已发表的放大率数字整体移动，是个方法学决定，不在本次修复范围内——所以这里**故意
-# 保留 10**，不跟着定长宽度走。见 notes/TODO-avp.md。
+# 分母有两个口径，两个都报。
+#
+#   历史口径 `n*(10+v)`：把**客户端补齐后的** key 宽度当成用户数据。它是错的——
+#   补齐是我们自己的编码（internal/client 的 KeyPadWidth，默认 10），而 benchmark
+#   交给我们的 key 是 strconv.Itoa(i)，只有 1~7 个字符。分母被我们自己的填充抬高，
+#   于是放大率被**系统性低估**。方向值得说清楚：改成真实字节会让放大率**变差**，
+#   不是变好——N=50000 时 64B 档 +7.6%、256B 档 +2.0%、1024B 档 +0.5%、4096B 档 +0.1%。
+#   （平均 key 长度 N=50000 时是 4.78 字符，N=200000 时是 5.44。）
+#
+#   真实口径 `sum(len(itoa(i))) + n*v`：用户真正交出去的字节。这是对的那个，
+#   审稿人问"分母里是什么"时唯一答得出的那个。
+#
+# 两个都留着的理由：已归档的数据（results/amplification/2026-09-12-split-columns 那 36 格）
+# 用的是历史口径，删掉它就没法与新数据对照。带 `_user` 后缀的是正确口径，以后以它为准。
+#
+# 还有一条更彻底的路，记在这里但**没有走**：客户端用 KeyPadNone 跑，根本不补齐，
+# 这个问题就不存在了。代价是盘上记录宽度从 20+10+v 变成 20+len(key)+v，
+# 与那 36 格不再可比——所以要等主表跑完再考虑。
   LOGICAL_LOAD=$(awk -v n="$N" -v v="$vs" 'BEGIN{printf "%d", n*(10+v)}')
+  UKB=$(user_key_bytes "$N")
+  LOGICAL_LOAD_USER=$(awk -v k="$UKB" -v n="$N" -v v="$vs" 'BEGIN{printf "%d", k + n*v}')
   for pct in $OVERWRITE; do
     done_n=$((done_n+1))
     M=$(awk -v n="$N" -v p="$pct" 'BEGIN{printf "%d", n*p/100}')
     LOGICAL_UPD=$(awk -v m="$M" -v v="$vs" 'BEGIN{printf "%d", m*(10+v)}')
+    # 覆盖阶段按 $DIST 从 [0,N) 抽 M 个键，抽到哪些键事先不知道，所以用 [0,N) 上的
+    # **平均** key 长度。误差上界是 1 个字符（key 长度在 1..位数之间），在 256B 档是
+    # 0.4%——小于该档自身的轮间散布，不影响任何判定。DIST=range 时窗口偏向键空间的
+    # 一段，偏差会大一点，但同样被这个上界盖住。
+    LOGICAL_UPD_USER=$(awk -v m="$M" -v k="$UKB" -v n="$N" -v v="$vs" \
+        'BEGIN{printf "%d", m*(k/n) + m*v}')
     D="$TMPDIR/amp-$LABEL-$sys-$vs-$pct"
     info "[$done_n/$total] $sys value=${vs}B load=$N overwrite=${pct}% ($M 次)"
 
@@ -221,12 +255,20 @@ for sys in $SYSTEMS; do
     SA=$(awk -v d="$DIRB" -v l="$LOGICAL_LOAD" 'BEGIN{ if(l>0 && d!="") printf "%.4f", d/l; else print "NA" }')
     SA_VLOG=$(awk -v d="$DIRB_VLOG" -v l="$LOGICAL_LOAD" 'BEGIN{ if(l>0 && d!="") printf "%.4f", d/l; else print "NA" }')
     SA_STORE=$(awk -v d="$DIRB_STORE" -v l="$LOGICAL_LOAD" 'BEGIN{ if(l>0 && d!="") printf "%.4f", d/l; else print "NA" }')
+    # 同样几个数，换成真实用户字节的分母。以后以带 _user 的为准，见上面分母那段注释。
+    WA_TOT_USER=$(awk -v d="$((D2-D0))" -v l="$((LOGICAL_LOAD_USER+LOGICAL_UPD_USER))" 'BEGIN{ if(l>0) printf "%.4f", d/l; else print "NA" }')
+    WA_UPD_USER=$(awk -v d="$DEV_UPD" -v l="$LOGICAL_UPD_USER" 'BEGIN{ if(l>0) printf "%.4f", d/l; else print "NA" }')
+    SA_USER=$(awk -v d="$DIRB" -v l="$LOGICAL_LOAD_USER" 'BEGIN{ if(l>0 && d!="") printf "%.4f", d/l; else print "NA" }')
+    SA_VLOG_USER=$(awk -v d="$DIRB_VLOG" -v l="$LOGICAL_LOAD_USER" 'BEGIN{ if(l>0 && d!="") printf "%.4f", d/l; else print "NA" }')
+    SA_STORE_USER=$(awk -v d="$DIRB_STORE" -v l="$LOGICAL_LOAD_USER" 'BEGIN{ if(l>0 && d!="") printf "%.4f", d/l; else print "NA" }')
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
       "$COMMIT" "$LABEL" "$sys" "$SYNC_WAL" "$vs" "$N" "$TOTAL_MB" "$pct" "$DIST" "$GC" "$QUIESCED" \
       "$DEV_LOAD" "$DEV_UPD" "$PROC_TOT" "$LOGICAL_LOAD" "$LOGICAL_UPD" "$LOGICAL_LOAD" \
       "$WA_TOT" "$WA_UPD" "$SA" "$SA_VLOG" "$SA_STORE" "$DIRB_VLOG" "$DIRB_STORE" \
-      "$(ops_of "$D/load.out")" "$(ops_of "$D/update.out")" >> "$OUT"
+      "$(ops_of "$D/load.out")" "$(ops_of "$D/update.out")" \
+      "$LOGICAL_LOAD_USER" "$LOGICAL_UPD_USER" \
+      "$WA_TOT_USER" "$WA_UPD_USER" "$SA_USER" "$SA_VLOG_USER" "$SA_STORE_USER" >> "$OUT"
 
     cleanup; PID=""
   done
@@ -234,4 +276,17 @@ for sys in $SYSTEMS; do
 done
 
 info "完成，$OUT"
-awk -F, 'NR>1{printf "%-11s v=%-5s ovw=%-4s gc=%-2s WA_total=%-8s SA=%-8s SA_vlog=%-8s SA_store=%s\n", $3,$5,$8,$10,$18,$20,$21,$22}' "$OUT"
+# 两个口径并排打，并给出差值：读的人一眼能看出"历史口径低估了多少"。
+#
+# 列按**表头名**解析，不写列号。第一版写的是 $30，而 space_amp_user 其实是第 31 列
+# （$30 是 write_amp_update_user），于是"SA 高 7.1%"是拿写放大跟空间放大比出来的。
+# 这次加了 7 列，任何写死的列号都会这样静默错位——和多节点闸门里那条子串判据同一类
+# 毛病：按位置取值，位置一变就无声地取到别的东西。
+awk -F, 'NR==1{ for(i=1;i<=NF;i++) c[$i]=i; next }
+{
+    sa=$(c["space_amp"]); sau=$(c["space_amp_user"])
+    d = (sau>0 && sa>0) ? (sau/sa-1)*100 : 0
+    printf "%-11s v=%-5s ovw=%-4s gc=%-2s WA=%-8s SA=%-8s | 真实口径 WA=%-8s SA=%-8s (SA 高 %.1f%%)\n",
+        $(c["system"]),$(c["vsize"]),$(c["overwrite_pct"]),$(c["gc_done"]),
+        $(c["write_amp_total"]),sa,$(c["write_amp_total_user"]),sau,d
+}' "$OUT"
