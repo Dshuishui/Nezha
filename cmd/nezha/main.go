@@ -30,11 +30,16 @@ func main() {
 	// which is the durability consensus requires and the precondition for measuring the
 	// gain of merging two persistence steps into one.
 	flag.BoolVar(&cfg.SyncWAL, "syncWAL", false, "fsync the Raft log after each write batch (true durability)")
-	// 默认仍是 0（关闭）：改默认值会改变此后每一次实验的含义，而主表还没跑完。
-	// 实测的最优窗口约 100us——批大小在那里饱和，p50 与最小值无实质差别，p99 明确更好；
-	// 再大只是让每条多等（node55 上 5000us 的 p50 是 200us 的 6.3 倍、吞吐是它的 1/5.6）。
+	// 默认 100us：实测的最优窗口——批大小在那里饱和，p50 与最小值无实质差别，
+	// 而 p99 明确更好（100us 的三轮 4.078/4.024/4.006 全部低于 50us 的每一轮）；
+	// 再大只是让每条白等（node55 上 5000us 的 p50 是 200us 的 6.3 倍、吞吐是它的 1/5.6）。
 	// 数据与取舍见 results/groupcommit/2026-09-15-window-low-winbox/meta.txt。
-	flag.IntVar(&cfg.GroupCommitUs, "groupCommitUs", 0, "group commit window in microseconds (0 = disabled); only meaningful with -syncWAL; measured optimum is about 100 (see results/groupcommit/)")
+	//
+	// 注意它**只在 -syncWAL 打开时才生效**（见 server.go 的接线）。窗口的意义是把一批
+	// 写入摊到一次 fsync 上；不开 syncWAL 时根本不 fsync，攒批就只剩"每条多等 100us"。
+	// 默认是 0 的时候这条路走不到，改成 100 就必须把启用条件挂到 syncWAL 上，
+	// 否则所有不开 syncWAL 的运行会凭空多出延迟。
+	flag.IntVar(&cfg.GroupCommitUs, "groupCommitUs", 100, "group commit window in microseconds (0 = disabled); takes effect only with -syncWAL; 100 is the measured optimum (see results/groupcommit/)")
 	flag.IntVar(&cfg.SnapshotRateMB, "snapshotRateMB", 100, "rate limit for shipping a snapshot to a lagging replica, MiB/s (0 = unlimited)")
 	flag.IntVar(&cfg.RaftLogBudgetMB, "raftLogBudgetMB", 256, "byte budget for the in-memory Raft log, MiB; past it a lagging replica is truncated past and repaired by snapshot")
 	// -system selects the configuration by the name used in the paper (see

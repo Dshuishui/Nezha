@@ -313,7 +313,12 @@ func New(cfg Config) (*KVServer, error) {
 		}
 	}
 	kvs.raft.SetSyncOnWrite(cfg.SyncWAL)
-	if cfg.GroupCommitUs > 0 {
+	// 攒批只在 syncWAL 打开时启用。窗口的全部意义是把一批写入摊到**一次 fsync** 上，
+	// 不开 syncWAL 时落盘那一步不 fsync（见 WriteEntryToFile 里的 syncOnWrite），
+	// 攒批于是只剩代价：每条最多多等一个窗口。
+	// 这个条件在默认值是 0 的时候无所谓，2026-09-15 把默认改成 100us 之后就必须有——
+	// 否则所有不开 syncWAL 的实验都会凭空多出延迟，而且不报错。
+	if cfg.GroupCommitUs > 0 && cfg.SyncWAL {
 		kvs.raft.EnableGroupCommit(time.Duration(cfg.GroupCommitUs) * time.Microsecond)
 	}
 	if len(recoveredFiles) > 0 {

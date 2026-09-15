@@ -17,7 +17,9 @@ type Config struct {
 	SyncTime int // Raft sync interval (see raft.Raft.SyncTime)
 
 	// Durability of the Raft log: fsync after each write batch, optionally with a group
-	// commit window (microseconds, 0 = off). GroupCommit only matters with SyncWAL.
+	// commit window (microseconds, 0 = off). GroupCommitUs takes effect only when SyncWAL
+	// is on -- the window amortises one fsync over a batch, and without SyncWAL there is
+	// no fsync to amortise. Default is 100, the measured optimum.
 	SyncWAL       bool
 	GroupCommitUs int
 	// SnapshotRateMB 限制发快照的速率（MiB/s），0 表示不限。默认 100，与实测的 GC
