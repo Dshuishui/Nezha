@@ -386,6 +386,13 @@ func (kvs *KVServer) installSnapshot(span raft.SSTableSpan) (int, raftrpc.Instal
 	// 3) 新建一个库并 ingest 导出。库必须是新的：ingest 是"加进去当最新的数据"，
 	//    并进本节点原来那个库会让旧历史里的 key 残留下来——它们的偏移指向一个已经
 	//    不是当前日志的文件，读出来是别的记录的 value，而且不报错。
+	// 先删掉这个路径上可能残留的库。名字里带位点，所以同一份快照重试时会落到同一个路径上，
+	// 而**上一次没走完的安装**已经往那里 ingest 过一部分行了。直接 Init 会打开那个旧库，
+	// 于是上一次的残留行留了下来——它们的偏移指向一个已经不是当前日志的文件，读出来是
+	// 别的记录的 value，而且不报错。场景 F（安装到一半崩）走的正是这条路。
+	if err := os.RemoveAll(names.storePath); err != nil {
+		return fail("清理上一次未完成安装留下的库 %s: %v", names.storePath, err)
+	}
 	store := &raft.Persister{}
 	if _, err := store.Init(names.storePath, true); err != nil {
 		return fail("建新库 %s: %v", names.storePath, err)
@@ -450,6 +457,7 @@ func (kvs *KVServer) installSnapshot(span raft.SSTableSpan) (int, raftrpc.Instal
 	}
 
 	// 6) 最后写状态文件——这一步之前崩，等于这份快照没装过。
+	snapshotInstallPauseWindow()
 	kvs.mu.Lock()
 	kvs.saveKVState()
 	kvs.mu.Unlock()
@@ -573,4 +581,60 @@ func (kvs *KVServer) snapshotForRaft() (raft.SnapshotPayload, error) {
 		Files:             snap.files,
 		Release:           snap.release,
 	}, nil
+}
+
+// snapshotInstallPauseWindow 是崩溃恢复的测试钩子：设了 NEZHA_SNAP_INSTALL_PAUSE_MS 时，
+// 安装在"文件都已落位、状态文件尚未写"处停住，给外部脚本 kill -9 的机会。生产上不设。
+//
+// 这个窗口必须靠钩子才进得去：一次安装只有几十毫秒（小规模实测 30ms），从外面轮询
+// 根本抓不到。传输那个窗口不需要钩子——把 -snapshotRateMB 调到 1 就能把它拉长到十几秒，
+// 那是生产旋钮而不是测试开关，能少一个钩子就少一个。
+func snapshotInstallPauseWindow() {
+	pauseFor("NEZHA_SNAP_INSTALL_PAUSE_MS", "snapshot files in place; state file not written")
+}
+
+// clearOrphanSnapshotArtifacts 删掉不被当前状态引用的快照产物。
+//
+// 安装留下的文件名里带位点（RaftState_snap<idx>.log 等），刻意不覆盖本节点自己的文件——
+// 这正是"状态文件最后写"能成为原子开关的前提。代价是一次没走完的安装会留下孤儿文件：
+// 状态文件还指着旧状态，那批文件谁都不引用，却一直占着盘。
+//
+// 判据是"当前状态文件引用了它吗"，而不是"名字里有没有 snap"：安装**成功**之后，
+// 当前状态引用的恰恰就是这批带 snap 的文件，按名字清理会把正在用的数据删掉。
+func (kvs *KVServer) clearOrphanSnapshotArtifacts(st kvState) {
+	keep := map[string]bool{
+		filepath.Base(st.CurrentLog): true,
+		filepath.Base(st.OldLog):     true,
+		filepath.Base(st.CurrentDB):  true,
+		filepath.Base(st.OldDB):      true,
+	}
+	for _, m := range st.Partitions {
+		keep[filepath.Base(m.Path)] = true
+		keep[filepath.Base(sparseIndexPath(m.Path))] = true
+	}
+	var removed int
+	globs := []string{
+		filepath.Join(kvs.dataDir, "data", "valuelog", "*snap*"),
+		filepath.Join(kvs.dataDir, "data", "valuelog", sparseIndexDir, "*snap*"),
+		filepath.Join(kvs.dataDir, "data", "dbfile", "*snap*"),
+	}
+	for _, g := range globs {
+		matches, err := filepath.Glob(g)
+		if err != nil {
+			continue
+		}
+		for _, p := range matches {
+			if keep[filepath.Base(p)] {
+				continue
+			}
+			if err := os.RemoveAll(p); err != nil {
+				fmt.Printf("[SNAPSHOT] 删除孤儿产物 %s 失败: %v\n", p, err)
+				continue
+			}
+			removed++
+		}
+	}
+	if removed > 0 {
+		fmt.Printf("[SNAPSHOT] 清理上次未完成安装留下的孤儿产物 %d 个\n", removed)
+	}
 }

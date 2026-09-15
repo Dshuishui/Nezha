@@ -20,9 +20,17 @@ up either.
 3. The write path is not slowed down: new persistence happens only on elections and on
    GC file switches.
 
-Out of scope: a node that has fallen behind the leader's in-memory log (that needs
-InstallSnapshot, i.e. shipping RocksDB plus sorted files). Leader compaction is bounded by
-`min(matchIndex)`, so a node that is merely down does not lose the entries it is missing.
+Out of scope *at the time this was written*: a node that has fallen behind the leader's
+in-memory log. Both sentences that used to stand here are now obsolete and are kept only so
+that the change is visible. They read: "that needs InstallSnapshot, i.e. shipping RocksDB
+plus sorted files", and "leader compaction is bounded by `min(matchIndex)`, so a node that is
+merely down does not lose the entries it is missing".
+
+Snapshot replication exists now, and compaction is no longer bounded by `min(matchIndex)`:
+it is bounded by a byte budget, and a replica cut loose by that budget is repaired by a
+snapshot. See `docs/snapshot-replication.md`. The consequence for recovery is that local
+disk is no longer the only source -- a restarted node whose position predates the leader's
+compaction point is brought back by a transfer, not by replay.
 
 ## What is persisted, and where
 
@@ -99,6 +107,15 @@ Three-node cluster built with `-race`, 20000 keys of 1 KB, GC threshold set so b
 | leader `kill -9`, new leader elected in 2 s, 20000 keys rewritten, old leader restarted | rejoined as follower, caught up, served the new values within 10 s |
 | follower `kill -9` between GC switch and migration (`NEZHA_GC_PAUSE_MS`) | detected the interrupted round, redid it in 138 ms, later ran round 2 normally, all keys correct |
 
+Two more scenarios belong to snapshot replication rather than to GC, and live in
+`scripts/test/snapshot-crash.sh` because they need more than one node -- this script's whole
+premise is a single node recovering from its own disk:
+
+| Scenario | Result |
+|---|---|
+| receiver `kill -9` mid-transfer (transfer stretched with `-snapshotRateMB 1`) | the half-received snapshot is discarded wholesale on restart, the leader re-sends, all keys correct |
+| receiver `kill -9` after the files land but before `kv_state.json` is written (`NEZHA_SNAP_INSTALL_PAUSE_MS`) | the install did not take effect, the orphaned files are collected at startup, the re-sent snapshot installs, all keys correct |
+
 No data-race reports on any node in any scenario. Unit tests cover the log rebuild, recovery
 across GC files, truncated tails, gap and base-mismatch rejection, overwrite truncation, the
 hard-state round trip and the applied-index batch.
@@ -107,6 +124,7 @@ hard-state round trip and the applied-index batch.
 
 - Conflict truncation on a follower is exercised only by a unit test; the cluster scripts
   kill the leader after the writes finish, so no uncommitted tail is left behind.
-- No InstallSnapshot: a node that falls behind the leader's compaction point cannot catch up.
+- ~~No InstallSnapshot: a node that falls behind the leader's compaction point cannot catch
+  up.~~ Closed; see `docs/snapshot-replication.md`.
 - After the second GC round the first round's sorted file (`RaftState_sorted_1`) is left on
   disk. Pre-existing behaviour; recovery does not depend on it.

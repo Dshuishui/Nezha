@@ -34,7 +34,16 @@ tla/**/states/
 
 # Working log, design notes and session hand-off files stay local (see notes/README.md)
 notes/
-docs/
+# `docs/*` and not `docs/`: git cannot re-include a file whose parent directory is
+# excluded, so excluding the directory itself would make the negations below dead lines.
+docs/*
+# ...except the implementation notes, which are part of what a reviewer outside the group
+# reads. Decision documents (gc-redesign.md, raft-snapshot.md, open-questions.md) stay
+# local. The three below were already tracked before this rule was written down; naming
+# them explicitly is so the next one does not need `git add -f` to be remembered.
+!docs/crash-recovery.md
+!docs/lsm-raft-baseline.md
+!docs/snapshot-replication.md
 CONTEXT-*.md
 
 # per-repo assistant notes stay local

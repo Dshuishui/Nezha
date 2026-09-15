@@ -211,6 +211,9 @@ func (kvs *KVServer) recoverOrInit(initialDB string) (files []raft.LogFile, appl
 	}
 	// 状态文件里的路径一律按当前 -data 重新解析，见 rebase。
 	st.rebase(kvs.dataDir)
+	// 一次没走完的快照安装会留下不被任何状态引用的孤儿产物（状态文件是最后写的，
+	// 所以崩在它之前，本节点仍是原来的状态，而那批文件谁都不引用）。清掉它们。
+	kvs.clearOrphanSnapshotArtifacts(st)
 
 	fmt.Printf("[RECOVER] state: numGC=%d currentLog=%s currentDB=%s sorted=%q gcInProgress=%v\n",
 		st.NumGC, st.CurrentLog, st.CurrentDB, st.SortedFile, st.GCInProgress)
