@@ -131,7 +131,7 @@ func (rf *Raft) RecoverLog(files []LogFile, lastApplied int) (lastIndex int, err
 		// 必须返回 base 而不是 0。日志是空的，但逻辑上的最后一条就是 base——
 		// 返回 0 的话 Raft 以为自己最后一条是 0，下一个 Put 拿到 index 1，
 		// 而 pos = index - base - 1 = -30001，applyLogLoop 一路报越界，写入全部失败。
-		rf.log = nil
+		rf.setLog(nil)
 		rf.Offsets = nil
 		rf.offsetVersions = nil
 		rf.lastApplied = rf.lastIncludedIndex
@@ -149,7 +149,7 @@ func (rf *Raft) RecoverLog(files []LogFile, lastApplied int) (lastIndex int, err
 		return 0, fmt.Errorf("applied index %d outside recovered log range (%d, %d]", lastApplied, base, lastIndex)
 	}
 
-	rf.log = entries
+	rf.setLog(entries)
 	rf.lastIncludedIndex = base
 	rf.Offsets = offsets
 	rf.offsetVersions = versions

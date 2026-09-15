@@ -32,6 +32,7 @@ func main() {
 	flag.BoolVar(&cfg.SyncWAL, "syncWAL", false, "fsync the Raft log after each write batch (true durability)")
 	flag.IntVar(&cfg.GroupCommitUs, "groupCommitUs", 0, "group commit window in microseconds (0 = disabled); only meaningful with -syncWAL")
 	flag.IntVar(&cfg.SnapshotRateMB, "snapshotRateMB", 100, "rate limit for shipping a snapshot to a lagging replica, MiB/s (0 = unlimited)")
+	flag.IntVar(&cfg.RaftLogBudgetMB, "raftLogBudgetMB", 256, "byte budget for the in-memory Raft log, MiB; past it a lagging replica is truncated past and repaired by snapshot")
 	// -system selects the configuration by the name used in the paper (see
 	// kvstore.Config.System); the individual switches below apply when it is empty.
 	flag.StringVar(&cfg.System, "system", "", "system under test: original | pasv | dwisckey | lsm-raft | nezha-nogc | nezha (empty = use the individual flags)")

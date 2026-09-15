@@ -303,6 +303,7 @@ func New(cfg Config) (*KVServer, error) {
 	// 发快照的能力。限速默认 100 MiB/s，与实测的 GC 搬运速率 110 MB/s 同量级，
 	// 所以它不会成为新的瓶颈；也与 TiKV 的 snap-io-max-bytes-per-sec 默认值一致。
 	kvs.raft.SetSnapshotSource(kvs.snapshotForRaft, int64(cfg.SnapshotRateMB)<<20)
+	kvs.raft.SetLogBudget(int64(cfg.RaftLogBudgetMB) << 20)
 	if kvs.extraPersistence {
 		// Dwisckey: the value is persisted once more outside the Raft log. Written, never
 		// read; it only makes the cost of that persistence measurable.

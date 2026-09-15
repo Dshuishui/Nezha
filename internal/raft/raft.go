@@ -168,6 +168,13 @@ type Raft struct {
 	peerActiveAt  []time.Time    // 每个 peer 最近一次回执的时刻，etcd 的 RecentActive
 	inflightSnaps int            // 正在传的快照数；> 0 时压缩整个跳过
 	snapReleaseAt time.Time      // 传输结束之后继续保护日志到这个时刻
+
+	// logBytes 是 rf.log 当前占的字节数，由 compact.go 里那四个入口维护。
+	// 截断预算按字节，所以它必须精确——见 compact.go 的"rf.log 的字节计量"一节。
+	logBytes int64
+	// logBudgetBytes 是内存日志的字节预算，超过它落后副本就不再被无条件保护。
+	// 0 表示用 defaultLogBudgetBytes。
+	logBudgetBytes int64
 	// sendSnapshotFn 是传输的测试接缝（生产路径上为 nil，走 SendSSTable）。
 	sendSnapshotFn func(peerId int, span SSTableSpan) (*raftrpc.InstallSSTableResponse, error)
 
@@ -619,7 +626,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			NoOp:        logEntry.GetCommand().OpType == "TermLog",
 		}
 		if index > rf.lastIndex() { // 超出现有日志长度，继续追加
-			rf.log = append(rf.log, logEntry)
+			rf.appendLog(logEntry)
 			// No-ops are written as well (keySize==0 markers), matching the leader, so the
 			// on-disk log is complete and replayable.
 			rf.batchLog = append(rf.batchLog, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
@@ -634,8 +641,8 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		} else { // 重叠部分
 			if rf.log[logPos].Term != logEntry.Term {
 				util.DPrintf("RaftNode[%d] conflicting entry at index %d: local term %d, leader term %d; truncating from here", rf.me, index, rf.log[logPos].Term, logEntry.Term)
-				rf.log = rf.log[:logPos]          // 删除当前以及后续所有log
-				rf.log = append(rf.log, logEntry) // 把新log加入进来
+				rf.truncateLogFrom(logPos) // 删除当前以及后续所有log
+				rf.appendLog(logEntry)     // 把新log加入进来
 
 				// offset := rf.Offsets[index]      // 截取后面错误的offset
 				offset := rf.Offsets[index-rf.shotOffset-1] // 这个要减一
@@ -759,7 +766,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 			tWriteFile = time.Since(tw)
 		}
 	}
-	rf.log = append(rf.log, &logEntry) // 确保日志落盘之后，再更新log
+	rf.appendLog(&logEntry) // 确保日志落盘之后，再更新log
 	rf.mu.Unlock()
 
 	// 立刻叫醒提交检查，不必等它下一次轮询。单节点下 commitIndex 只由那个

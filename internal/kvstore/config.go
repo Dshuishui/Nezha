@@ -25,6 +25,10 @@ type Config struct {
 	// 不要调得很低：发送方在传输期间会挡住日志截断，传得太慢反而让 leader 的内存
 	// 压得更久——CockroachDB 为此给快照速率设了下限。
 	SnapshotRateMB int
+	// RaftLogBudgetMB 是内存 Raft 日志的字节预算（MiB），0 表示用默认 256。
+	// 超过它，落后的副本不再被无条件保护：压缩点按预算往前推，它们改由快照补齐。
+	// 这是内存的**硬上限**，不是建议值——见 internal/raft/compact.go 的三档规则。
+	RaftLogBudgetMB int
 
 	// System selects a preset of the switches below by the name used in the paper:
 	// original, pasv, dwisckey, lsm-raft, nezha-nogc, nezha. Empty keeps the switches
