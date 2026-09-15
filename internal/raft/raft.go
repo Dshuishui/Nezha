@@ -530,32 +530,35 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	// 刷新活跃时间。离开时还会再刷一次，见函数开头的 defer。
 	rf.lastActiveTime = time.Now()
 	fromLeader = true
-	if len(logEntrys) == 0 {
-		reply.Success = true                           // 成功心跳
-		if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
-			rf.commitIndex = int(args.LeaderCommit)
-			if rf.lastIndex() < rf.commitIndex { // 感觉，不存在这种情况，走到这里基本都是日志与leader一样了，怎么还会索引比commitindex小
-				rf.commitIndex = rf.lastIndex()
-			}
-			rf.signalApply()
-		}
-		return reply, nil
-	}
 
+	// 一致性检查对**空 entries 一样要做**。
+	//
+	// 原先这里是 `if len(logEntrys) == 0 { reply.Success = true; ...; return }`——
+	// 不带条目的 AppendEntries 被无条件当成成功心跳，PrevLogIndex/PrevLogTerm 一眼都不看。
+	// 那是 Raft 安全性论证的前提之一，跳过它有两个后果，而且都不报错：
+	//
+	//  1. leader 在"没有新条目可发"时也走 doAppendEntries，收到 Success 之后按自己发出去的
+	//     PrevLogIndex 把 matchIndex 记成"这个 peer 已经复制到这里了"。于是一个**丢了日志**
+	//     的节点（换盘、重建、被截断）会被记成完全跟上，永远拿不回数据。
+	//  2. 更严重的是它随即进入提交多数派。一个其实没有那些条目的副本被算作已复制，
+	//     leader 挂掉之后它可以当选，而它并不持有那些已提交的条目——已提交数据丢失，
+	//     这是安全性违背，不是性能问题。
+	//
+	// 实测：三节点写 60000 条之后抹掉一个 follower 的数据目录再拉起来，leader 的
+	// matchIndex 始终停在 60000，那个空节点永远收不到任何东西，日志大小一直是 0。
+	// 检查加回来之后它按 ConflictIndex=1 被拒，leader 把 nextIndex 退到 1，
+	// 正好落在压缩点之前，快照路径随即接手。
 	if args.PrevLogIndex > int32(rf.lastIndex()) { // prevLogIndex位置没有日志的情况
 		reply.ConflictIndex = int32(rf.lastIndex() + 1)
 		return reply, nil
 	}
-	// prevLogIndex位置有日志，那么判断term必须相同，否则false
 	if args.PrevLogIndex != 0 {
-		prevTerm := rf.termAt(int(args.PrevLogIndex))
-		if prevTerm == -1 { // 该位置已被本节点压缩，无法校验，要求leader从内存中保留的首条重发
+		if prevTerm := rf.termAt(int(args.PrevLogIndex)); prevTerm == -1 {
+			// 该位置已被本节点压缩，无法校验，要求 leader 从内存中保留的首条重发
 			reply.ConflictIndex = int32(rf.firstIndex())
 			return reply, nil
-		}
-		if prevTerm != int32(args.PrevLogTerm) { // prevLogIndex位置有日志，那么判断term必须相同，否则false
+		} else if prevTerm != int32(args.PrevLogTerm) {
 			reply.ConflictTerm = prevTerm
-			// 找到冲突term的首次出现位置（不早于内存中保留的首条），最差就是PrevLogIndex
 			reply.ConflictIndex = int32(rf.firstIndex())
 			for index := rf.firstIndex(); index <= int(args.PrevLogIndex); index++ {
 				if rf.termAt(index) == reply.ConflictTerm {
@@ -566,6 +569,20 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			return reply, nil
 		}
 	}
+
+	if len(logEntrys) == 0 {
+		// 一致性检查过了，这才是一次合法的成功心跳。
+		reply.Success = true
+		if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
+			rf.commitIndex = int(args.LeaderCommit)
+			if rf.lastIndex() < rf.commitIndex {
+				rf.commitIndex = rf.lastIndex()
+			}
+			rf.signalApply()
+		}
+		return reply, nil
+	}
+	// 一致性检查已经在上面做过了（空 entries 也要做），走到这里 PrevLogIndex 处必然匹配。
 	// fmt.Printf("此时同步的日志为%v\n",len(logEntrys))
 	// 找到了第一个不同的index，开始同步日志
 	// var tempLogs []*Entry // 自动会在写入磁盘文件后进行清零的操作
