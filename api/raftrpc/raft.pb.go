@@ -21,14 +21,68 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// InstallSSTableKind distinguishes the two things the transport can carry. It is an
+// explicit field rather than a convention over the index fields (such as SpanStart == 0
+// meaning "snapshot"): an implicit protocol agreement eventually bites.
+type InstallSSTableKind int32
+
+const (
+	// SPAN: the files hold the state changes of log indexes [SpanStart, SpanEnd]. The
+	// follower must already be applied through SpanStart-1, otherwise it answers GAP.
+	InstallSSTableKind_SPAN InstallSSTableKind = 0
+	// SNAPSHOT: the files hold the complete state as of SpanEnd. There is no lower-bound
+	// requirement on the receiver -- that is the whole point of a snapshot. SpanStart and
+	// OldestAvailable are unused; LastIncludedTerm is required.
+	InstallSSTableKind_SNAPSHOT InstallSSTableKind = 1
+)
+
+// Enum value maps for InstallSSTableKind.
+var (
+	InstallSSTableKind_name = map[int32]string{
+		0: "SPAN",
+		1: "SNAPSHOT",
+	}
+	InstallSSTableKind_value = map[string]int32{
+		"SPAN":     0,
+		"SNAPSHOT": 1,
+	}
+)
+
+func (x InstallSSTableKind) Enum() *InstallSSTableKind {
+	p := new(InstallSSTableKind)
+	*p = x
+	return p
+}
+
+func (x InstallSSTableKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (InstallSSTableKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_raft_proto_enumTypes[0].Descriptor()
+}
+
+func (InstallSSTableKind) Type() protoreflect.EnumType {
+	return &file_raft_proto_enumTypes[0]
+}
+
+func (x InstallSSTableKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use InstallSSTableKind.Descriptor instead.
+func (InstallSSTableKind) EnumDescriptor() ([]byte, []int) {
+	return file_raft_proto_rawDescGZIP(), []int{0}
+}
+
 type InstallSSTableStatus int32
 
 const (
-	InstallSSTableStatus_INGESTED   InstallSSTableStatus = 0 // files ingested, Applied == SpanEnd
+	InstallSSTableStatus_INGESTED   InstallSSTableStatus = 0 // files installed, Applied == SpanEnd (both kinds)
 	InstallSSTableStatus_SKIPPED    InstallSSTableStatus = 1 // follower had already applied through SpanEnd
-	InstallSSTableStatus_GAP        InstallSSTableStatus = 2 // follower's Applied < SpanStart-1; resend from Applied+1
+	InstallSSTableStatus_GAP        InstallSSTableStatus = 2 // SPAN only: follower's Applied < SpanStart-1; resend from Applied+1
 	InstallSSTableStatus_STALE_TERM InstallSSTableStatus = 3 // Term is older than the follower's term
-	InstallSSTableStatus_FAILED     InstallSSTableStatus = 4 // ingestion error, see the follower log
+	InstallSSTableStatus_FAILED     InstallSSTableStatus = 4 // installation error, see the follower log
 )
 
 // Enum value maps for InstallSSTableStatus.
@@ -60,11 +114,11 @@ func (x InstallSSTableStatus) String() string {
 }
 
 func (InstallSSTableStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_raft_proto_enumTypes[0].Descriptor()
+	return file_raft_proto_enumTypes[1].Descriptor()
 }
 
 func (InstallSSTableStatus) Type() protoreflect.EnumType {
-	return &file_raft_proto_enumTypes[0]
+	return &file_raft_proto_enumTypes[1]
 }
 
 func (x InstallSSTableStatus) Number() protoreflect.EnumNumber {
@@ -73,7 +127,7 @@ func (x InstallSSTableStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use InstallSSTableStatus.Descriptor instead.
 func (InstallSSTableStatus) EnumDescriptor() ([]byte, []int) {
-	return file_raft_proto_rawDescGZIP(), []int{0}
+	return file_raft_proto_rawDescGZIP(), []int{1}
 }
 
 type AppendEntriesInRaftRequest struct {
@@ -504,17 +558,22 @@ type InstallSSTableRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Term            int32                  `protobuf:"varint,1,opt,name=Term,proto3" json:"Term,omitempty"`
 	LeaderId        int32                  `protobuf:"varint,2,opt,name=LeaderId,proto3" json:"LeaderId,omitempty"`
-	SpanStart       int64                  `protobuf:"varint,3,opt,name=SpanStart,proto3" json:"SpanStart,omitempty"`             // first log index the span covers, inclusive
-	SpanEnd         int64                  `protobuf:"varint,4,opt,name=SpanEnd,proto3" json:"SpanEnd,omitempty"`                 // last log index the span covers, inclusive
-	OldestAvailable int64                  `protobuf:"varint,5,opt,name=OldestAvailable,proto3" json:"OldestAvailable,omitempty"` // start of the oldest span the leader can still send (0 = unknown)
+	SpanStart       int64                  `protobuf:"varint,3,opt,name=SpanStart,proto3" json:"SpanStart,omitempty"`             // SPAN: first log index covered, inclusive. Unused for SNAPSHOT.
+	SpanEnd         int64                  `protobuf:"varint,4,opt,name=SpanEnd,proto3" json:"SpanEnd,omitempty"`                 // last log index covered, inclusive (SNAPSHOT: lastIncludedIndex)
+	OldestAvailable int64                  `protobuf:"varint,5,opt,name=OldestAvailable,proto3" json:"OldestAvailable,omitempty"` // SPAN: start of the oldest span the leader can still send (0 = unknown)
 	FileName        string                 `protobuf:"bytes,6,opt,name=FileName,proto3" json:"FileName,omitempty"`                // basename of the file this chunk belongs to
-	FileSeq         int32                  `protobuf:"varint,7,opt,name=FileSeq,proto3" json:"FileSeq,omitempty"`                 // ingestion order of FileName within the span, from 0
-	FileCount       int32                  `protobuf:"varint,8,opt,name=FileCount,proto3" json:"FileCount,omitempty"`             // number of files in the span
+	FileSeq         int32                  `protobuf:"varint,7,opt,name=FileSeq,proto3" json:"FileSeq,omitempty"`                 // ingestion order of FileName within the transfer, from 0
+	FileCount       int32                  `protobuf:"varint,8,opt,name=FileCount,proto3" json:"FileCount,omitempty"`             // number of files in the transfer
 	Offset          int64                  `protobuf:"varint,9,opt,name=Offset,proto3" json:"Offset,omitempty"`                   // byte offset of Data inside FileName
 	Data            []byte                 `protobuf:"bytes,10,opt,name=Data,proto3" json:"Data,omitempty"`
-	Last            bool                   `protobuf:"varint,11,opt,name=Last,proto3" json:"Last,omitempty"` // final chunk of the span
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	Last            bool                   `protobuf:"varint,11,opt,name=Last,proto3" json:"Last,omitempty"` // final chunk of the transfer
+	Kind            InstallSSTableKind     `protobuf:"varint,12,opt,name=Kind,proto3,enum=InstallSSTableKind" json:"Kind,omitempty"`
+	// LastIncludedTerm is the term of the entry at SpanEnd, required for SNAPSHOT: after
+	// installing, SpanEnd becomes the follower's log base and it must be able to answer a
+	// later AppendEntries consistency check at that index. Unused for SPAN.
+	LastIncludedTerm int32 `protobuf:"varint,13,opt,name=LastIncludedTerm,proto3" json:"LastIncludedTerm,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *InstallSSTableRequest) Reset() {
@@ -624,6 +683,20 @@ func (x *InstallSSTableRequest) GetLast() bool {
 	return false
 }
 
+func (x *InstallSSTableRequest) GetKind() InstallSSTableKind {
+	if x != nil {
+		return x.Kind
+	}
+	return InstallSSTableKind_SPAN
+}
+
+func (x *InstallSSTableRequest) GetLastIncludedTerm() int32 {
+	if x != nil {
+		return x.LastIncludedTerm
+	}
+	return 0
+}
+
 type InstallSSTableResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Term          int32                  `protobuf:"varint,1,opt,name=Term,proto3" json:"Term,omitempty"`
@@ -722,7 +795,7 @@ const file_raft_proto_rawDesc = "" +
 	"\vLastLogTerm\x18\x04 \x01(\x05R\vLastLogTerm\"K\n" +
 	"\x13RequestVoteResponse\x12\x12\n" +
 	"\x04Term\x18\x01 \x01(\x05R\x04Term\x12 \n" +
-	"\vVoteGranted\x18\x02 \x01(\bR\vVoteGranted\"\xbd\x02\n" +
+	"\vVoteGranted\x18\x02 \x01(\bR\vVoteGranted\"\x92\x03\n" +
 	"\x15InstallSSTableRequest\x12\x12\n" +
 	"\x04Term\x18\x01 \x01(\x05R\x04Term\x12\x1a\n" +
 	"\bLeaderId\x18\x02 \x01(\x05R\bLeaderId\x12\x1c\n" +
@@ -735,11 +808,16 @@ const file_raft_proto_rawDesc = "" +
 	"\x06Offset\x18\t \x01(\x03R\x06Offset\x12\x12\n" +
 	"\x04Data\x18\n" +
 	" \x01(\fR\x04Data\x12\x12\n" +
-	"\x04Last\x18\v \x01(\bR\x04Last\"u\n" +
+	"\x04Last\x18\v \x01(\bR\x04Last\x12'\n" +
+	"\x04Kind\x18\f \x01(\x0e2\x13.InstallSSTableKindR\x04Kind\x12*\n" +
+	"\x10LastIncludedTerm\x18\r \x01(\x05R\x10LastIncludedTerm\"u\n" +
 	"\x16InstallSSTableResponse\x12\x12\n" +
 	"\x04Term\x18\x01 \x01(\x05R\x04Term\x12\x18\n" +
 	"\aApplied\x18\x02 \x01(\x03R\aApplied\x12-\n" +
-	"\x06Status\x18\x03 \x01(\x0e2\x15.InstallSSTableStatusR\x06Status*V\n" +
+	"\x06Status\x18\x03 \x01(\x0e2\x15.InstallSSTableStatusR\x06Status*,\n" +
+	"\x12InstallSSTableKind\x12\b\n" +
+	"\x04SPAN\x10\x00\x12\f\n" +
+	"\bSNAPSHOT\x10\x01*V\n" +
 	"\x14InstallSSTableStatus\x12\f\n" +
 	"\bINGESTED\x10\x00\x12\v\n" +
 	"\aSKIPPED\x10\x01\x12\a\n" +
@@ -767,36 +845,38 @@ func file_raft_proto_rawDescGZIP() []byte {
 	return file_raft_proto_rawDescData
 }
 
-var file_raft_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_raft_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_raft_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_raft_proto_goTypes = []any{
-	(InstallSSTableStatus)(0),           // 0: InstallSSTableStatus
-	(*AppendEntriesInRaftRequest)(nil),  // 1: AppendEntriesInRaftRequest
-	(*LogEntry)(nil),                    // 2: LogEntry
-	(*DetailCod)(nil),                   // 3: DetailCod
-	(*AppendEntriesInRaftResponse)(nil), // 4: AppendEntriesInRaftResponse
-	(*RequestVoteRequest)(nil),          // 5: RequestVoteRequest
-	(*RequestVoteResponse)(nil),         // 6: RequestVoteResponse
-	(*InstallSSTableRequest)(nil),       // 7: InstallSSTableRequest
-	(*InstallSSTableResponse)(nil),      // 8: InstallSSTableResponse
+	(InstallSSTableKind)(0),             // 0: InstallSSTableKind
+	(InstallSSTableStatus)(0),           // 1: InstallSSTableStatus
+	(*AppendEntriesInRaftRequest)(nil),  // 2: AppendEntriesInRaftRequest
+	(*LogEntry)(nil),                    // 3: LogEntry
+	(*DetailCod)(nil),                   // 4: DetailCod
+	(*AppendEntriesInRaftResponse)(nil), // 5: AppendEntriesInRaftResponse
+	(*RequestVoteRequest)(nil),          // 6: RequestVoteRequest
+	(*RequestVoteResponse)(nil),         // 7: RequestVoteResponse
+	(*InstallSSTableRequest)(nil),       // 8: InstallSSTableRequest
+	(*InstallSSTableResponse)(nil),      // 9: InstallSSTableResponse
 }
 var file_raft_proto_depIdxs = []int32{
-	2, // 0: AppendEntriesInRaftRequest.Entries:type_name -> LogEntry
-	3, // 1: LogEntry.Command:type_name -> DetailCod
-	0, // 2: InstallSSTableResponse.Status:type_name -> InstallSSTableStatus
-	1, // 3: Raft.AppendEntriesInRaft:input_type -> AppendEntriesInRaftRequest
-	1, // 4: Raft.HeartbeatInRaft:input_type -> AppendEntriesInRaftRequest
-	5, // 5: Raft.RequestVote:input_type -> RequestVoteRequest
-	7, // 6: Raft.InstallSSTable:input_type -> InstallSSTableRequest
-	4, // 7: Raft.AppendEntriesInRaft:output_type -> AppendEntriesInRaftResponse
-	4, // 8: Raft.HeartbeatInRaft:output_type -> AppendEntriesInRaftResponse
-	6, // 9: Raft.RequestVote:output_type -> RequestVoteResponse
-	8, // 10: Raft.InstallSSTable:output_type -> InstallSSTableResponse
-	7, // [7:11] is the sub-list for method output_type
-	3, // [3:7] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	3, // 0: AppendEntriesInRaftRequest.Entries:type_name -> LogEntry
+	4, // 1: LogEntry.Command:type_name -> DetailCod
+	0, // 2: InstallSSTableRequest.Kind:type_name -> InstallSSTableKind
+	1, // 3: InstallSSTableResponse.Status:type_name -> InstallSSTableStatus
+	2, // 4: Raft.AppendEntriesInRaft:input_type -> AppendEntriesInRaftRequest
+	2, // 5: Raft.HeartbeatInRaft:input_type -> AppendEntriesInRaftRequest
+	6, // 6: Raft.RequestVote:input_type -> RequestVoteRequest
+	8, // 7: Raft.InstallSSTable:input_type -> InstallSSTableRequest
+	5, // 8: Raft.AppendEntriesInRaft:output_type -> AppendEntriesInRaftResponse
+	5, // 9: Raft.HeartbeatInRaft:output_type -> AppendEntriesInRaftResponse
+	7, // 10: Raft.RequestVote:output_type -> RequestVoteResponse
+	9, // 11: Raft.InstallSSTable:output_type -> InstallSSTableResponse
+	8, // [8:12] is the sub-list for method output_type
+	4, // [4:8] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_raft_proto_init() }
@@ -809,7 +889,7 @@ func file_raft_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_raft_proto_rawDesc), len(file_raft_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,

@@ -210,7 +210,11 @@ func (kvs *KVServer) lsmCutSpan() {
 		os.RemoveAll(dir)
 		return
 	}
-	l.catalog = append(l.catalog, raft.SSTableSpan{Start: start, End: end, Files: []string{file}})
+	// Kind is set explicitly even though SPAN is the zero value: the baseline and the
+	// snapshot path share one transport, and a reader of either should not have to know
+	// which kind the zero value happens to mean.
+	l.catalog = append(l.catalog, raft.SSTableSpan{
+		Kind: raftrpc.InstallSSTableKind_SPAN, Start: start, End: end, Files: []string{file}})
 	for len(l.catalog) > l.catalogMax {
 		os.RemoveAll(filepath.Dir(l.catalog[0].Files[0]))
 		l.catalog = l.catalog[1:]
@@ -302,12 +306,19 @@ func (l *lsmRaft) pickSpan(next int) (raft.SSTableSpan, bool) {
 	return raft.SSTableSpan{}, false // caught up
 }
 
-// lsmInstall is the follower's SSTableInstaller.
+// lsmInstall is the follower's SSTableInstaller for the baseline. It handles spans only:
+// the baseline measures the cost of shipping state changes, and installing a full
+// snapshot under span semantics would silently apply a different thing than the one
+// being measured.
 func (kvs *KVServer) lsmInstall(span raft.SSTableSpan) (int, raftrpc.InstallSSTableStatus) {
 	kvs.mu.Lock()
 	defer kvs.mu.Unlock()
 	l := kvs.lsm
 	la := kvs.lastAppliedIndex
+	if span.Kind != raftrpc.InstallSSTableKind_SPAN {
+		util.EPrintf("[LSM-Raft] refusing a %s payload: this installer handles spans only", span.Kind)
+		return la, raftrpc.InstallSSTableStatus_FAILED
+	}
 	if la >= span.End {
 		return la, raftrpc.InstallSSTableStatus_SKIPPED
 	}
