@@ -30,7 +30,11 @@ func main() {
 	// which is the durability consensus requires and the precondition for measuring the
 	// gain of merging two persistence steps into one.
 	flag.BoolVar(&cfg.SyncWAL, "syncWAL", false, "fsync the Raft log after each write batch (true durability)")
-	flag.IntVar(&cfg.GroupCommitUs, "groupCommitUs", 0, "group commit window in microseconds (0 = disabled); only meaningful with -syncWAL")
+	// 默认仍是 0（关闭）：改默认值会改变此后每一次实验的含义，而主表还没跑完。
+	// 实测的最优窗口约 100us——批大小在那里饱和，p50 与最小值无实质差别，p99 明确更好；
+	// 再大只是让每条多等（node55 上 5000us 的 p50 是 200us 的 6.3 倍、吞吐是它的 1/5.6）。
+	// 数据与取舍见 results/groupcommit/2026-09-15-window-low-winbox/meta.txt。
+	flag.IntVar(&cfg.GroupCommitUs, "groupCommitUs", 0, "group commit window in microseconds (0 = disabled); only meaningful with -syncWAL; measured optimum is about 100 (see results/groupcommit/)")
 	flag.IntVar(&cfg.SnapshotRateMB, "snapshotRateMB", 100, "rate limit for shipping a snapshot to a lagging replica, MiB/s (0 = unlimited)")
 	flag.IntVar(&cfg.RaftLogBudgetMB, "raftLogBudgetMB", 256, "byte budget for the in-memory Raft log, MiB; past it a lagging replica is truncated past and repaired by snapshot")
 	// -system selects the configuration by the name used in the paper (see
