@@ -87,7 +87,10 @@ type KVServer struct {
 	anotherSortedFilePath string // 归并轮产物的基名
 	anotherPartitions     *PartitionSet
 	// lastPartitions 是当前对外可读的那组分区，读路径与下一轮归并的输入都取自它。
-	lastPartitions      *PartitionSet
+	lastPartitions *PartitionSet
+	// retiredPartitions 是已被取代、但引用还没归零的分区组。快照传输会钉住它读到的那一组，
+	// 期间 GC 不能删它的文件。见 partition.go 的"生命周期"一节。
+	retiredPartitions   []*PartitionSet
 	InitialRaftStateLog string
 	lastGCFinish        bool
 

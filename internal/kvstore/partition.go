@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"gitee.com/dong-shuishui/FlexSync/internal/raft"
@@ -54,6 +56,9 @@ type PartitionSet struct {
 	// 因此不必改动。
 	inline *InlineCache
 	base   string // 这组分区的基名；分区文件是 <base>.p0、<base>.p1 …
+	// refs 是长期读者（今天只有快照传输）持有的引用数。见本文件末尾"生命周期"一节：
+	// 引用未归零的分区组，它的文件一个都不能删。
+	refs atomic.Int32
 }
 
 func (ps *PartitionSet) Len() int {
@@ -236,21 +241,28 @@ func (kvs *KVServer) loadPartitionSet(base string, metas []partitionMeta) (*Part
 
 func partitionPath(base string, i int) string { return fmt.Sprintf("%s.p%d", base, i) }
 
-// obsoleteFiles 返回 prev 里已经不再被 next 引用的那些分区文件。
+// unreferencedFiles 返回 reaped 这些分区组里、已经不再被 keep 里任何一组引用的文件。
 //
 // 吸收会把没被尾部碰到的分区**原样复用**进新一组，它们的文件仍在被引用，删掉就是丢数据。
 // 所以不能按"上一组的基名"整体清理，必须按路径逐个比对。
-func obsoleteFiles(prev, next *PartitionSet) []string {
-	if prev == nil {
-		return nil
+//
+// keep 是一组而不是一个，因为"仍被引用"不只指当前对外可读的那一组：还有引用没归零的
+// 退役组（正在被快照传输读着）。见"生命周期"一节。
+func unreferencedFiles(reaped, keep []*PartitionSet) []string {
+	live := map[string]bool{}
+	for _, ps := range keep {
+		for _, p := range ps.Paths() {
+			live[p] = true
+		}
 	}
-	keep := make(map[string]bool, next.Len())
-	for _, p := range next.Paths() {
-		keep[p] = true
-	}
+	seen := map[string]bool{}
 	var out []string
-	for _, p := range prev.Paths() {
-		if !keep[p] {
+	for _, ps := range reaped {
+		for _, p := range ps.Paths() {
+			if live[p] || seen[p] {
+				continue
+			}
+			seen[p] = true
 			// 旁挂索引跟着它的数据文件一起走：留下一个描述已删除文件的 .idx 没有害处
 			// （下次装载读不到对应的数据文件），但会一直占着盘。
 			out = append(out, p, sparseIndexPath(p))
@@ -470,4 +482,92 @@ func (pw *partitionWriter) Abort() {
 	if err := removePartitionFiles(pw.base); err != nil {
 		fmt.Printf("[GC] 清理未完成的分区文件失败（%s.p*）: %v\n", pw.base, err)
 	}
+}
+
+// ---- 生命周期：钉住与回收 ----
+//
+// 一组分区被下一组取代之后，其中没有被新一组复用的文件就没人引用了，必须删掉。不删是空间
+// 无界的直接原因：实测 8 轮之后盘上留着 35 个分区文件而活跃的只有 8 个，空间放大从 13 涨到 52。
+//
+// "没人引用"这个判断在快照出现之后不再只看分区组。一次快照传输会持续几分钟，期间发送端
+// 按文件名逐个打开源文件流出去——它故意不做本地副本（多 GB 的状态复制一份比传输本身还贵，
+// etcd 与 dragonboat 同样是直接流式发送）。于是 GC 在中途删掉一个还没发到的分区，
+// 发送端的下一次 os.Open 就失败，而快照已经传了一半。
+//
+// 所以用引用计数：传输开始前钉住当前这一组，结束后放开；被取代的分区组进入等待队列，
+// 引用归零之后才真正删文件。
+//
+// **只推迟 unlink，不关描述符池。** 已打开的 fd 在文件被 unlink 之后照样读到正确内容
+// （POSIX 语义，inode 活到最后一个 fd 关闭），今天的代码正是靠这一点，才能在读者可能仍
+// 持着上一组的时候立刻删文件。反过来，如果回收时顺手把描述符池 Close 掉，一个刚取到指针、
+// 正在读的读者就会撞上已关闭的池：那等于在修一个并不是泄漏的问题（实测跑满 8 轮 GC，
+// 进程 fd 数在 36~68 之间震荡、不随轮数增长，Go 给 os.File 挂了 finalizer）的同时，
+// 引入一个真的 use-after-close。描述符池仍由 finalizer 回收，与改造前一致。
+
+// pinPartitions 钉住当前对外可读的那一组分区，返回它和释放函数。
+//
+// 返回的释放函数**不能**在持有 kvs.mu 时调用（它会去拿锁），可以重复调用，只有第一次生效。
+// 没有分区组时返回 (nil, 非 nil 的空操作)，调用方不必判空。
+func (kvs *KVServer) pinPartitions() (*PartitionSet, func()) {
+	kvs.mu.Lock()
+	ps := kvs.lastPartitions
+	if ps != nil {
+		ps.refs.Add(1)
+	}
+	kvs.mu.Unlock()
+	var once sync.Once
+	return ps, func() {
+		once.Do(func() {
+			if ps != nil && ps.refs.Add(-1) == 0 {
+				kvs.reapPartitions()
+			}
+		})
+	}
+}
+
+// retirePartitions 把 next 换成当前对外可读的那一组，被它取代的那一组进入等待队列。
+//
+// 调用方必须持有 kvs.mu，并且必须在 kv 状态**落盘之后**才调用 reapPartitions：
+// 反过来（先删文件后落盘）崩在中间就是清单指向已被删除的文件，重启直接起不来；
+// 而按这个顺序崩在中间只会留下几个没人引用的文件，下一轮回收会带走它们。
+func (kvs *KVServer) retirePartitions(next *PartitionSet) {
+	prev := kvs.lastPartitions
+	kvs.lastPartitions = next
+	if prev != nil && prev != next {
+		kvs.retiredPartitions = append(kvs.retiredPartitions, prev)
+	}
+}
+
+// reapPartitions 删除已经没人引用的分区文件，返回删掉的文件数。
+// 调用时**不能**持有 kvs.mu。
+func (kvs *KVServer) reapPartitions() int {
+	kvs.mu.Lock()
+	var reaped, stillHeld []*PartitionSet
+	for _, ps := range kvs.retiredPartitions {
+		if ps.refs.Load() > 0 {
+			stillHeld = append(stillHeld, ps)
+		} else {
+			reaped = append(reaped, ps)
+		}
+	}
+	kvs.retiredPartitions = stillHeld
+	// 仍被引用的是：当前对外可读的那一组，加上引用还没归零的退役组。
+	keep := append([]*PartitionSet{kvs.lastPartitions}, stillHeld...)
+	stale := unreferencedFiles(reaped, keep)
+	kvs.mu.Unlock()
+
+	var removed int
+	for _, f := range stale {
+		if err := os.Remove(f); err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Printf("删除已废弃的分区 %s 失败: %v\n", f, err)
+			}
+			continue
+		}
+		removed++
+	}
+	if len(stillHeld) > 0 {
+		fmt.Printf("[GC] %d 个退役分区组仍被引用（快照传输中），它们的文件暂不删除\n", len(stillHeld))
+	}
+	return removed
 }

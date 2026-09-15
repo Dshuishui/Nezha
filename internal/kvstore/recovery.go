@@ -110,7 +110,7 @@ func (kvs *KVServer) finishFirstGC(startTime time.Time) {
 	kvs.mu.Lock()
 	kvs.lastGCFinish = true
 	kvs.FirstGC = false
-	kvs.lastPartitions = kvs.firstPartitions // 更新本轮的变量为上一次
+	kvs.retirePartitions(kvs.firstPartitions) // 第一轮之前没有上一组，只是换上新的
 	kvs.sortedFilePath = kvs.firstSortedFilePath
 	kvs.gcInProgress = false
 	// 把 applied 索引落进**新**库。GC 切换时新建的库从没记过它，而 SetApplied 只在 apply
@@ -148,10 +148,10 @@ func (kvs *KVServer) finishAnotherGC(startTime time.Time) {
 	//
 	// 轮数封在两轮时这最多多留一份，无关紧要；放开轮数上限后它是空间无界的直接原因——
 	// 实测 8 轮之后盘上留着 35 个分区文件而活跃的只有 8 个，空间放大从 13 涨到 52。
-	// 必须按**路径**逐个比对而不是按基名整体清理：吸收会把没被尾部碰到的分区原样复用进
-	// 新一组，那些文件仍在被引用，删掉就是丢数据。
-	stale := obsoleteFiles(kvs.lastPartitions, kvs.anotherPartitions)
-	kvs.lastPartitions = kvs.anotherPartitions // 更新本轮的变量为上一次
+	// 删除本身交给 reapPartitions：它按**路径**逐个比对而不是按基名整体清理（吸收会把
+	// 没被尾部碰到的分区原样复用进新一组，那些文件仍在被引用，删掉就是丢数据），并且
+	// 会跳过仍被快照传输钉住的那些组。
+	kvs.retirePartitions(kvs.anotherPartitions)
 	kvs.sortedFilePath = kvs.anotherSortedFilePath
 	kvs.gcInProgress = false
 	// 同 finishFirstGC：新库不知道 applied 到哪了，不补这一笔，一轮之后无写入的节点起不来
@@ -160,13 +160,8 @@ func (kvs *KVServer) finishAnotherGC(startTime time.Time) {
 	kvs.mu.Unlock()
 	// 删除放在状态落盘**之后**：崩在中间只会留下几个没人引用的文件，
 	// 反过来则是清单指向已被删除的文件，重启直接起不来。
-	for _, f := range stale {
-		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
-			fmt.Printf("删除已废弃的分区 %s 失败: %v\n", f, err)
-		}
-	}
-	if len(stale) > 0 {
-		fmt.Printf("[GC-ABSORB] 删除已废弃分区 %d 个\n", len(stale))
+	if removed := kvs.reapPartitions(); removed > 0 {
+		fmt.Printf("[GC-ABSORB] 删除已废弃分区文件 %d 个\n", removed)
 	}
 	if err := os.Remove(kvs.oldLog); err != nil {
 		fmt.Printf("第 %v 轮垃圾回收删除旧文件出现了错误: %v\n", kvs.numGC, err)

@@ -372,9 +372,9 @@ func TestScanAcrossPartitions(t *testing.T) {
 	}
 }
 
-// 垃圾计量要能跨重启活下来。清零的话，已经攒下的垃圾再也不会触发压实，
-// 空间放大只增不减——那正是改造要消除的问题。
-func TestObsoleteFilesKeepsReusedPartitions(t *testing.T) {
+// 吸收会把没被尾部碰到的分区**原样复用**进新一组。回收必须按路径逐个比对，
+// 不能按基名整体清理——删掉一个被复用的文件就是丢数据。
+func TestUnreferencedFilesKeepsReusedPartitions(t *testing.T) {
 	prev := mkSet([2]string{"100", "199"}, [2]string{"300", "399"}, [2]string{"500", "599"})
 	for i, p := range prev.parts {
 		p.FilePath = fmt.Sprintf("/d/old.p%d", i)
@@ -386,7 +386,7 @@ func TestObsoleteFilesKeepsReusedPartitions(t *testing.T) {
 		{FilePath: "/d/new.p1"},
 	}}
 
-	got := obsoleteFiles(prev, next)
+	got := unreferencedFiles([]*PartitionSet{prev}, []*PartitionSet{next})
 	// 每个被淘汰的分区带一个旁挂索引（.idx），两者必须一起删——留下描述已删文件的索引
 	// 不会读错，但会一直占着盘。
 	// 索引路径从 sparseIndexPath 派生，别在用例里写死：它曾与分区文件并排（xxx.p0.idx），
@@ -407,11 +407,98 @@ func TestObsoleteFilesKeepsReusedPartitions(t *testing.T) {
 		}
 	}
 
-	if obsoleteFiles(nil, next) != nil {
-		t.Error("prev 为 nil 时应返回 nil")
+	if unreferencedFiles(nil, []*PartitionSet{next}) != nil {
+		t.Error("没有退役组时应返回 nil")
 	}
 	// 全部复用时一个都不该删
-	if got := obsoleteFiles(prev, prev); len(got) != 0 {
+	if got := unreferencedFiles([]*PartitionSet{prev}, []*PartitionSet{prev}); len(got) != 0 {
 		t.Errorf("全部复用时应删 0 个，实际 %v", got)
 	}
+	// keep 里有多组时，任何一组引用到就得留下——这正是"退役但仍被快照钉住"的那一档。
+	held := &PartitionSet{parts: []*SortedFileIndex{prev.parts[0]}}
+	got = unreferencedFiles([]*PartitionSet{prev}, []*PartitionSet{next, held})
+	for _, g := range got {
+		if g == prev.parts[0].FilePath || g == sparseIndexPath(prev.parts[0].FilePath) {
+			t.Errorf("删掉了仍被另一组引用的 %s", g)
+		}
+	}
+	if len(got) != 2 { // 只剩 old.p2 与它的索引
+		t.Errorf("应只删 2 个，实际 %v", got)
+	}
+}
+
+// 快照传输期间 GC 不能删掉它正在读的分区文件：发送端按文件名逐个打开源文件流出去，
+// 中途被删就是下一次 os.Open 失败，而快照已经传了一半。
+func TestPinnedPartitionsSurviveGC(t *testing.T) {
+	dir := t.TempDir()
+	touch := func(name string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(sparseIndexPath(p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(sparseIndexPath(p), []byte("i"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	setOf := func(paths ...string) *PartitionSet {
+		ps := &PartitionSet{}
+		for _, p := range paths {
+			ps.parts = append(ps.parts, &SortedFileIndex{FilePath: p})
+		}
+		return ps
+	}
+	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
+
+	oldA, oldB := touch("old.p0"), touch("old.p1")
+	newA := touch("new.p0")
+	kvs := &KVServer{}
+	kvs.lastPartitions = setOf(oldA, oldB)
+
+	// 钉住当前这一组，然后让 GC 换上新的一组
+	pinned, release := kvs.pinPartitions()
+	if pinned != kvs.lastPartitions {
+		t.Fatal("钉住的不是当前那一组")
+	}
+	kvs.mu.Lock()
+	kvs.retirePartitions(setOf(newA))
+	kvs.mu.Unlock()
+	if removed := kvs.reapPartitions(); removed != 0 {
+		t.Errorf("被钉住期间删了 %d 个文件，应当一个都不删", removed)
+	}
+	if !exists(oldA) || !exists(oldB) {
+		t.Error("被钉住的分区文件被删了——这会让快照传到一半失败")
+	}
+	if len(kvs.retiredPartitions) != 1 {
+		t.Errorf("退役组应仍在等待队列里，实际 %d 组", len(kvs.retiredPartitions))
+	}
+
+	// 放开引用之后才真正删
+	release()
+	if exists(oldA) || exists(oldB) {
+		t.Error("引用归零后旧分区文件应被删除")
+	}
+	if exists(sparseIndexPath(oldA)) {
+		t.Error("旁挂索引应与它的数据文件一起删")
+	}
+	if !exists(newA) {
+		t.Error("当前这一组的文件不该被删")
+	}
+	if len(kvs.retiredPartitions) != 0 {
+		t.Errorf("回收后等待队列应为空，实际 %d 组", len(kvs.retiredPartitions))
+	}
+	release() // 幂等：重复放开不该再删一遍、也不该 panic
+}
+
+// 没有分区组时钉住应当是安全的空操作：调用方不必判空。
+func TestPinPartitionsWithNoSet(t *testing.T) {
+	kvs := &KVServer{}
+	ps, release := kvs.pinPartitions()
+	if ps != nil {
+		t.Errorf("没有分区组时应返回 nil，实际 %v", ps)
+	}
+	release()
 }
