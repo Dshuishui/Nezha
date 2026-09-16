@@ -50,9 +50,20 @@ SYSTEM=${SYSTEM:-nezha}; EXTRA=${EXTRA:-}
 # 反复失败的话那个副本永远追不上，而它不 panic、不崩、日志之外没有任何迹象。
 # `发快照失败` 刻意**不**收进来：对端宕机、任期陈旧都会让它发生，和
 # "[LSM-Raft] ship" 一样是设计上的瞬时失败。
+#
+# **`EOF` 这一项曾经让上面那条"发快照失败刻意不收"的话落空。** 2026-09-16 实测：
+# slow-follower 用 SIGSTOP 按住一个 follower，leader 给它发快照时对端不处理请求，
+# gRPC 流最终断开，于是打出
+#     [Error] RaftNode[0] 给 peer[1] 发快照失败（6.86s 之后）: EOF
+# 这一行被宽泛的 `EOF` 收了进来。结果是注释与实现矛盾，而且 SIGSTOP 场景下第一次发
+# 快照**必然** EOF——于是 slow-follower.sh 恒判失败。
+# 收窄的办法是先把这一类行剔掉再匹配（见下面 errlines 的 grep -v），而不是删掉 `EOF`：
+# `EOF` 仍要覆盖读日志/读库时的意外截断，那是真损坏。
 ERRPAT='panic|DATA RACE|LOG-STUCK.*再也追不上|垃圾回收出现了错误|读取旧库记录失败|合并中止|failed to read entry|EOF|fatal|RECOVER\] .*失败|\[Error\].*LSM-Raft|\[SNAPSHOT\] 安装失败|制作快照失败|没装上快照'
+# 设计上的瞬时失败，逐条剔除。加一条就要在上面写清为什么它是良性的。
+BENIGNPAT='LSM-Raft\] ship|发快照失败'
 # "[LSM-Raft] ship" errors are transient by design (peer down, stale term) and not counted.
-errlines() { cat "$D"/n*.log | grep -E "$ERRPAT" | grep -v 'LSM-Raft\] ship'; }
+errlines() { cat "$D"/n*.log | grep -E "$ERRPAT" | grep -vE "$BENIGNPAT"; }
 # pid 文件可能是陈旧的（见 start 里的说明），所以两个收尾命令都再按 `-data $D` 兜一遍。
 #
 # 匹配的是**本节点自己的数据目录**加一个尾随空格（命令行里 -data 后面一定还有参数），

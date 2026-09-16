@@ -434,6 +434,55 @@ for f in failover.sh recover.sh lsmraft.sh slow-follower.sh; do
     fi
 done
 
+info "=== 十六、良性行的剔除必须与注释一致 ==="
+# 2026-09-16：three-node.sh 的注释写着"`发快照失败` 刻意不收进来"，而 ERRPAT 里一个宽泛的
+# `EOF` 把它收了回来。SIGSTOP 场景下 leader 给被按住的 follower 发快照**必然**以 EOF 结束
+# （对端不处理请求，gRPC 流断开），于是 slow-follower.sh 恒判失败——又一个"假失败"。
+# 判据：注释里声明为良性的每一条，必须真的被 errlines 剔掉。
+NP="$PROJECT_DIR/scripts/multinode/three-node.sh"
+clean_log > "$ND/n.log"
+echo "[Error] 2026/09/16 22:42:39 RaftNode[0] 给 peer[1] 发快照失败（6.86s 之后）: EOF" >> "$ND/n.log"
+e=$(field_of "$(run_report)" err_lines)
+if [ "$e" = 0 ]; then
+    good "发快照失败…EOF 不算错误行（与注释一致）"
+else
+    fpos "发快照失败…EOF 被算成 $e 条错误行，而注释说它是良性的——SIGSTOP 场景必然触发"
+fi
+# 反向：真损坏仍要被抓到，否则等于把 EOF 整项删了
+clean_log > "$ND/n.log"
+echo "[RECOVER] failed to read entry at offset 4096: unexpected EOF" >> "$ND/n.log"
+e=$(field_of "$(run_report)" err_lines)
+if [ "$e" != 0 ]; then
+    good "读日志时的意外 EOF 仍算错误行（没有把 EOF 整项删掉）"
+else
+    bad "读日志时的意外 EOF 不算错误了——剔除剔过头，真损坏会被漏掉"
+fi
+if grep -q '^BENIGNPAT=' "$NP"; then
+    good "良性行集中在 BENIGNPAT 一处"
+else
+    bad "没有 BENIGNPAT：良性行散在 grep -v 里，加一条就会漏一处"
+fi
+
+info "=== 十七、fail 必须在任何置位之前初始化 ==="
+# 2026-09-16：slow-follower.sh 把 fail=0 放在第 7 步开头，而第 6 步已经会置 fail=1——
+# 第 7 步一执行就把它重置成 0，那一步的失败**静默丢掉**。`bash -n` 查不出来，跑起来也
+# 不报错，只是判决变成了通过。判据：fail=0 的行号必须小于任何 fail=1 的行号。
+for f in failover.sh recover.sh lsmraft.sh slow-follower.sh; do
+    p="$PROJECT_DIR/scripts/multinode/$f"
+    [ -f "$p" ] || { bad "$f 不存在"; continue; }
+    # 注释行要排除：注释里写着 `fail=1` 的说明文字不是代码（本节的成因说明就是这么写的）。
+    # 判据与第十二节一致：行首第一个非空白字符是 # 的算注释。
+    init=$(grep -nE '^[[:space:]]*fail=0' "$p" | head -1 | cut -d: -f1)
+    first=$(grep -nE 'fail=1' "$p" | grep -vE '^[0-9]+:[[:space:]]*#' | head -1 | cut -d: -f1)
+    if [ -z "$first" ]; then warn "$f 没有 fail=1，跳过"; continue; fi
+    if [ -z "$init" ]; then bad "$f 有 fail=1 但没有 fail=0 初始化"; continue; fi
+    if [ "$init" -lt "$first" ]; then
+        good "$f 的 fail=0（第 ${init} 行）在第一处 fail=1（第 ${first} 行）之前"
+    else
+        bad "$f 的 fail=0 在第 ${init} 行，晚于第一处 fail=1（第 ${first} 行）——会把那之前的失败重置掉"
+    fi
+done
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"

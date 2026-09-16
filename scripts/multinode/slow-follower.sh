@@ -21,6 +21,9 @@ cd "$(dirname "$0")"
 . ./gate.sh
 
 LOG=slow-follower-multi.log; : > "$LOG"
+# fail 必须在这里初始化，不能放到第 7 步。第一版放在第 7 步开头，于是第 6 步置的
+# fail=1 会被它重置成 0——那一步的失败就静默丢了。
+fail=0
 # r / rq / host_of / addr_of / peers_str / servers_str 全在 gate.sh，理由见那里。
 say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 die() { say "SLOW_MULTI_FAIL: $*"; stop_all; exit 1; }
@@ -172,19 +175,31 @@ M=$(mem_of "$LEADER"); RSS_END=$(gate_field "$M" rss_kb); RET_END=$(gate_field "
 say "  恢复之后：$M"
 
 say "===== 6. 正确性：数据必须是对的 ====="
-# 先等受害者追平再直读它——刚装完快照的节点还要接上后续的普通复制。
-for _ in $(seq 1 30); do
-  R=$(r "$CLIENT_HOST" "source ~/env.sh; /tmp/readonly -servers $(addr_of "$VICTIM") -dnums 2000 -vsize $VSIZE -check 300 -sample 30" | grep -vE 'new pool success')
+# **顺序要紧，而且第一版写反了。** 前面的写入用的是 randwrite_goroutine，它写的是一个
+# 固定生成的串；而 readonly 期望的是**key 派生**的值。拿 readonly 去读 randwrite 写下的
+# 数据，每一条都会报错——2026-09-16 实测就是这样，"受害者在 150s 内没读全对"是工具口径
+# 不一致，不是快照装坏了。docs/snapshot-replication.md 的验证注记里记着这个坑，我自己
+# 又踩了一次。
+#
+# 所以先经 leader 跑一遍 scanverify：它写的正是 key 派生的值，也当场校验整个集群。
+# 之后再直读受害者，两边的口径才一致。
+V=$(r "$CLIENT_HOST" "source ~/env.sh; /tmp/scanverify -servers $ALL -leader $LEADER -dnums 3000 -vsize $VSIZE -span 50 -sample 20" | grep -vE 'new pool success')
+echo "$V" | grep -E '校验|VERIFY' | sed 's/^/      /' | tee -a "$LOG"
+echo "$V" | grep -q VERIFY_OK || die "经 leader 的校验未通过——本测的前提不成立"
+
+# 再直读受害者本地状态（它是用 -leaderCheck=false 起的）。刚装完快照的节点还要接上
+# 后续的普通复制，所以要给它时间追平。
+say "  直读受害者 node$VICTIM 的本地状态"
+for _ in $(seq 1 24); do
+  R=$(r "$CLIENT_HOST" "source ~/env.sh; /tmp/readonly -servers $(addr_of "$VICTIM") -dnums 3000 -vsize $VSIZE -check 300 -sample 30" | grep -vE 'new pool success')
   echo "$R" | grep -q FAILOVER_VERIFY_OK && { say "  受害者直读全对"; break; }
   sleep 5
 done
-echo "${R:-}" | grep -q FAILOVER_VERIFY_OK || say "  [注意] 受害者在 150s 内没读全对（下面的 leader 校验仍然要过）"
-V=$(r "$CLIENT_HOST" "source ~/env.sh; /tmp/scanverify -servers $ALL -leader $LEADER -dnums 3000 -vsize $VSIZE -span 50 -sample 20" | grep -vE 'new pool success')
-echo "$V" | grep -E '校验|VERIFY' | sed 's/^/      /' | tee -a "$LOG"
-echo "$V" | grep -q VERIFY_OK || die "数据校验未通过——本测的前提不成立"
+echo "${R:-}" | grep -E '校验|VERIFY|未持有' | sed 's/^/      /' | tee -a "$LOG"
+why=$(gate_read_ok "${R:-}" "直读受害者 node$VICTIM") || fail=1
+[ -n "$why" ] && echo "$why" | tee -a "$LOG"
 
 say "===== 7. 三节点闸门 ====="
-fail=0
 for i in 0 1 2; do
   rep=$(r "$(host_of $i)" "~/three-node.sh report $i"); say "  $rep"
   why=$(gate_report_ok "$rep" yes "node$i") || fail=1
