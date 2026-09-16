@@ -538,6 +538,24 @@ for f in test/raftlog-memory.sh bench/memory-curve.sh bench/memory-scale.sh benc
     fi
 done
 
+info "=== 二十一、注释不许插在 \\ 续行的中间 ==="
+# 2026-09-17：往 verify-goodput.sh 的节点启动命令里加说明时，把注释插在了 `\` 续行
+# 之后，于是命令被拆成两半——节点只拿到前半截参数（**连 > "$D/n.log" 重定向都丢了**，
+# stdout 直接漏进脚本输出），后半截 `-system nezha-nogc ...` 被当成另一条命令执行。
+# 症状是"写入不落地 + 节点日志乱漏"，指向别处。`bash -n` 查不出来：拆开的两半各自
+# 都是合法语法。
+# 判据：一行以 `\` 结尾时，下一行不得是注释。注释块整体位于命令之前是没问题的，
+# 所以只看"续行之后"这一种。
+CONT=$(awk 'prev ~ /\\$/ && $0 ~ /^[[:space:]]*#/ { printf "%s:%d: %s\n", FILENAME, NR, $0 } { prev = $0 }' \
+       $(find "$PROJECT_DIR/scripts" -name '*.sh') 2>/dev/null \
+       | grep -v 'collect-results.sh' || true)
+if [ -z "$CONT" ]; then
+    good "没有注释插在 \\ 续行中间"
+else
+    echo "$CONT" | sed "s#$PROJECT_DIR/##" | sed 's/^/       /' | cut -c1-130
+    bad "上列位置的注释插在 \\ 续行之后——命令会被拆成两半，且 bash -n 查不出来"
+fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"

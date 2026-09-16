@@ -40,12 +40,16 @@ setup_cgo_env || fail "cgo 环境准备失败（见 scripts/lib/cgo-env.sh）"
 go build -o "$BIN" ./cmd/nezha/ || fail "编译失败"
 go build -o /tmp/countkeys ./cmd/bench/countkeys/ || fail "countkeys 编译失败"
 
+# 本脚本**要求 GC 不跑**（下面 GCN 那处判定：GC 跑了就作废，因为 key 会迁入分区文件、
+# countkeys 的计数不再等于写入条数）。以前靠把阈值调大来间接达成，现在写成显式的
+# -system nezha-nogc——"不要 GC"应当是配置说出来的，不是算出来的。
+#
+# 注释必须放在整条命令**之前**，不能插进 `\` 续行的中间：插进去会把命令拆成两半，
+# 节点只拿到前半截参数（连重定向都丢了，stdout 直接漏进脚本输出），而后半截被当成
+# 另一条命令。2026-09-17 我就这么干过一次，症状是"写入不落地 + 节点日志乱漏"。
 "$BIN" -address 127.0.0.1:3088 -internalAddress 127.0.0.1:30881 \
-    -peers 127.0.0.1:30881 -data "$D" -gap 1000000 \
-    # 本脚本**要求 GC 不跑**（下面第 73 行：GC 跑了就判定作废，因为 key 会迁入分区
-    # 文件、countkeys 的计数不再等于写入条数）。以前靠把阈值调大来间接达成，现在写成
-    # 显式的 -system nezha-nogc——"不要 GC"应当是配置说出来的，不是算出来的。
-    -system nezha-nogc -inlineCacheMB 256 -indexBlockKB 4 -gcThresholdGB "$GB" > "$D/n.log" 2>&1 &
+    -peers 127.0.0.1:30881 -data "$D" -gap 1000000 -system nezha-nogc \
+    -inlineCacheMB 256 -indexBlockKB 4 -gcThresholdGB "$GB" > "$D/n.log" 2>&1 &
 PID=$!
 cleanup(){ kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -rf "$D" "$BIN"; }
 trap cleanup EXIT
