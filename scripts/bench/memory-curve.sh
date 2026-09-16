@@ -55,8 +55,16 @@ for N in "${SIZES[@]}"; do
         -cnums $CNUMS -dnums "$N" -vsize "$VSIZE" -servers 127.0.0.1:3088 > "$DATA_DIR/put.out" 2>&1
     OUT=$(grep "elapse:" "$DATA_DIR/put.out" | tail -1)
 
+    # **采样必须盖住压缩期。** 原先是先 kill 采样器、再 sleep 等 compactLog，于是
+    # "峰值"只覆盖写入阶段，而压缩后那个数是 15 秒后的一次孤立采样。compactLog 用
+    # make+copy，会临时再分配一份等长数组，而 Go 不把 RSS 还给操作系统——所以
+    # "压缩后" 必然**大于** "峰值"（2026-09-17 实测 361MB vs 415MB），读起来像是压缩
+    # 把内存搞大了。那是测量假象，不是结论。
+    #
+    # 现在让采样器一直跑到压缩窗口结束，峰值才真的是全程峰值；而"压缩是否有效"的
+    # 判据本来就不该看 RSS，要看 compactLog 报的**保留条数**（下面一并打出来）。
+    sleep 15   # 等 compactLog 触发，采样器仍在跑
     kill $SAMPLER 2>/dev/null
-    sleep 15   # 等 compactLog 触发
 
     # 节点若在写入途中被 OOM 杀掉，本轮仍要把已采到的峰值记下来——
     # 那恰恰是最有价值的数据点（对照组撑不住的规模）。旧版在这里因为
@@ -64,6 +72,9 @@ for N in "${SIZES[@]}"; do
     ALIVE=DEAD; kill -0 $PID 2>/dev/null && ALIVE=ALIVE
     PEAK=$(peak_mb "$DATA_DIR/rss.txt") || { PEAK=0; info "[$LABEL] N=$N RSS 采样为空"; }
     FINAL=$(rss_mb "$PID")
+    # compactLog 报的保留条数：压缩是否生效看这个，不看 RSS（Go 不归还 RSS）。
+    RET=$(grep -o "compactLog: [0-9]* -> [0-9]* 条" "$DATA_DIR/node.log" 2>/dev/null | tail -1 | grep -oE "[0-9]+ 条" | grep -oE "[0-9]+")
+    RET=${RET:-none}
     LAT=$(sed -n 's/.*avg latency:\([0-9.]*\)ms.*/\1/p' <<<"$OUT")
     THR=$(sed -n 's/.*throughput:\([0-9.]*\)MB\/S.*/\1/p' <<<"$OUT")
     GP=$(sed -n 's/.*goodPut \([0-9]*\).*/\1/p' <<<"$OUT")

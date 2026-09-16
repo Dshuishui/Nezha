@@ -516,6 +516,28 @@ else
     bad "上列脚本把 PROJECT_DIR 写死在某台机器的布局上——换机器就跑不了"
 fi
 
+info "=== 二十、RSS 采样器不许在等待窗口之前就停 ==="
+# 2026-09-17：raftlog-memory.sh 与 memory-curve.sh（B4 要用的那个）都是先 kill 采样器、
+# 再 sleep 等 compactLog。于是"峰值"只覆盖写入阶段，而压缩后那个数是一次孤立采样；
+# compactLog 用 make+copy 会临时再分配等长数组，Go 又不把 RSS 还给 OS，所以"压缩后"
+# 必然大于"峰值"（实测 361MB vs 415MB），读起来像**压缩把内存搞大了**。
+# 那是测量假象。判据：kill 采样器的行号必须晚于它后面那个 sleep。
+for f in test/raftlog-memory.sh bench/memory-curve.sh bench/memory-scale.sh bench/avp-compare.sh; do
+    p="$PROJECT_DIR/scripts/$f"
+    [ -f "$p" ] || { warn "$f 不存在，跳过"; continue; }
+    grep -q 'start_rss_sampler' "$p" || { warn "$f 不采样 RSS，跳过"; continue; }
+    kl=$(grep -nE '^[[:space:]]*kill \$(SAMPLER|S)\b' "$p" | head -1 | cut -d: -f1)
+    if [ -z "$kl" ]; then warn "$(basename "$f") 没找到 kill 采样器那行，跳过"; continue; fi
+    # kill 的前一行是不是 sleep（等压缩），或者 kill 之后 5 行内还有 sleep（说明顺序反了）
+    before=$(sed -n "$((kl-1))p" "$p")
+    after=$(sed -n "$((kl+1)),$((kl+5))p" "$p")
+    if echo "$after" | grep -qE '^[[:space:]]*sleep [0-9]+' && ! echo "$before" | grep -qE 'sleep [0-9]+'; then
+        fpos "$(basename "$f") 先 kill 采样器（第 ${kl} 行）再 sleep 等压缩——峰值会漏掉压缩期"
+    else
+        good "$(basename "$f") 的采样覆盖到等待窗口之后"
+    fi
+done
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"

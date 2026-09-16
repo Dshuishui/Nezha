@@ -53,9 +53,17 @@ info "开始写入..."
 go run ./cmd/bench/randwrite_goroutine/ \
     -cnums $CNUMS -dnums $DNUMS -vsize $VSIZE -servers 127.0.0.1:3088 2>&1 | tail -3
 
-kill $SAMPLER 2>/dev/null || true
-info "写入完成，等待 compactLog 触发 (15s)..."
+# **采样必须盖住压缩期。** 原先是先 kill 采样器、再 sleep 等 compactLog，于是
+# "峰值"只覆盖写入阶段，而压缩后那个数是 15 秒后的一次孤立采样。compactLog 用
+# make+copy，会临时再分配一份等长数组，而 Go 不把 RSS 还给操作系统——所以
+# "压缩后" 必然**大于** "峰值"（2026-09-17 实测 361MB vs 415MB），读起来像是压缩
+# 把内存搞大了。那是测量假象，不是结论。
+#
+# 现在让采样器一直跑到压缩窗口结束，峰值才真的是全程峰值；而"压缩是否有效"的
+# 判据本来就不该看 RSS，要看 compactLog 报的**保留条数**（下面一并打出来）。
+info "写入完成，等待 compactLog 触发 (15s，采样继续)..."
 sleep 15
+kill $SAMPLER 2>/dev/null || true
 
 PEAK=$(peak_mb "$DATA_DIR/rss.txt") || fail "RSS 采样为空，无法给出峰值内存"
 FINAL=$(rss_mb "$NODE_PID")
@@ -64,8 +72,10 @@ echo ""
 echo "=============================================="
 echo " value 大小      : ${VSIZE} B"
 echo " 写入条数        : ${DNUMS}"
-echo " 峰值 RSS        : ${PEAK} MB"
-echo " 压缩后 RSS      : ${FINAL} MB"
+RET=$(grep -o "compactLog: [0-9]* -> [0-9]* 条" "$DATA_DIR/node.log" 2>/dev/null | tail -1 | grep -oE "[0-9]+ 条" | grep -oE "[0-9]+")
+echo " 全程峰值 RSS    : ${PEAK} MB  （采样覆盖写入 + 压缩窗口）"
+echo " 末次 RSS        : ${FINAL} MB  （Go 不把 RSS 还给 OS，所以它不会随压缩下降）"
+echo " 压缩后保留条数  : ${RET:-取不到}  ← **压缩是否生效看这个**，不看 RSS"
 echo "=============================================="
 echo ""
 info "compactLog 日志:"
