@@ -99,8 +99,24 @@ start_node(){
 # 结果放进全局 LD / VIC，**不能**用 $(...) 取回：命令替换跑在子 shell 里，
 # DIRS 与 PIDS 的赋值不会传回父 shell（第一版就是这么写的，第一处用 DIRS 的地方
 # 直接报 unbound variable）。
+# setup_cluster 的失败必须说清是哪一种。原先两种原因（没选出 leader / GC 没跑）合成
+# 一句 "集群没起来或 GC 没跑"，还不打任何诊断——2026-09-16 场景 F 就这么失败的，除了
+# 那一句什么线索都没有，而临时目录随即被 cleanup 删掉，事后完全无法追查。
 setup_cluster(){
-    pkill -f sc-node 2>/dev/null; sleep 2
+    # `pkill` 之后只 sleep 2 是不够的：端口 41400~41402 紧接着就要被重新监听，而
+    # net.Listen 失败现在是 log.Fatalf（e0fdb98：此前带着 nil 监听器走到 Serve(nil)
+    # 空指针 panic）。所以这里等到端口真的空出来，而不是赌一个固定时长。
+    pkill -f sc-node 2>/dev/null
+    local k
+    for k in $(seq 1 30); do
+        ss -ltn 2>/dev/null | grep -qE ":(${P0}|$((P0+1))|$((P0+2))|${I0}|$((I0+1))|$((I0+2)))\b" || break
+        sleep 1
+    done
+    if ss -ltn 2>/dev/null | grep -qE ":(${P0}|$((P0+1))|$((P0+2))|${I0}|$((I0+1))|$((I0+2)))\b"; then
+        echo "  [setup] 端口 30 秒内没有空出来：" >&2
+        ss -ltnp 2>/dev/null | grep -E ":(${P0}|$((P0+1))|$((P0+2))|${I0}|$((I0+1))|$((I0+2)))\b" | sed 's/^/    /' >&2
+        return 1
+    fi
     PIDS=(); DIRS=()
     for i in 0 1 2; do
         local d; d=$(mktemp -d); DIRS[$i]="$d"
@@ -112,13 +128,25 @@ setup_cluster(){
     done
     local ld=-1
     for i in 0 1 2; do grep -q -- "Candidate -> Leader" "${DIRS[$i]}/n.log" 2>/dev/null && ld=$i; done
-    [ "$ld" -ge 0 ] || return 1
+    if [ "$ld" -lt 0 ]; then
+        echo "  [setup] 40 秒内没有节点当选。三个节点日志的末尾：" >&2
+        for i in 0 1 2; do
+            echo "    -- node$((i+1)) --" >&2
+            tail -4 "${DIRS[$i]}/n.log" 2>/dev/null | sed 's/^/      /' >&2
+        done
+        return 1
+    fi
     /tmp/sc-write -dnums "$ENTRIES" -vsize "$VSIZE" -servers "$SERVERS" -sample 5 >/dev/null 2>&1
     for _ in $(seq 1 12); do
         sleep 5
         [ "$(grep -c "垃圾回收完成" "${DIRS[$ld]}/n.log" 2>/dev/null || true)" -ge 1 ] && break
     done
-    [ "$(grep -c "垃圾回收完成" "${DIRS[$ld]}/n.log" 2>/dev/null || true)" -ge 1 ] || return 1
+    if [ "$(grep -c "垃圾回收完成" "${DIRS[$ld]}/n.log" 2>/dev/null || true)" -lt 1 ]; then
+        echo "  [setup] 60 秒内 leader 没有完成一轮 GC（阈值 ${GC_GB}GB，写了 $ENTRIES 条 × ${VSIZE}B）。" >&2
+        echo "    leader 日志末尾：" >&2
+        tail -6 "${DIRS[$ld]}/n.log" 2>/dev/null | sed 's/^/      /' >&2
+        return 1
+    fi
     local vic=-1
     for i in 0 1 2; do [ "$i" != "$ld" ] && vic=$i && break; done
     kill -9 "${PIDS[$vic]}" 2>/dev/null; wait "${PIDS[$vic]}" 2>/dev/null

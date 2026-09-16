@@ -12,6 +12,21 @@ set -eu
 cd "$(dirname "$0")/../.."
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 WANT=$(git rev-parse HEAD)
+
+# **本脚本按 git 同步，所以未提交的改动到不了服务器。** 只有 three-node.sh 与
+# rep-node.sh 是从工作树 scp 的，其余一切（gate.sh、各驱动、各 scripts/test/*.sh）
+# 都靠 `git fetch` 加 `git checkout FETCH_HEAD` 落地——工作树里改了没提交，服务器上
+# 拿到的仍是 HEAD 那一版，而且**部署会报 DEPLOY_OK**。
+# 2026-09-16 因此白跑了两轮：一次是 gate.sh 的新函数在服务器上 "command not found"，
+# 一次是新加的诊断一行都没打出来，让人以为是别的原因。
+DIRTY=$(git status --porcelain -- ':!results' ':!notes' 2>/dev/null | grep -vE '^\?\?' || true)
+if [ -n "$DIRTY" ]; then
+  echo "DEPLOY_WARN 工作树有未提交的改动，**它们不会被部署**（本脚本按 git 同步）："
+  echo "$DIRTY" | sed 's/^/    /'
+  echo "    → 要让这些改动上服务器：先 git commit，再重新部署"
+  [ "${ALLOW_DIRTY:-0}" = 1 ] || { echo "DEPLOY_REFUSED 先提交，或显式 ALLOW_DIRTY=1"; exit 1; }
+  echo "    ALLOW_DIRTY=1，继续部署（服务器拿到的是 HEAD 那一版）"
+fi
 # 默认只有两台（历史拓扑）。TOPO=three 或 HOSTS 显式给了 node55 时才带上它。
 # node55 硬件不同（40 核 / 128GB），只用于正确性验证，不出性能数字。
 HOSTS=${HOSTS:-"tikv240 tikv241"}
