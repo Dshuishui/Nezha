@@ -260,7 +260,7 @@ for sc in $WANT; do
     b|B) scenario_b ;;
     c|C) scenario_c ;;
     d|D) scenario_d ;;
-    *) echo "未知场景 $sc（可选 a b c d）"; exit 1 ;;
+    *) echo "未知场景 ${sc}（可选 a b c d）"; exit 1 ;;
   esac
 done
 

@@ -48,7 +48,7 @@ echo "  $PUT"
 GOODPUT=$(sed -n 's/.*goodPut \([0-9]*\).*/\1/p' <<<"$PUT")
 [ -n "$GOODPUT" ] || fail "解析不出 goodPut"
 GAP=$((N - GOODPUT))
-info "写入端报告 goodPut=$GOODPUT，缺口=$GAP"
+info "写入端报告 goodPut=${GOODPUT}，缺口=$GAP"
 
 # 停机后再数：RocksDB 是独占打开的，且要让 apply 把队列排干
 info "等待 apply 排空并停止节点..."

@@ -153,7 +153,7 @@ ops_of(){ grep -o 'ops_per_s=[0-9.]*' "$1" | head -1 | cut -d= -f2; }
 
 total=0; done_n=0
 for s in $SYSTEMS; do for v in $VSIZES; do for o in $OVERWRITE; do total=$((total+1)); done; done; done
-info "共 $total 格；设备 $DEVSTAT；覆盖比例 [$OVERWRITE]%，分布 $DIST$([ "$DIST" = range ] && echo "(窗口 $RANGE_FRAC)")；分区 ${PARTITION_MB}MB，吸收比例 ${ABSORB_RATIO:-（不传）}"
+info "共 $total 格；设备 ${DEVSTAT}；覆盖比例 [$OVERWRITE]%，分布 $DIST$([ "$DIST" = range ] && echo "(窗口 $RANGE_FRAC)")；分区 ${PARTITION_MB}MB，吸收比例 ${ABSORB_RATIO:-（不传）}"
 info "输出 $OUT"
 
 for sys in $SYSTEMS; do

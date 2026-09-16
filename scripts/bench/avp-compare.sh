@@ -49,7 +49,7 @@ info "构建..."
 go build -o "/tmp/nezha-cmp-$LABEL" "$(server_pkg)" || fail "编译失败"
 
 D=$(mktemp -d)
-# 失败时保留 $D：里面有节点日志和 RSS 采样，删掉就无从追查了。
+# 失败时保留 ${D}：里面有节点日志和 RSS 采样，删掉就无从追查了。
 KEEP_DATA=0
 cleanup(){
     kill ${PID:-} 2>/dev/null

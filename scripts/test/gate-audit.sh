@@ -199,7 +199,7 @@ go build -o /tmp/ga-count ./cmd/bench/countkeys/ || die "countkeys 编译失败"
 DB=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['current_db'])" "$BASE/data/kv_state.json" 2>/dev/null)
 [ -d "$DB" ] || DB=$(find "$BASE" -maxdepth 3 -type d -name "*eyIndex*" | head -1)
 if [ -z "$DB" ]; then
-    bad "找不到存储引擎目录（current_db=$DB）——这一格本来要检查计数口径，跳过就等于没查"
+    bad "找不到存储引擎目录（current_db=${DB}）——这一格本来要检查计数口径，跳过就等于没查"
 else
     # 这组数据跑过 GC，key 已随 value 迁入分区文件，存储引擎里本就应该是空的。
     # 期望 KEYCOUNT==N 是**错的期望**（本脚本第一版就这么写，报了一个假漏报）。
@@ -207,7 +207,7 @@ else
     CNTOUT=$(/tmp/ga-count -db "$DB")
     CNT=$(sed -n 's/^KEYCOUNT \([0-9]*\)/\1/p' <<<"$CNTOUT")
     if grep -q "另有 1 行存储层元数据，未计入" <<<"$CNTOUT"; then
-        good "元数据行被正确排除（KEYCOUNT=$CNT，GC 后 key 已迁入分区，这个数本就该趋近 0）"
+        good "元数据行被正确排除（KEYCOUNT=${CNT}，GC 后 key 已迁入分区，这个数本就该趋近 0）"
     else
         bad "没有排除存储层元数据行 —— KEYCOUNT 会恒比写入条数多 1，而 verify-goodput.sh 做精确相等比较"
     fi

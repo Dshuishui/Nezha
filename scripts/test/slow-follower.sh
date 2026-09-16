@@ -89,7 +89,7 @@ LEADER=-1
 for i in 0 1 2; do grep -q -- "Candidate -> Leader" "${DIRS[$i]}/n.log" 2>/dev/null && LEADER=$i; done
 [ "$LEADER" -ge 0 ] || die "40 秒内没有节点当选"
 LPID=${PIDS[$LEADER]}
-info "leader = node$((LEADER+1))（pid $LPID）"
+info "leader = node$((LEADER+1))（pid ${LPID}）"
 
 rss(){ local v; v=$(ps -o rss= -p "${1:-0}" 2>/dev/null | tr -d ' '); echo "${v:-0}"; }
 # 驻留条数取最近一次成功压缩之后的条数。
@@ -112,7 +112,7 @@ info "基线：leader RSS = $((RSS_BASE/1024)) MB，最近一次压缩后内存�
 VICTIM=-1
 for i in 0 1 2; do [ "$i" != "$LEADER" ] && VICTIM=$i && break; done
 VPID=${PIDS[$VICTIM]}
-info "阶段 2：SIGSTOP node$((VICTIM+1))（pid $VPID），然后写 $STALLED 条"
+info "阶段 2：SIGSTOP node$((VICTIM+1))（pid ${VPID}），然后写 $STALLED 条"
 kill -STOP "$VPID" || die "SIGSTOP 失败"
 /tmp/sf-write -cnums 16 -dnums "$STALLED" -vsize "$VSIZE" -servers "127.0.0.1:$((P0+LEADER))" 2>&1 \
     | grep -o "elapse:[^,]*" | sed 's/^/       /'
@@ -131,7 +131,7 @@ grep -o "\[LOG-PINNED\].*" "${DIRS[$LEADER]}/n.log" | tail -1 | cut -c1-170 | se
 [ -n "${RET_PIN:-}" ] && [ -n "${RET_BASE:-}" ] || die "拿不到压缩后的保留条数，判据无法成立"
 LIMIT=$((RET_BASE * 3))
 if [ "$RET_PIN" -le "$LIMIT" ]; then
-    good "内存有界：被按住期间保留 $RET_PIN 条（基线 $RET_BASE，上限判据 $LIMIT）"
+    good "内存有界：被按住期间保留 $RET_PIN 条（基线 ${RET_BASE}，上限判据 ${LIMIT}）"
     echo "     改造之前这里是 150000 条（基线的 30 倍），换算到 100GB/64B 落后 10% 约 30GB → OOM"
 else
     die "内存仍在随落后程度增长：保留 $RET_PIN 条，是基线 $RET_BASE 的 $((RET_PIN/RET_BASE)) 倍"

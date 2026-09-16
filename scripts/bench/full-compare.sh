@@ -38,7 +38,7 @@ info "机器内存 $(free -m | awk '/^Mem:/{print $2}') MB —— 对照组必�
 TOOLS=$(mktemp -d)
 cp -r scripts/. "$TOOLS/"
 
-# restore 在对照组结束后就要调用一次，所以它绝不能删 $TOOLS——
+# restore 在对照组结束后就要调用一次，所以它绝不能删 ${TOOLS}——
 # 实验组还要从那里取脚本。清理只挂在退出时做。
 restore(){ git checkout -q -- . 2>/dev/null; git checkout -q "$THIS_BRANCH"; }
 trap 'restore; rm -rf "$TOOLS"' EXIT
@@ -61,7 +61,7 @@ restore
 # 对照组在这个规模跑不完是要测的结论之一，只要它写出了 CSV 就继续跑实验组，
 # 那正是最有说服力的对照：同一台机器上，一边撑不住，一边跑完了。
 if [ $RC -ne 0 ] && [ ! -s /tmp/avpcmp_before.csv ]; then
-    fail "对照组未产出任何结果（rc=$RC）"
+    fail "对照组未产出任何结果（rc=${RC}）"
 fi
 [ $RC -eq 0 ] || warn "对照组以 rc=$RC 结束（多半是 OOM），已记录部分结果，继续跑实验组"
 

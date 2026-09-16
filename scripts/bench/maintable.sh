@@ -235,9 +235,9 @@ for sys in $SYSTEMS; do
       LOST="${LOST:-NA}"
       if [ "$LOST" != NA ] && [ "$LOST" -gt 0 ]; then
         if [ "$LOST_KEYS" = fail ]; then
-          die "GC 搬丢了 $LOST 条记录（$sys/$vs/$round）——先修再测"
+          die "GC 搬丢了 $LOST 条记录（$sys/$vs/${round}）——先修再测"
         fi
-        warn "GC 搬丢了 $LOST 条记录（$sys/$vs/$round）"
+        warn "GC 搬丢了 $LOST 条记录（$sys/$vs/${round}）"
       fi
     fi
 
@@ -265,7 +265,7 @@ for sys in $SYSTEMS; do
     if [ -z "$GAP" ] && [ -n "$SCAN_FRAC" ]; then GAP=$(( N / SCAN_FRAC )); fi
     [ -n "$GAP" ] || die "gapkey 无法确定：SCAN_GAP/SCAN_SPAN_PARTS(+PARTITION_MB)/SCAN_FRAC 都没给"
     # 起点上界是 keyspace-gapkey，gapkey 超过记录总数就没有合法起点了
-    [ "$GAP" -ge 1 ] && [ "$GAP" -lt "$N" ] || die "gapkey=$GAP 不在 [1,$N) 内（vsize=$vs）"
+    [ "$GAP" -ge 1 ] && [ "$GAP" -lt "$N" ] || die "gapkey=$GAP 不在 [1,$N) 内（vsize=${vs}）"
     /tmp/mt-scan_pro -cnums 1 -dnums "$SCAN_DNUMS" -tests "$SCAN_TESTS" -rest "$REST_SEC" \
         -gapkey "$GAP" -keyspace "$N" -servers "$ADDR" > "$DATA/scan.out" 2>&1
     SCANL=$(grep '^\[LATENCY\]' "$DATA/scan.out" | tail -1)
