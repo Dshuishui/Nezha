@@ -222,6 +222,8 @@ can never catch up is silent and the numbers keep looking fine.
 | `slow-follower.sh` | same script, same scale as the original reproduction: retained entries 5000 → 5000 (was 5000 → 150000), RSS 114 → 126 MB (was 114 → 254 MB), one `[LOG-TRUNCATE]` at 19 MB against a 16 MB test budget, and on `SIGCONT` the stalled replica repaired by a 23 MB snapshot made in 90 ms |
 | `snapshot-e2e.sh` | a replica's data directory wiped and restarted: 6 partitions and 17 MB shipped in 229 ms, installed in 31 ms with all six sidecar indexes read rather than rebuilt (210 µs), 400+ records verified, `lost-keys.py` counting 60000 distinct keys on disk with 0 lost, and ordinary replication resumed afterwards |
 | `snapshot-crash.sh` | scenarios E and F (see `docs/crash-recovery.md`) |
+| `scripts/multinode/slow-follower.sh` | the same criteria across three real machines (2026-09-16, commit `33ca1a5`): retained entries 19582 → 5000 → 5000, leader RSS 173 → 170 → 174 MB, one `[LOG-TRUNCATE]` at 19 MB against the 16 MB test budget, and the stalled replica on a different host repaired by a 55.8 MB snapshot -- made in 193 ms, shipped and ingested in 733 ms, installed in 137 ms. Correct in both directions afterwards: `VERIFY_OK` through the leader and `FAILOVER_VERIFY_OK` reading the victim's own state |
+| `scripts/multinode/recover.sh` | crash recovery with one node per machine (same commit): a restarted follower and a restarted former leader each served the latest values from their own state within 0 s, a new leader was elected in 9 s, and all three nodes finished with `races=0 err_lines=0` |
 | unit tests | the progress machine (7 cases), the truncation tiers and byte accounting (5 cases), the store export round trip and the log cut (5 cases), the empty-AppendEntries consistency check |
 
 `crash-recovery.sh`, `gc-rounds.sh`, `leaseread-e2e.sh` and `gate-audit.sh` are unchanged
@@ -240,6 +242,11 @@ Two verification notes worth keeping, because both cost time:
 
 ## Known gaps
 
+- ~~Every driver ran on one host, so the transfer never left loopback.~~ Closed
+  2026-09-16: `scripts/multinode/slow-follower.sh` runs the three nodes on three
+  machines and the repair crossed a real network (see the table above). The
+  single-host scripts are kept -- they are far quicker to iterate on -- but a change
+  to the transport should be checked with the multi-node one.
 - The transfer window is entered in tests by lowering `-snapshotRateMB`; there is no
   fault-injection hook inside the receive loop. That is deliberate (a production knob beats
   a test switch) but it does mean the window cannot be hit at full rate.

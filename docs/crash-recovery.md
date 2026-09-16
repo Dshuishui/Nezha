@@ -101,6 +101,21 @@ old file behind.
 
 Three-node cluster built with `-race`, 20000 keys of 1 KB, GC threshold set so both rounds run.
 
+Re-run 2026-09-16 (commit `33ca1a5`) with **one node per machine** -- node0 on tikv240,
+node1 on tikv241, node2 on node55 -- and with the driver itself on tikv240 rather than a
+workstation. Both restart scenarios served the latest values from the restarted node's own
+state within 0 s, the new leader was elected in 9 s, and all three nodes finished with
+`races=0 err_lines=0 gc_done=4`. Until then the three-node scripts had always put node1 and
+node2 on the same host, because node55 runs ufw and admits only specific ports: a node there
+could send RequestVote and receive answers, but the leader's AppendEntries had to connect
+*in*, so it stood at `votes=1/3` and applied nothing. Details in
+`results/gates/2026-09-16-three-machine/meta.txt`.
+
+That run is also what found the last defect fixed here: `Run()` read `gcInProgress` after
+starting `gcLoop`, which both raced with the GC switch and could observe the round that had
+just begun instead of the one the crash interrupted -- so a live GC would trigger "redo the
+interrupted round". Fixed in `94cc173`; `races=1` before, zero on all three nodes after.
+
 | Scenario | Result |
 |---|---|
 | follower `kill -9`, 20000 keys rewritten while it is down, restart | recovered from disk, caught up, served the new values within 10 s |
