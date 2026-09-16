@@ -30,6 +30,13 @@ BIN=/tmp/nezha-vgp
 # GC 有没有恰好跑完，这是个竞态。现在取数据量的 10 倍，再在取数前断言一轮都没跑过。
 GB=$(awk -v n="$N" -v r="$(record_bytes "$VSIZE")" 'BEGIN{printf "%.4f", n*r*10/1073741824}')
 
+# cgo 环境必须从机器自己的 ~/env.sh 取。这个脚本原先**什么都不设**就直接 go build，
+# 于是在实验机上用默认 GOPROXY（proxy.golang.org）去下载模块并超时，报"编译失败"——
+# 实际是取不到依赖，跟代码无关。机器的 env.sh 里设着 GOPROXY=https://goproxy.cn
+# 与 GOMODCACHE，所以走 cgo-env 就都有了。理由见 scripts/lib/cgo-env.sh。
+# shellcheck source=scripts/lib/cgo-env.sh
+. "$PROJECT_DIR/scripts/lib/cgo-env.sh"
+setup_cgo_env || fail "cgo 环境准备失败（见 scripts/lib/cgo-env.sh）"
 go build -o "$BIN" ./cmd/nezha/ || fail "编译失败"
 go build -o /tmp/countkeys ./cmd/bench/countkeys/ || fail "countkeys 编译失败"
 
