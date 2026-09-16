@@ -341,6 +341,20 @@ func New(cfg Config) (*KVServer, error) {
 // Run starts the apply loop, the GC trigger, Raft and the client-facing server, then
 // blocks until ctx is cancelled. The gRPC servers stop gracefully on cancellation.
 func (kvs *KVServer) Run(ctx context.Context) {
+	// "上一轮 GC 被打断了"必须在**启动 gcLoop 之前**取走，而且要在锁下取。
+	//
+	// 原先是在下面那几个 go 之后才读 kvs.gcInProgress，有两重问题：
+	//  1. **数据竞态**（-race 在三节点崩溃恢复场景实测抓到一次）：gcLoop 一旦开跑一轮，
+	//     AnotherSwitchToNewFiles / SwitchToNewFiles 就会在 kvs.mu 下把它置 true，
+	//     而这里的读不持锁。gcInProgress 的其余七处访问全都在 kvs.mu 下，只有这里漏了。
+	//  2. **读到的可能是错的那一轮**。即使不撕裂，等 gcLoop 起了一轮之后再读，读到的
+	//     是**刚开始的这一轮**，而不是崩溃前那一轮——于是凭一个正在进行的 GC 去触发
+	//     "重做被打断的那一轮"。恢复语义要的是 kv_state.json 里那个值，它只在构造期
+	//     被写入，取它的唯一正确时机就是任何 GC 协程启动之前。
+	kvs.mu.Lock()
+	resumeGC := kvs.gcInProgress
+	kvs.mu.Unlock()
+
 	go kvs.applyLoop()
 	go kvs.gcLoop(ctx)
 	kvs.raft.StartLoops(ctx)
@@ -348,7 +362,7 @@ func (kvs *KVServer) Run(ctx context.Context) {
 		go kvs.lsmTicker()
 	}
 	go kvs.RegisterKVServer(ctx, kvs.address)
-	if kvs.gcInProgress {
+	if resumeGC {
 		go kvs.resumeInterruptedGC()
 	}
 	<-ctx.Done()
