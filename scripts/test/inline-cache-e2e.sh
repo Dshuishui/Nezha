@@ -40,8 +40,13 @@ pkill -f nezha-e2e 2>/dev/null; sleep 2   # 清掉上一轮残留，否则抢 30
 run_case() {
     local label="$1" gcgb="$2"
     local D; D=$(mktemp -d)
+    # **-system 必须给。** GCEnabled 以前没有 flag，-system 为空时它是 false，于是
+    # -gcThresholdGB 被完全忽略、GC 一轮都不跑——本脚本的实验组因此长期"什么也没验证到"
+    # （2026-09-17 实测：valuelog 18.8MB 远超 5.24MB 阈值，gcEnabled=false）。
+    # 对照组用 nezha-nogc 而不是"把阈值调到 999"：让"不要 GC"成为显式的配置。
+    local sys=nezha; [ "$gcgb" = 999 ] && sys=nezha-nogc
     /tmp/nezha-e2e -address 127.0.0.1:3088 -internalAddress 127.0.0.1:30881 \
-        -peers 127.0.0.1:30881 -data "$D" -gap 1000000 \
+        -peers 127.0.0.1:30881 -data "$D" -gap 1000000 -system "$sys" \
         -inlineCacheMB "$CACHE_MB" -gcThresholdGB "$gcgb" > "$D/n.log" 2>&1 &
     local PID=$!
     sleep 10

@@ -73,7 +73,9 @@ run() {
   else
     git checkout -q "$THIS_BRANCH"
     go build -o $BIN "$(server_pkg)" || fail "[$label] 编译失败"
-    EXTRA="-inlineCacheMB 64 -indexBlockKB 4 -gcThresholdGB $GC_GB"
+    # -system nezha 是必须的：没有它 GCEnabled 为 false，-gcThresholdGB 被忽略、
+    # GC 一轮不跑，而本脚本在数 GC 轮数。见 cmd/nezha/main.go 里 -gc 那段说明。
+    EXTRA="-system nezha -inlineCacheMB 64 -indexBlockKB 4 -gcThresholdGB $GC_GB"
   fi
 
   local D; D=$(mktemp -d)

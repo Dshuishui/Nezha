@@ -56,7 +56,7 @@ run_case() {
     local label="$1"; shift
     local D; D=$(mktemp -d)
     /tmp/nezha-lease -address "127.0.0.1:$PORT" -internalAddress "127.0.0.1:$IPORT" \
-        -peers "127.0.0.1:$IPORT" -data "$D" -gap 1000000 -gcThresholdGB 999 \
+        -peers "127.0.0.1:${IPORT}" -data "$D" -gap 1000000 -system nezha-nogc \
         "$@" > "$D/n.log" 2>&1 &
     local PID=$!
     # 等到真的当选为止，而不是 sleep 一个猜的秒数
@@ -110,7 +110,7 @@ DIRS=()
 for i in 0 1 2; do
     d=$(mktemp -d); DIRS+=("$d")
     /tmp/nezha-lease -address "127.0.0.1:$((P3+i))" -internalAddress "127.0.0.1:$((I3+i))" \
-        -peers "$PEERS" -data "$d" -gap 1000000 -gcThresholdGB 999 \
+        -peers "$PEERS" -data "$d" -gap 1000000 -system nezha-nogc \
         -leaderCheck -leaseRead > "$d/n.log" 2>&1 &
 done
 cleanup3(){ pkill -f nezha-lease 2>/dev/null; rm -rf "${DIRS[@]}"; }

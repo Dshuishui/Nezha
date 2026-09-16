@@ -43,6 +43,17 @@ grep -q "inlineCacheMB" <<<"$HELP" && EXTRA="$EXTRA -inlineCacheMB $CACHE_MB"
 grep -q "indexBlockKB"  <<<"$HELP" && EXTRA="$EXTRA -indexBlockKB $BLOCK_KB"
 if grep -q "gcThresholdGB" <<<"$HELP"; then
     EXTRA="$EXTRA -gcThresholdGB $GC_GB"
+    # **光给阈值不够。** 本分支里 GCEnabled 只由 -system 打开（或新加的 -gc）；-system
+    # 为空时它是 false，阈值被完全忽略、GC 一轮不跑，而本脚本在数 GC 轮数。
+    # 2026-09-17 查出来的，同时中招的还有 memory-scale.sh 与 inline-cache-e2e.sh。
+    # 这里仍按 -h 探测：对照组是旧分支的二进制，未必有这两个 flag。
+    if grep -q '\-system' <<<"$HELP"; then
+        EXTRA="$EXTRA -system nezha"
+    elif grep -qE '^\s+-gc\b' <<<"$HELP"; then
+        EXTRA="$EXTRA -gc"
+    else
+        warn "该版本既无 -system 也无 -gc：阈值给了也不会触发 GC（旧分支靠改源码，见 full-compare.sh）"
+    fi
 else
     warn "该版本无 -gcThresholdGB，GC 阈值固定 4000GB，本轮不会触发 GC"
 fi

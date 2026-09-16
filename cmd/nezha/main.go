@@ -46,6 +46,14 @@ func main() {
 	// kvstore.Config.System); the individual switches below apply when it is empty.
 	flag.StringVar(&cfg.System, "system", "", "system under test: original | pasv | dwisckey | lsm-raft | nezha-nogc | nezha (empty = use the individual flags)")
 	flag.BoolVar(&cfg.KVSeparation, "kvSeparation", true, "keep values in the Raft log and store only offsets (false = baseline: values into RocksDB)")
+	// GCEnabled 此前**没有** flag，只能由 -system 经 applyPreset 设定，而 -system 的帮助
+	// 文本写着 "empty = use the individual flags"——那句话对 GC 是假的：不存在这个开关。
+	// 后果是 `-gcThresholdGB 0.005` 被接受、被打印进 [SYSTEM] 行、然后被完全忽略，
+	// GC 一轮都不跑。2026-09-17 实测：valuelog 涨到 18.8MB（阈值 5.24MB），
+	// gcEnabled=false，inline-cache-e2e 的实验组因此"什么也没验证到"，
+	// 另有两个脚本（memory-scale、avp-compare）也在数 GC 轮数却永远数到 0。
+	// 默认取 false 是为了不改变任何现有调用的含义——真正要 GC 的写 -system nezha 或 -gc。
+	flag.BoolVar(&cfg.GCEnabled, "gc", false, "rewrite the value log into sorted files past -gcThresholdGB; only needed when -system is empty (a preset sets it)")
 	// AVP proper: values are placed by size at write time. Off, small values are only
 	// cached in memory (lost on restart, rebuilt by the next GC); on, values below the
 	// threshold go straight into the store and GC never moves them.
@@ -81,6 +89,24 @@ func main() {
 		fmt.Fprintln(os.Stderr, "nezha: -address, -internalAddress and -peers are required")
 		flag.Usage()
 		os.Exit(2)
+	}
+
+	// **静默失效变响。** 显式给了 -gcThresholdGB 却没有任何东西打开 GC，几乎一定是
+	// 期望 GC 会跑：一次这样的运行会跑满全程、产出看起来正常的数据，而 GC 路径一次
+	// 都没走过。2026-09-17 就是这样丢了一整轮 inline-cache-e2e。
+	// 只在 -system 为空时拦：显式选了 nezha-nogc / original 这类预设的人是故意不要 GC 的。
+	if cfg.System == "" && !cfg.GCEnabled {
+		thresholdSet := false
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name == "gcThresholdGB" {
+				thresholdSet = true
+			}
+		})
+		if thresholdSet {
+			log.Fatalf("nezha: -gcThresholdGB=%g 给了，但 GC 是关的（-system 为空且未给 -gc），"+
+				"阈值会被完全忽略、GC 一轮都不会跑。要跑 GC 请加 -system nezha 或 -gc；"+
+				"确实不要 GC 请写 -system nezha-nogc，别只靠把阈值调大。", cfg.GCThresholdGB)
+		}
 	}
 
 	node, err := kvstore.New(cfg)

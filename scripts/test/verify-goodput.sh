@@ -42,7 +42,10 @@ go build -o /tmp/countkeys ./cmd/bench/countkeys/ || fail "countkeys 编译失�
 
 "$BIN" -address 127.0.0.1:3088 -internalAddress 127.0.0.1:30881 \
     -peers 127.0.0.1:30881 -data "$D" -gap 1000000 \
-    -inlineCacheMB 256 -indexBlockKB 4 -gcThresholdGB "$GB" > "$D/n.log" 2>&1 &
+    # 本脚本**要求 GC 不跑**（下面第 73 行：GC 跑了就判定作废，因为 key 会迁入分区
+    # 文件、countkeys 的计数不再等于写入条数）。以前靠把阈值调大来间接达成，现在写成
+    # 显式的 -system nezha-nogc——"不要 GC"应当是配置说出来的，不是算出来的。
+    -system nezha-nogc -inlineCacheMB 256 -indexBlockKB 4 -gcThresholdGB "$GB" > "$D/n.log" 2>&1 &
 PID=$!
 cleanup(){ kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -rf "$D" "$BIN"; }
 trap cleanup EXIT
