@@ -6,8 +6,8 @@
 # 快照传输、快照安装全程经过真实网络。单机版跑的是 loopback——快照做出来到装上只差
 # 一次本机文件读写，网络这一段等于没测。到 2026-09-16 为止，快照路径**从未跨过网卡**。
 #
-# 拓扑沿用 three-node.sh：node0 在 tikv240，node1/node2 在 tikv241。所以无论谁当选
-# leader，总能挑到一个在另一台机器上的受害者（见 pick_victim）。
+# 拓扑由 gate.sh 的 TOPO 决定（two = node1/node2 同在 241；three = 三台各一个）。
+# 两种拓扑下都总能挑到一个与 leader 不同机器的受害者（见 pick_victim）。
 #
 # 要看到的是两件事（和单机版一样）：
 #   1. 被按住期间 leader 的内存日志**保持有界**（改造之前是基线的 30 倍）
@@ -41,6 +41,8 @@ BUDGET_MB=${BUDGET_MB:-16}
 BIN=normal; [ "${RACE:-0}" = 1 ] && BIN=race
 
 ALL=$(servers_str)
+# 跑 bench 客户端的机器，与"哪个节点在哪台机器"无关，理由见 recover.sh 里同名变量。
+CLIENT_HOST=${CLIENT_HOST:-tikv240}
 # 被按住的进程一定要先 resume 再 stop：SIGSTOP 状态下的进程不处理 SIGTERM，只会攒着，
 # 于是 stop 里那句 kill 什么也不做，直到后面的 kill -9 才收掉它。
 stop_all() { local i; for i in 0 1 2; do rq "$(host_of "$i")" "~/three-node.sh resume $i" >/dev/null 2>&1 || true
@@ -91,7 +93,7 @@ done
 say "  leader = node${LEADER}（$(host_of $LEADER)，term=${BEST}）"
 
 # 受害者必须在**另一台机器**上——这就是这个脚本存在的全部理由。
-# node0 独占 tikv240，node1/node2 同在 tikv241，所以两种情况都挑得出来。
+# 两种拓扑下 node0 都独占 tikv240，所以 leader 无论落在哪个节点都挑得出来。
 pick_victim() {
   local i lh; lh=$(host_of "$LEADER")
   for i in 0 1 2; do
@@ -104,7 +106,7 @@ VICTIM=$(pick_victim) || die "挑不出跨机的受害者（拓扑变了？）"
 say "  受害者 = node${VICTIM}（$(host_of "$VICTIM")）—— 与 leader 跨机，复制和快照都要过网卡"
 
 say "===== 3. 阶段 1：三节点健康，写 $WARMUP × ${VSIZE}B，建立基线 ====="
-W=$(r tikv240 "source ~/env.sh; /tmp/randwrite_goroutine -cnums 16 -dnums $WARMUP -vsize $VSIZE -servers $ALL" | grep -oE 'elapse:[^,]*')
+W=$(r "$CLIENT_HOST" "source ~/env.sh; /tmp/randwrite_goroutine -cnums 16 -dnums $WARMUP -vsize $VSIZE -servers $ALL" | grep -oE 'elapse:[^,]*')
 say "  $W"
 sleep 25   # 跨过两个 compactLog 检查周期
 M=$(mem_of "$LEADER"); say "  $M"
@@ -116,7 +118,7 @@ say "===== 4. 阶段 2：SIGSTOP node${VICTIM}，再写 $STALLED 条 ====="
 say "$(r "$(host_of "$VICTIM")" "~/three-node.sh pause $VICTIM")"
 grep -q "PAUSED node$VICTIM" "$LOG" || die "SIGSTOP 没成功"
 # 只打 leader：被按住的那个已经不回话，把它列进 -servers 只会让客户端在它身上超时。
-W=$(r tikv240 "source ~/env.sh; /tmp/randwrite_goroutine -cnums 16 -dnums $STALLED -vsize $VSIZE -servers $(addr_of "$LEADER")" | grep -oE 'elapse:[^,]*')
+W=$(r "$CLIENT_HOST" "source ~/env.sh; /tmp/randwrite_goroutine -cnums 16 -dnums $STALLED -vsize $VSIZE -servers $(addr_of "$LEADER")" | grep -oE 'elapse:[^,]*')
 say "  $W"
 say "  再按住 ${HOLD}s，让 compactLog 跑几轮"
 sleep "$HOLD"
@@ -172,12 +174,12 @@ say "  恢复之后：$M"
 say "===== 6. 正确性：数据必须是对的 ====="
 # 先等受害者追平再直读它——刚装完快照的节点还要接上后续的普通复制。
 for _ in $(seq 1 30); do
-  R=$(r tikv240 "source ~/env.sh; /tmp/readonly -servers $(addr_of "$VICTIM") -dnums 2000 -vsize $VSIZE -check 300 -sample 30" | grep -vE 'new pool success')
+  R=$(r "$CLIENT_HOST" "source ~/env.sh; /tmp/readonly -servers $(addr_of "$VICTIM") -dnums 2000 -vsize $VSIZE -check 300 -sample 30" | grep -vE 'new pool success')
   echo "$R" | grep -q FAILOVER_VERIFY_OK && { say "  受害者直读全对"; break; }
   sleep 5
 done
 echo "${R:-}" | grep -q FAILOVER_VERIFY_OK || say "  [注意] 受害者在 150s 内没读全对（下面的 leader 校验仍然要过）"
-V=$(r tikv240 "source ~/env.sh; /tmp/scanverify -servers $ALL -leader $LEADER -dnums 3000 -vsize $VSIZE -span 50 -sample 20" | grep -vE 'new pool success')
+V=$(r "$CLIENT_HOST" "source ~/env.sh; /tmp/scanverify -servers $ALL -leader $LEADER -dnums 3000 -vsize $VSIZE -span 50 -sample 20" | grep -vE 'new pool success')
 echo "$V" | grep -E '校验|VERIFY' | sed 's/^/      /' | tee -a "$LOG"
 echo "$V" | grep -q VERIFY_OK || die "数据校验未通过——本测的前提不成立"
 

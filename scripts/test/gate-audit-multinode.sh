@@ -405,6 +405,35 @@ else
     bad "host_of 的拓扑与 leader_wins 不一致：$(grep TOPO "$FAKE/fnchk")"
 fi
 
+info "=== 十五、按节点编号访问时不许写死主机名 ==="
+# 2026-09-16 实测的最糟一类失效：recover.sh 里 `rq tikv241 "~/three-node.sh kill9 2"`
+# 把主机名写成了字面量。TOPO=three 下 node2 在 node55，这条命令发到 241——那里
+# ~/work/three-2 根本不存在，pid 读不到、own_pids 为空，于是 three-node.sh **报出
+# KILLED**。闸门为一个完全没发生的动作报了成功，节点带着 RocksDB 的 LOCK 继续活着，
+# 后面的 restart 因此失败，而失败被归因成"数据不对"。
+#
+# 判据是结构性的：只要一条远端命令里出现 `three-node.sh <子命令> N` 或 `three-N`，
+# 目标主机就必须由 host_of 派生。客户端工具（scanverify/readonly/randwrite）不在此列，
+# 它连的是 -servers 地址表，放在哪台机器上只影响网络路径——所以那些用 CLIENT_HOST。
+# 准确的不变式是**二择一**：要么所有按编号的访问都经过 host_of（于是任何拓扑都对），
+# 要么脚本带着 TOPO=two 守卫（于是字面量与拓扑不可能不一致）。两者都没有才是缺陷。
+# 这条规则是完整的：将来谁把某个脚本改成支持 TOPO=three 并摘掉守卫，只要漏一个字面量
+# 就会在这里判失败。
+for f in failover.sh recover.sh lsmraft.sh slow-follower.sh; do
+    p="$PROJECT_DIR/scripts/multinode/$f"
+    [ -f "$p" ] || { bad "$f 不存在"; continue; }
+    hits=$(grep -nE '\b(r|rq) +(tikv240|tikv241|node55) +.*(three-node\.sh|three-[012])' "$p" || true)
+    guarded=no; grep -qE '^\[ "\$TOPO" = two \]' "$p" && guarded=yes
+    if [ -z "$hits" ]; then
+        good "$f 里按节点编号的访问都经过 host_of（任何拓扑都对）"
+    elif [ "$guarded" = yes ]; then
+        warn "$f 仍有写死的主机名，但它带 TOPO=two 守卫，所以发不错机器（摘守卫前必须先改成 host_of）"
+    else
+        echo "$hits" | sed 's/^/       /' | cut -c1-150
+        bad "$f 上列行按节点编号访问却写死了主机名，又没有 TOPO=two 守卫——换拓扑会发到错误的机器，且可能报出假成功"
+    fi
+done
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"

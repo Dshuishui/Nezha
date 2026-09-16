@@ -16,6 +16,13 @@ RDFLAG="EXTRA='-leaderCheck=false'"
 say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 N=20000; VS_A=1024; VS_B=512; VS_C=256
 ALL=$(servers_str)
+# 跑 bench 客户端的机器。它与"哪个节点在哪台机器"是**两件不同的事**：客户端连的是
+# $ALL 里的地址表，放在哪台机器上只影响网络路径。写成变量是为了让下面每一处 `r` 都能
+# 一眼看出"这是客户端"还是"这是某个节点所在的机器"——2026-09-16 正因为两者都写成字面
+# tikv241，kill9 才发错了机器：TOPO=three 下 node2 在 node55，发到 241 拿不到 pid、
+# own_pids 为空，于是**报出假的 KILLED**，而那个节点根本没死，后面 restart 撞在
+# RocksDB 的 LOCK 上。闸门为一个没发生的动作报成功，是最糟的一类失效。
+CLIENT_HOST=${CLIENT_HOST:-tikv240}
 fail=0
 # 本脚本的整个立意就是三个节点最后都活着并且追平了，所以三个都要求 alive=yes。
 # 只查 races/err_lines 的话，一个重启之后又死掉的节点会静默判过——而那恰恰是
@@ -31,12 +38,12 @@ wait_gc() { local prev="" cur k spec h i g ok nodes=("$@")
     [ "$cur" = "$prev" ] && [ $ok = 1 ] && { say "GC 稳定:$cur"; return 0; }; prev=$cur; done
   say "GC 未稳定:$cur"; fail=1; }
 write_all() { # $1=leader idx to contact first, $2=vsize
-  local W; W=$(r tikv240 "source ~/env.sh; /tmp/scanverify -servers $ALL -leader $1 -dnums $N -vsize $2 -span 50 -sample 20" | grep -vE 'new pool success')
+  local W; W=$(r "$CLIENT_HOST" "source ~/env.sh; /tmp/scanverify -servers $ALL -leader $1 -dnums $N -vsize $2 -span 50 -sample 20" | grep -vE 'new pool success')
   echo "$W" | tail -3 | sed 's/^/    /' | tee -a "$LOG"; echo "$W" | grep -q VERIFY_OK || fail=1; }
 read_until_ok() { # $1=idx $2=vsize $3=timeout_s ；恢复后的节点要先追上再读得全对
   local t0=$(date +%s) R
   while :; do
-    R=$(r tikv240 "source ~/env.sh; /tmp/readonly -servers $(addr_of $1) -dnums $N -vsize $2 -check 300 -sample 30" | grep -vE 'new pool success')
+    R=$(r "$CLIENT_HOST" "source ~/env.sh; /tmp/readonly -servers $(addr_of $1) -dnums $N -vsize $2 -check 300 -sample 30" | grep -vE 'new pool success')
     if echo "$R" | grep -q FAILOVER_VERIFY_OK; then say "node$1 直读全对（用时 $(( $(date +%s) - t0 ))s）"; echo "$R" | tail -3 | sed 's/^/    /' | tee -a "$LOG"; return 0; fi
     # 目标节点把读挡回来时立刻退出：那是配置问题，等下去也不会变对，白等一个超时。
     if echo "$R" | grep -q "未持有 leader 身份"; then say "node$1 直读被挡回"; gate_read_ok "$R" "node$1 直读" | tee -a "$LOG"; fail=1; return 1; fi
@@ -79,35 +86,35 @@ sleep 12
 
 if [ "$MODE" = midgc ]; then
   say "===== 2. 写入 $N × ${VS_A}B；node2 的 GC 会在切换后暂停 20s ====="
-  ( r tikv240 "source ~/env.sh; /tmp/scanverify -servers $ALL -leader 0 -dnums $N -vsize $VS_A -span 50 -sample 20" | grep -vE 'new pool success' | tail -3 | sed 's/^/    [写入] /' | tee -a "$LOG" ) &
+  ( r "$CLIENT_HOST" "source ~/env.sh; /tmp/scanverify -servers $ALL -leader 0 -dnums $N -vsize $VS_A -span 50 -sample 20" | grep -vE 'new pool success' | tail -3 | sed 's/^/    [写入] /' | tee -a "$LOG" ) &
   WPID=$!
   say "等待 node2 进入 GC 暂停窗口"
   for k in $(seq 1 60); do
-    if r tikv241 "grep -q 'GC-PAUSE' ~/work/three-2/n.log" ; then break; fi; sleep 2
+    if r "$(host_of 2)" "grep -q 'GC-PAUSE' ~/work/three-2/n.log" ; then break; fi; sleep 2
   done
-  say "$(r tikv241 "grep -h 'GC-PAUSE\|设置kvs.currentLog' ~/work/three-2/n.log | tail -2")"
+  say "$(r "$(host_of 2)" "grep -h 'GC-PAUSE\|设置kvs.currentLog' ~/work/three-2/n.log | tail -2")"
   say "===== 3. 在 GC 中途 kill -9 node2 ====="
-  K=$(rq tikv241 "~/three-node.sh kill9 2"); say "${K:-（无回执）}"
+  K=$(rq "$(host_of 2)" "~/three-node.sh kill9 2"); say "${K:-（无回执）}"
   require_out "$K" "kill9 node2" | tee -a "$LOG" || fail=1
   wait $WPID
   say "===== 4. 重启 node2，应重做第 1 轮 GC ====="
   restart_node 2
   sleep 5
   read_until_ok 2 $VS_A 120
-  say "$(r tikv241 "grep -hE '垃圾回收完成|GC 曾中断|重做' ~/work/three-2/n1.log | head -5")"
+  say "$(r "$(host_of 2)" "grep -hE '垃圾回收完成|GC 曾中断|重做' ~/work/three-2/n1.log | head -5")"
   say "===== 5. 继续经 leader 重写 $N × ${VS_B}B，再直读 node2 ====="
   write_all 0 $VS_B
   wait_gc 0 1 2
   read_until_ok 2 $VS_B 90
   say "===== 6. 日志 ====="
   report_all
-  r tikv241 "ls -la ~/work/three-2/data/valuelog/ ~/work/three-2/data/*.json; cat ~/work/three-2/data/kv_state.json" | sed 's/^/    /' | tee -a "$LOG"
+  r "$(host_of 2)" "ls -la ~/work/three-2/data/valuelog/ ~/work/three-2/data/*.json; cat ~/work/three-2/data/kv_state.json" | sed 's/^/    /' | tee -a "$LOG"
 else
   say "===== 2. 写入 $N × ${VS_A}B 并校验 ====="
   write_all 0 $VS_A
   wait_gc 0 1 2
   say "===== S1-a. kill -9 follower node2 ====="
-  K=$(rq tikv241 "~/three-node.sh kill9 2"); say "${K:-（无回执）}"
+  K=$(rq "$(host_of 2)" "~/three-node.sh kill9 2"); say "${K:-（无回执）}"
   require_out "$K" "kill9 node2" | tee -a "$LOG" || fail=1
   say "===== S1-b. node2 缺席期间经 leader 重写 $N × ${VS_B}B ====="
   write_all 0 $VS_B
@@ -116,10 +123,10 @@ else
   read_until_ok 2 $VS_B 120
   say "===== S2-a. kill -9 leader node0 ====="
   W0=$(leader_wins); W0=${W0:-0}
-  K=$(rq tikv240 "~/three-node.sh kill9 0"); say "${K:-（无回执）}"
+  K=$(rq "$(host_of 0)" "~/three-node.sh kill9 0"); say "${K:-（无回执）}"
   require_out "$K" "kill9 node0" | tee -a "$LOG" || fail=1
   wait_new_leader "$W0" 40
-  r tikv241 "grep -hE 'Candidate -> Leader' ~/work/three-1/n*.log ~/work/three-2/n*.log | tail -2" | sed 's/^/    /' | tee -a "$LOG"
+  for i in 1 2; do r "$(host_of "$i")" "grep -hE 'Candidate -> Leader' ~/work/three-$i/n*.log 2>/dev/null | tail -1" | sed "s/^/    node$i /"; done | tee -a "$LOG"
   say "===== S2-b. 经新 leader 重写 $N × ${VS_C}B ====="
   write_all 1 $VS_C
   say "===== S2-c. 重启旧 leader node0，等它追平后直读 ====="
@@ -128,7 +135,7 @@ else
   wait_gc 0 1 2
   say "===== 收尾：三节点日志 ====="
   report_all
-  r tikv240 "cat ~/work/three-0/data/kv_state.json ~/work/three-0/data/raft_state.json" | sed 's/^/    [node0 state] /' | tee -a "$LOG"
+  r "$(host_of 0)" "cat ~/work/three-0/data/kv_state.json ~/work/three-0/data/raft_state.json" | sed 's/^/    [node0 state] /' | tee -a "$LOG"
 fi
 for i in 0 1 2; do r "$(host_of $i)" "~/three-node.sh stop $i" >/dev/null; done
 [ $fail = 0 ] && say "RECOVER_${MODE}_OK" || say "RECOVER_${MODE}_FAIL"
