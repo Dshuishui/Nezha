@@ -22,14 +22,12 @@ warn(){ echo -e "${YEL}[WARN]${NC} $1"; }
 fail(){ echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 
 PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"; cd "$PROJECT_DIR" || fail "无项目目录"
-export PATH=$PATH:/usr/local/go/bin
-for d in /usr/lib/x86_64-linux-gnu /usr/local/lib /usr/lib; do
-    [ -f "$d/librocksdb.so" ] && L=$d && break
-done
-[ -z "${L:-}" ] && fail "librocksdb.so 未找到，先跑 scripts/setup-env.sh"
-export CGO_CFLAGS="-I/usr/include"
-export CGO_LDFLAGS="-L$L -lrocksdb -lstdc++ -lm -lz -lbz2 -lsnappy -llz4 -lzstd"
-export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}:$L
+# cgo 环境（RocksDB 的头与库）集中在 scripts/lib/cgo-env.sh 一份。
+# 原先这里写死了三个系统路径 + -I/usr/include，在实验机上会"找到错的版本"，
+# 报错出现在 cgo 阶段、读起来像代码问题。理由见那个文件。
+# shellcheck source=scripts/lib/cgo-env.sh
+. "$(dirname "$0")/../lib/cgo-env.sh"
+setup_cgo_env || fail "cgo 环境准备失败（见 scripts/lib/cgo-env.sh）"
 
 N=${N:-3000}; VSIZE=${VSIZE:-64}; PORT=${PORT:-3098}; IPORT=${IPORT:-30981}
 
