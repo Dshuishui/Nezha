@@ -21,9 +21,13 @@
 # 于是 go build 会把所有模块重新下一遍（2026-09-16 实测，snapshot-crash.sh 卡在
 # "go: downloading ..." 上）。
 #
-# 用法：
-#   . "$(dirname "$0")/../lib/cgo-env.sh"
+# 用法（**必须用 $PROJECT_DIR，不要用 $(dirname "$0")**）：
+#   . "$PROJECT_DIR/scripts/lib/cgo-env.sh"
 #   setup_cgo_env || exit 1      # 或者配上脚本自己的 die/fail
+#
+# 为什么不能用 $(dirname "$0")：调用方都在 `cd "$PROJECT_DIR"` **之后**才 source 这一份，
+# 而 $0 是相对路径（`bash ./snapshot-crash.sh`），cd 一发生它就失效。十个脚本第一版
+# 全都中了，实测报 "./../lib/cgo-env.sh: No such file or directory"。
 setup_cgo_env() {
     export PATH=$PATH:/usr/local/go/bin
     # shellcheck source=/dev/null

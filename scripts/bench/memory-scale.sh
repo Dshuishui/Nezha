@@ -27,7 +27,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/bench-common.sh"
 # 原先这里写死了三个系统路径 + -I/usr/include，在实验机上会"找到错的版本"，
 # 报错出现在 cgo 阶段、读起来像代码问题。理由见那个文件。
 # shellcheck source=scripts/lib/cgo-env.sh
-. "$(dirname "$0")/../lib/cgo-env.sh"
+# 用 $PROJECT_DIR 而不是 $(dirname "$0")：这一行在 `cd "$PROJECT_DIR"` **之后**，
+# 而 $0 是相对路径（`bash ./snapshot-crash.sh`），cd 一发生它就失效——十个脚本
+# 全都中了，实测报 "./../lib/cgo-env.sh: No such file or directory"。
+. "$PROJECT_DIR/scripts/lib/cgo-env.sh"
 setup_cgo_env || fail "cgo 环境准备失败（见 scripts/lib/cgo-env.sh）"
 
 N=${1:-5000000}; VSIZE=${2:-64}
