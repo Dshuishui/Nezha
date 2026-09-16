@@ -54,13 +54,23 @@ P0=${P0:-41400}; I0=${I0:-41410}
 FAILED=0
 DIRS=(); PIDS=(); LD=-1; VIC=-1
 
+# 清理分两层，而且**必须**分两层。
+#
+# cleanup 在每个场景之后都跑，而它原先连 /tmp/sc-node 一起删——于是排在第一个场景
+# 之后的场景**永远起不来**，节点日志里只有
+#     env: '/tmp/sc-node': No such file or directory
+# 而外层报的是"集群没起来或 GC 没跑"。2026-09-16 实测：单跑 F 通过，E F 连跑必败。
+# 二进制归 cleanup_all（挂 EXIT），场景之间只收进程和数据目录。
 cleanup(){
     for p in "${PIDS[@]:-}"; do [ -n "$p" ] && { kill -9 "$p" 2>/dev/null; wait "$p" 2>/dev/null; }; done
     pkill -f sc-node 2>/dev/null
     for d in "${DIRS[@]:-}"; do [ -n "$d" ] && rm -rf "$d"; done
+}
+cleanup_all(){
+    cleanup
     rm -f /tmp/sc-node /tmp/sc-write /tmp/sc-read
 }
-trap cleanup EXIT
+trap cleanup_all EXIT
 
 info "构建 $(git rev-parse --short HEAD)"
 # RACE=1 用竞态检测器构建节点（默认关着）。见 snapshot-e2e.sh 的同一段。

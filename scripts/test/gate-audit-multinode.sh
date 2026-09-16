@@ -483,6 +483,24 @@ for f in failover.sh recover.sh lsmraft.sh slow-follower.sh; do
     fi
 done
 
+info "=== 十八、场景之间的清理不许删掉构建产物 ==="
+# 2026-09-16：snapshot-crash.sh 的 cleanup 在每个场景之后都跑，而它连 /tmp/sc-node 一起
+# 删，于是第二个场景永远起不来——节点日志里只有 "env: '/tmp/sc-node': No such file or
+# directory"，外层报的却是"集群没起来或 GC 没跑"。单跑 F 通过、E F 连跑必败，而这个差别
+# 一眼看不出来，很容易被当成偶发。
+# 判据：多场景脚本里，每场景清理函数不得 rm 构建产物；那属于最终清理（挂 EXIT 的那个）。
+for f in snapshot-crash.sh snapshot-e2e.sh; do
+    p="$PROJECT_DIR/scripts/test/$f"
+    [ -f "$p" ] || { warn "$f 不存在，跳过"; continue; }
+    # 只看 `cleanup()` 那个函数体（到下一个顶格 } 为止）
+    body=$(awk '/^cleanup\(\)\{/{f=1} f{print} /^\}/{if(f)exit}' "$p")
+    if echo "$body" | grep -qE 'rm -f .*/tmp/(sc|sf|se)-'; then
+        fpos "$f 的每场景 cleanup 里 rm 了构建产物——后续场景会起不来，且报错指向别处"
+    else
+        good "$f 的每场景 cleanup 不碰构建产物"
+    fi
+done
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"
