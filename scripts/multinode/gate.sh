@@ -161,7 +161,17 @@ case $TOPO in
          TOPO_PORT=(3099 3099 3100); TOPO_IPORT=(30991 30991 30992) ;;
   three) TOPO_HOST=(tikv240 tikv241 node55)
          TOPO_IP=(192.168.1.240 192.168.1.241 192.168.1.55)
-         TOPO_PORT=(3099 3099 3099); TOPO_IPORT=(30991 30991 30991) ;;
+         # **端口是 3088/30881，不是 3099/30991。** node55 上 ufw 是 active 的，默认
+         # deny incoming，只按端口放行；实测 3088/30881 通（2ms 瞬间拒绝，说明 SYN 到了
+         # 主机）、3099/30991/39999 全部 6 秒超时丢包。那两个端口是别人先前为自己的实验
+         # 开的口子，我们借用，于是不必改共用机器的防火墙。
+         #
+         # 代价要写明：**这两个端口与别人的实验是同一对**。同时跑会撞端口，所以
+         # TOPO=three 之前一定要确认三台都没有别人的进程（各驱动的第 0 步会查）。
+         # 要彻底避开就得在 node55 上给 3099/30991 开口子：
+         #   sudo ufw allow from 192.168.1.0/24 to any port 3099 proto tcp
+         #   sudo ufw allow from 192.168.1.0/24 to any port 30991 proto tcp
+         TOPO_PORT=(3088 3088 3088); TOPO_IPORT=(30881 30881 30881) ;;
   *) echo "未知的 TOPO=${TOPO}（只认 two | three）" >&2; exit 1 ;;
 esac
 
