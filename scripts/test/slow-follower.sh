@@ -62,7 +62,10 @@ cleanup(){
 trap cleanup EXIT
 
 info "构建 $(git rev-parse --short HEAD)"
-go build -o /tmp/sf-node ./cmd/nezha/ || die "节点编译失败"
+# RACE=1 用竞态检测器构建节点（默认关着，-race 让节点慢好几倍）。见 snapshot-e2e.sh 的同一段。
+RACEFLAG=""; [ "${RACE:-0}" = 1 ] && { RACEFLAG="-race"; info "带 -race 构建节点（会慢很多）"; }
+# shellcheck disable=SC2086
+go build $RACEFLAG -o /tmp/sf-node ./cmd/nezha/ || die "节点编译失败"
 go build -o /tmp/sf-write ./cmd/bench/randwrite_goroutine/ || die "写入工具编译失败"
 go build -o /tmp/sf-verify ./cmd/bench/scanverify/ || die "scanverify 编译失败"
 

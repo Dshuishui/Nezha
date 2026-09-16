@@ -55,7 +55,12 @@ cleanup(){
 trap cleanup EXIT
 
 info "构建 $(git rev-parse --short HEAD)"
-go build -o /tmp/snap-node ./cmd/nezha/ || die "节点编译失败"
+# RACE=1 用竞态检测器构建节点。默认关着：-race 让节点慢好几倍，常规回归不需要。
+# 但新加的 stateMu（装快照时整体替换状态机）与安装路径是并发问题最可能藏的地方，
+# 而单测的 -race 覆盖不到"多进程 + 真并发读写 + GC + 快照"这个组合，只有这里能覆盖。
+RACEFLAG=""; [ "${RACE:-0}" = 1 ] && { RACEFLAG="-race"; info "带 -race 构建节点（会慢很多）"; }
+# shellcheck disable=SC2086
+go build $RACEFLAG -o /tmp/snap-node ./cmd/nezha/ || die "节点编译失败"
 # 写入用 scanverify 而不是 randwrite_goroutine：前者写的 value 由 key 派生，后者写的是
 # 一个固定的生成串。校验工具（scanverify / readonly）都按 key 派生去核对，两者混用的结果
 # 是"每一条都值错"——第一版就是这么写的，500 条抽查全报错，看起来像快照把数据搬坏了。

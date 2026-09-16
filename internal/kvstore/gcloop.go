@@ -19,14 +19,31 @@ func (kvs *KVServer) gcLoop(ctx context.Context) {
 			return
 		case <-tick.C:
 		}
+		// 判定要用到的可变状态一次性在锁下取下来。
+		//
+		// 这些字段原先是裸读的，而在快照出现之前那是安全的：写它们的只有 GC 自己这个
+		// goroutine。装快照把一个**并发写者**加了进来（gRPC 的 InstallSSTable 处理
+		// goroutine 在 kvs.mu 下改 currentLog / persister / 分区组），于是裸读变成了
+		// 真竞态——`RACE=1` 跑 slow-follower.sh 抓到的正是这一条：
+		// gcLoop 的 os.Stat(kvs.currentLog) 撞上 installSnapshot 的 kvs.currentLog = …。
+		// string 是两个字（指针 + 长度），撕裂读会让 os.Stat 去 stat 一个拼接出来的路径。
+		//
+		// 一次取下来还有第二个好处：整个判定看到的是**同一个时刻**的状态，
+		// 而不是分几次读到的、可能已经互相矛盾的几个字段。
+		kvs.mu.Lock()
+		curLog := kvs.currentLog
+		firstGC, lastFinish, inProgress := kvs.FirstGC, kvs.lastGCFinish, kvs.gcInProgress
+		partsTotal := kvs.lastPartitions.TotalSize()
+		kvs.mu.Unlock()
+
 		// 检查文件是否存在并且大小是否超过4GB
-		fileInfo, err := os.Stat(kvs.currentLog)
+		fileInfo, err := os.Stat(curLog)
 		if err != nil {
 			if os.IsNotExist(err) {
-				// fmt.Printf("文件 %s 不存在，跳过垃圾回收\n", kvs.currentLog)
+				// fmt.Printf("文件 %s 不存在，跳过垃圾回收\n", curLog)
 				continue
 			}
-			fmt.Printf("检查文件 %s 时出错: %v\n", kvs.currentLog, err)
+			fmt.Printf("检查文件 %s 时出错: %v\n", curLog, err)
 			continue
 		}
 
@@ -55,15 +72,15 @@ func (kvs *KVServer) gcLoop(ctx context.Context) {
 		tailBytes := fileInfo.Size()
 		floor := int64(kvs.gcThresholdGB * 1073741824)
 		need := floor
-		if !kvs.FirstGC {
-			if r := int64(float64(kvs.lastPartitions.TotalSize()) * kvs.absorbRatio); r > need {
+		if !firstGC {
+			if r := int64(float64(partsTotal) * kvs.absorbRatio); r > need {
 				need = r
 			}
 		}
 		if tailBytes < need {
 			continue
 		}
-		if kvs.gcInProgress {
+		if inProgress {
 			continue // the previous round (possibly a post-restart redo) has not finished
 		}
 		// 与装快照互斥。装快照会把 persister、当前日志、分区组三样一起换掉，GC 一轮里
@@ -85,10 +102,11 @@ func (kvs *KVServer) gcLoop(ctx context.Context) {
 				kvs.gcActive = false
 				kvs.mu.Unlock()
 			}()
-			// 第一轮GC
-			if kvs.FirstGC {
+			// 第一轮GC。用上面在锁下取的 firstGC / lastFinish，而不是再裸读一次：
+			// 再读一次既是竞态，也可能与刚才做判定时看到的状态不一致。
+			if firstGC {
 				fmt.Printf("文件 %s 大小 %.1fMB 达到阈值 %.1fMB，开始第一轮 GC\n",
-					kvs.currentLog, float64(tailBytes)/1048576, float64(need)/1048576)
+					curLog, float64(tailBytes)/1048576, float64(need)/1048576)
 				startTime := time.Now()
 				err = kvs.FirstGarbageCollection()
 				if err != nil {
@@ -103,7 +121,7 @@ func (kvs *KVServer) gcLoop(ctx context.Context) {
 					return
 				}
 				kvs.finishFirstGC(startTime)
-			} else if kvs.lastGCFinish {
+			} else if lastFinish {
 				if kvs.lastPartitions == nil {
 					fmt.Println("缺少上一轮排序文件索引，跳过本轮迭代 GC")
 					return

@@ -62,7 +62,10 @@ cleanup(){
 trap cleanup EXIT
 
 info "构建 $(git rev-parse --short HEAD)"
-go build -o /tmp/sc-node ./cmd/nezha/ || { echo "节点编译失败"; exit 1; }
+# RACE=1 用竞态检测器构建节点（默认关着）。见 snapshot-e2e.sh 的同一段。
+RACEFLAG=""; [ "${RACE:-0}" = 1 ] && { RACEFLAG="-race"; info "带 -race 构建节点（会慢很多）"; }
+# shellcheck disable=SC2086
+go build $RACEFLAG -o /tmp/sc-node ./cmd/nezha/ || { echo "节点编译失败"; exit 1; }
 # 写入用 scanverify：它写的 value 由 key 派生，与两个校验工具的口径一致。
 # 用 randwrite_goroutine 写（固定生成串）会让每一条都报值错，看起来像快照搬坏了数据。
 go build -o /tmp/sc-write ./cmd/bench/scanverify/ || { echo "scanverify 编译失败"; exit 1; }

@@ -289,6 +289,18 @@ func (kvs *KVServer) recoverOrInit(initialDB string) (files []raft.LogFile, appl
 // resumeInterruptedGC redoes the migration of the interrupted round once recovery is done
 // and the loops are running. A partial output file from the crashed attempt is removed first.
 func (kvs *KVServer) resumeInterruptedGC() {
+	// 与装快照互斥，理由同 gcLoop：这一轮重做同样要换 persister、当前日志与分区组，
+	// 而装快照会把三样一起替换掉。重做可以跑上几分钟，期间一个落后很多的本节点完全
+	// 可能收到 leader 发来的快照——崩在 GC 中途、同时又落后，这两件事本来就相关。
+	// gcLoop 有这道守卫，这里原先没有。
+	kvs.mu.Lock()
+	kvs.gcActive = true
+	kvs.mu.Unlock()
+	defer func() {
+		kvs.mu.Lock()
+		kvs.gcActive = false
+		kvs.mu.Unlock()
+	}()
 	startTime := time.Now()
 	if kvs.numGC == 1 {
 		sorted := firstSortedFilePath // InitGCPaths already names round one's output (.../RaftState_sorted_1)
