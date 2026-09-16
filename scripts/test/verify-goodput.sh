@@ -16,7 +16,9 @@ GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
 info(){ echo -e "${GREEN}[INFO]${NC} $1"; }
 fail(){ echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 
-PROJECT_DIR="${PROJECT_DIR:-$HOME/autodl-tmp/work/Nezha}"; cd "$PROJECT_DIR" || fail "无项目目录"
+# 项目目录按**脚本自身位置**推导，不要写死某台机器的布局：这里原先是
+# $HOME/autodl-tmp/work/Nezha（又一台机器的路径），实验机上是 ~/work/Nezha。
+PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"; cd "$PROJECT_DIR" || fail "无项目目录（推导得 ${PROJECT_DIR}）"
 N="${1:-200000}"; VSIZE="${2:-64}"
 D=$(mktemp -d -p "${TMPDIR:-/tmp}")
 BIN=/tmp/nezha-vgp

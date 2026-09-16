@@ -11,7 +11,9 @@ fail() { echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 # shellcheck source=../lib/bench-common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/bench-common.sh"
 
-PROJECT_DIR="${PROJECT_DIR:-$HOME/Github/Nezha}"
+# 项目目录按**脚本自身位置**推导，不要写死 $HOME/Github/Nezha：实验机上仓库在
+# ~/work/Nezha，写死的那版在那里直接 "无项目目录" 退出（2026-09-17 实测）。
+PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
 cd "$PROJECT_DIR" || fail "找不到项目目录 $PROJECT_DIR"
 
 LABEL="${1:?用法: $0 <标签> [vsize] [写入量...]}"; shift

@@ -501,6 +501,21 @@ for f in snapshot-crash.sh snapshot-e2e.sh; do
     fi
 done
 
+info "=== 十九、项目目录不许写死 ==="
+# 2026-09-17：五个脚本（含 B4 要用的 memory-curve.sh）把 PROJECT_DIR 写死成
+# $HOME/Github/Nezha，而实验机上仓库在 ~/work/Nezha——在那里直接 "无项目目录" 退出。
+# 这类失败响亮，但它把脚本钉在**某一台机器的目录布局**上，而这套脚本现在要在
+# Mac、winbox、三台实验机之间搬。判据：按脚本自身位置推导。
+# 只看**行首的赋值语句**（可带缩进），这样既排除注释，也排除本节自己那行 grep 模式——
+# 第一版没排除，审计把自己的判据当成了被审对象。
+BAD=$(grep -rnE '^[[:space:]]*PROJECT_DIR=.*\$HOME/' "$PROJECT_DIR/scripts/" 2>/dev/null || true)
+if [ -z "$BAD" ]; then
+    good "scripts/ 下没有写死项目目录的脚本"
+else
+    echo "$BAD" | sed "s#$PROJECT_DIR/##" | sed 's/^/       /' | cut -c1-140
+    bad "上列脚本把 PROJECT_DIR 写死在某台机器的布局上——换机器就跑不了"
+fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"

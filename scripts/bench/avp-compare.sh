@@ -15,7 +15,9 @@ fail(){ echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 # shellcheck source=../lib/bench-common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/bench-common.sh"
 
-PROJECT_DIR="${PROJECT_DIR:-$HOME/Github/Nezha}"; cd "$PROJECT_DIR" || fail "无项目目录"
+# 项目目录按**脚本自身位置**推导，不要写死 $HOME/Github/Nezha：实验机上仓库在
+# ~/work/Nezha，写死的那版在那里直接 "无项目目录" 退出（2026-09-17 实测）。
+PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"; cd "$PROJECT_DIR" || fail "无项目目录（推导得 ${PROJECT_DIR}）"
 # cgo 环境（RocksDB 的头与库）集中在 scripts/lib/cgo-env.sh 一份。
 # 原先这里写死了三个系统路径 + -I/usr/include，在实验机上会"找到错的版本"，
 # 报错出现在 cgo 阶段、读起来像代码问题。理由见那个文件。

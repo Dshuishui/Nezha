@@ -19,7 +19,9 @@ info(){ echo -e "${GREEN}[INFO]${NC} $1"; }
 warn(){ echo -e "${YEL}[WARN]${NC} $1"; }
 fail(){ echo -e "${RED}[FAIL]${NC} $1"; exit 1; }
 
-PROJECT_DIR="${PROJECT_DIR:-$HOME/Github/Nezha}"; cd "$PROJECT_DIR" || fail "无项目目录"
+# 项目目录按**脚本自身位置**推导，不要写死 $HOME/Github/Nezha：实验机上仓库在
+# ~/work/Nezha，写死的那版在那里直接 "无项目目录" 退出（2026-09-17 实测）。
+PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"; cd "$PROJECT_DIR" || fail "无项目目录（推导得 ${PROJECT_DIR}）"
 
 N="${1:-3000000}"; VSIZE="${2:-64}"; SCAN_TESTS="${3:-20}"
 BASE_BRANCH="${BASE_BRANCH:-multiGC}"
