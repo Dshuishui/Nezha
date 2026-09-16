@@ -25,6 +25,7 @@ GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
 info(){ echo -e "${GREEN}[AUDIT]${NC} $*"; }
 good(){ echo -e "${GREEN}[ 好 ]${NC} $*"; }
 bad(){  echo -e "${RED}[漏报]${NC} $*"; FAILED=$((FAILED+1)); }
+fpos(){ echo -e "${RED}[假失败]${NC} $*"; FAILED=$((FAILED+1)); }
 warn(){ echo -e "${YEL}[注意]${NC} $*"; }
 
 PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"; cd "$PROJECT_DIR" || exit 1
@@ -239,6 +240,169 @@ if grep -q 'rep-node.sh' "$PROJECT_DIR/scripts/multinode/deploy.sh"; then
     good "deploy.sh 会把 rep-node.sh 送到服务器"
 else
     bad "deploy.sh 不送 rep-node.sh——对它的改动到不了服务器，而且不报错"
+fi
+
+info "=== 九、直读单节点的闸门（gate_read_ok）==="
+# 这一节是 2026-09-16 补的，起因是一个三天没人发现的失效：`-leaderCheck` 自 811ac32
+# 起默认开，于是四个驱动脚本里"直读某个指定节点"的步骤**恒判失败**，而上面八节一条
+# 都没抓到。原因不是哪一节写错了，而是**整类判据没被审**：直读的判定当时还散在四个
+# 脚本里各写一遍，没有共用的一份可审，也没人查过"健康的一轮会不会被判通过"。
+OKOUT='GET 校验: 正确 300, 错误 0, 取不到 0, 非leader 0
+FAILOVER_VERIFY_OK'
+BLOCKED='SCAN 校验: 返回 0 条, 正确 0, 错误 0, 范围失败 0, 非leader 30
+目标节点未持有 leader 身份：GET 300 次、SCAN 30 次被 ErrWrongLeader 挡回
+FAILOVER_VERIFY_FAIL'
+BADDATA='GET 校验: 正确 280, 错误 20, 取不到 0, 非leader 0
+FAILOVER_VERIFY_FAIL'
+
+if gate_read_ok "$OKOUT" "健康" >/dev/null; then
+    good "健康的直读判过（这正是当时没人查的那一半：特异性）"
+else
+    fpos "健康的直读被判失败——闸门会永久假失败"
+fi
+if gate_read_ok "$BLOCKED" "被挡回" >/dev/null; then
+    bad "被 ErrWrongLeader 挡回却判过"
+else
+    w=$(gate_read_ok "$BLOCKED" "被挡回")
+    case "$w" in
+        *"脚本配置问题"*) good "被挡回判失败，且指明是脚本配置问题、不是数据问题";;
+        *) fpos "被挡回判失败了，但原因说成了数据不对——这正是当时查不出来的原因";;
+    esac
+fi
+if gate_read_ok "$BADDATA" "数据错" >/dev/null; then
+    bad "数据真的不对却判过"
+else
+    good "数据不对判失败"
+fi
+if gate_read_ok "" "空输出" >/dev/null; then
+    bad "直读没有任何输出（SSH 超时）被判过"
+else
+    good "拿不到直读结果不等于判据通过"
+fi
+
+info "=== 十、凡是直读单节点的脚本，必须让那个节点关掉 leaderCheck ==="
+# 这条静态检查就是本该抓住上面那个 bug 的那一条。判据是**结构性**的而不是措辞性的：
+# 只要一个脚本用 `readonly -servers <单个地址>` 去读某个指定节点，那个节点就必须用
+# `-leaderCheck=false` 起，否则读一定被挡回。两者缺一不可，所以一起查。
+for f in failover.sh recover.sh lsmraft.sh two-node-rounds.sh; do
+    p="$PROJECT_DIR/scripts/multinode/$f"
+    [ -f "$p" ] || { bad "$f 不存在"; continue; }
+    reads=0; grep -q 'readonly -servers' "$p" && reads=1
+    [ "$reads" = 1 ] || { warn "$f 不直读单节点，跳过"; continue; }
+    if grep -q 'leaderCheck=false' "$p"; then
+        good "$f 直读单节点，且节点是用 -leaderCheck=false 起的"
+    else
+        fpos "$f 直读单节点却没关 leaderCheck——它的直读步骤恒判失败"
+    fi
+    if grep -q 'gate_read_ok' "$p"; then
+        good "$f 走共用的直读判定"
+    else
+        bad "$f 还在自己写直读判定（四份拷贝各自漂移，这个 bug 就是这么藏住的）"
+    fi
+done
+
+info "=== 十一、杀掉 leader 之后不许用固定 sleep 等选举 ==="
+# 这一节是 2026-09-16 补的，起因与第十节同源但机理不同：recover.sh 在 kill9 leader 之后
+# 写的是 `sleep 10`，而 minElectionTimeout=10s + jitter=1s 意味着切换最长 11 秒——
+# 固定值**比下界还短**。它不是稳定失败而是**竞态**（当天两轮一过一败），所以比恒判失败
+# 更难发现：偶尔过一次就会被当成"偶发抖动"。
+#
+# 根本毛病是固定 sleep 把**测试脚本的常量**钉在**源码里的常量**上。minElectionTimeout
+# 从 3s 改到 10s（811ac32）时没人改脚本，判据就静默失效了。所以这里查的不是"睡够不够久"
+# （那等于把同一个耦合再抄一遍），而是**有没有改成轮询**。
+ELECT_MIN=$(grep -oE 'minElectionTimeout[[:space:]]*=[[:space:]]*[0-9]+' "$PROJECT_DIR/internal/raft/raft.go" | grep -oE '[0-9]+$')
+ELECT_JIT=$(grep -oE 'electionTimeoutJitter[[:space:]]*=[[:space:]]*[0-9]+' "$PROJECT_DIR/internal/raft/raft.go" | grep -oE '[0-9]+$')
+if [ -n "$ELECT_MIN" ] && [ -n "$ELECT_JIT" ]; then
+    good "源码里的切换上界 = $(( (ELECT_MIN + ELECT_JIT) / 1000 ))s（minElectionTimeout=${ELECT_MIN}ms + jitter=${ELECT_JIT}ms）"
+else
+    warn "读不到 minElectionTimeout/electionTimeoutJitter，本节只能查写法、不能查数值"
+fi
+for f in failover.sh recover.sh lsmraft.sh; do
+    p="$PROJECT_DIR/scripts/multinode/$f"
+    [ -f "$p" ] || { bad "$f 不存在"; continue; }
+    grep -q 'kill9 0' "$p" || { warn "$f 不杀 leader，跳过"; continue; }
+    if grep -q 'wait_new_leader' "$p"; then
+        good "$f 杀掉 leader 后轮询等新 leader 当选（不依赖源码里的超时常量）"
+    else
+        fpos "$f 杀掉 leader 后用固定 sleep 等选举——源码改超时就会静默变成竞态"
+    fi
+    # 轮询判据必须看"当选次数增加"而不是"日志里出现过 Candidate -> Leader"：
+    # 初始那次选举的记录一直在日志里，按存在性判会立刻返回真，等于没等。
+    if grep -q 'wait_new_leader' "$p" && ! grep -q 'leader_wins' "$p"; then
+        bad "$f 有 wait_new_leader 但没有 leader_wins：按存在性判会立刻通过，等于没等"
+    fi
+done
+
+info "=== 十二、\$VAR 后面不许紧跟全角字符（macOS bash 3.2）==="
+# macOS 自带 bash 是 3.2.57，它把紧跟在 $VAR 后面的多字节字符**读成变量名的一部分**：
+#   cur=7; echo "当选次数 $cur）"   →   bash: cur?: unbound variable
+# Linux 的 bash 4.4 没有这个问题（同一段脚本原样输出 7），所以它**只在本机跑的驱动
+# 脚本上咬**——failover / recover / gate / maintable / full-compare 这些是在 Mac 上
+# 发起的，而 three-node.sh / snapshot-e2e.sh 这些在服务器和 winbox 上跑，属于潜伏。
+#
+# 为什么必须静态扫：`bash -n` **查不出来**（它只查语法，这是运行时的名字解析），而且
+# 只有真的走到那一行才炸。2026-09-16 就是这么丢了一轮：新加的 wait_new_leader 里写了
+# `$cur）`，前两个阶段全过，到 S2-a 之后才 unbound variable 退出。
+#
+# 判据写成 LC_ALL=C 下的 `[^ -~]`（任何非可打印 ASCII 字节），GNU grep 与 BSD grep
+# 都支持，不依赖 grep -P。正反对照都验过：`$x）` 抓得到，`${x}）` 不误报。
+# 整行注释要排除：bash 对注释**不做变量展开**，所以注释里的 `$x）` 无害（本节自己的
+# 说明就举了这种例子）。排除的判据是"行首第一个非空白字符是 #"，不是"这一行含 #"——
+# 后者会把 `echo "a # $x）"` 这种真问题一起漏掉。
+FW=$(LC_ALL=C grep -rnE '\$[A-Za-z_][A-Za-z0-9_]*[^ -~]' "$PROJECT_DIR/scripts/" 2>/dev/null \
+     | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' || true)
+if [ -z "$FW" ]; then
+    good "scripts/ 下没有 \$VAR 紧跟全角字符的写法"
+else
+    echo "$FW" | sed "s#$PROJECT_DIR/##" | sed 's/^/       /'
+    fpos "上列位置的 \$VAR 后面紧跟全角字符——在 macOS bash 3.2 上会 unbound variable，加花括号即可"
+fi
+
+info "=== 十三、驱动脚本中途死掉必须停掉自己的节点 ==="
+# 2026-09-16 实测的一条连锁失效：脚本因一个变量名错误在中途退出，三个节点留在机器上
+# 继续跑 → 下一轮启动端口被占、节点 log.Fatalf 退出（e0fdb98 的正确行为）→ 那次失败的
+# 启动又把 pid 文件覆盖成死 pid → stop 全部报 STOPPED 而进程还在。一个错误滚成三个，
+# 而每一步都"看起来正常"。所以清理必须挂在 EXIT 上，不能只写在正常收尾处。
+for f in failover.sh recover.sh lsmraft.sh; do
+    p="$PROJECT_DIR/scripts/multinode/$f"
+    [ -f "$p" ] || { bad "$f 不存在"; continue; }
+    grep -q 'three-node.sh start' "$p" || { warn "$f 不拉节点，跳过"; continue; }
+    if grep -qE '^trap .*EXIT' "$p"; then
+        good "$f 挂了 EXIT 清理"
+    else
+        bad "$f 没挂 EXIT 清理——中途死掉会把节点留在机器上"
+    fi
+    # 两头都要：trap 覆盖不了 SIGKILL（2026-09-16 有一轮被系统因内存不足杀掉，
+    # trap 没机会跑，残留把下一轮的启动顶掉），所以启动前必须再清一遍。
+    if grep -qE '^cleanup_nodes[[:space:]]*$' "$p"; then
+        good "$f 启动前也清一遍（trap 覆盖不了 SIGKILL）"
+    else
+        bad "$f 启动前不清残留——上一轮被 SIGKILL 的话这一轮起不来"
+    fi
+done
+
+info "=== 十四、trap/判据用到的共用函数必须真的解析得到 ==="
+# 这一类**`bash -n` 查不出来**：bash 在调用时才解析函数名，所以一个调用了不存在函数的
+# trap 语法上完全合法，只有 trap 真的触发才炸。2026-09-16 就是这样：给 failover.sh 和
+# lsmraft.sh 加 `trap cleanup_nodes EXIT` 时，cleanup_nodes 里用的 host_of 在那两个脚本
+# 里根本不存在（只有 recover.sh 有一份），而三份 bash -n 全部通过。
+( . "$PROJECT_DIR/scripts/multinode/gate.sh" 2>/dev/null
+  missing=""
+  for fn in gate_field gate_report_ok gate_read_ok host_of cleanup_nodes leader_wins wait_new_leader; do
+      [ "$(type -t "$fn" 2>/dev/null)" = function ] || missing="$missing $fn"
+  done
+  if [ -n "$missing" ]; then echo "MISSING:$missing"; else echo "ALLOK"; fi
+  # 拓扑也顺手钉住：leader_wins 写死了 three-1/three-2 在 tikv241，host_of 必须与之一致。
+  echo "TOPO:$(host_of 0)/$(host_of 1)/$(host_of 2)" ) > "$FAKE/fnchk" 2>/dev/null
+if grep -q ALLOK "$FAKE/fnchk"; then
+    good "gate.sh 提供的七个共用函数全部解析得到"
+else
+    bad "gate.sh 里缺函数：$(grep MISSING "$FAKE/fnchk" | sed 's/MISSING://')"
+fi
+if grep -q 'TOPO:tikv240/tikv241/tikv241' "$FAKE/fnchk"; then
+    good "host_of 的拓扑与 leader_wins 写死的路径一致（node0 在 240，node1/2 在 241）"
+else
+    bad "host_of 的拓扑与 leader_wins 不一致：$(grep TOPO "$FAKE/fnchk")"
 fi
 
 echo

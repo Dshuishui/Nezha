@@ -12,7 +12,10 @@ set -eu
 cd "$(dirname "$0")/../.."
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 WANT=$(git rev-parse HEAD)
+# 默认只有两台（历史拓扑）。TOPO=three 或 HOSTS 显式给了 node55 时才带上它。
+# node55 硬件不同（40 核 / 128GB），只用于正确性验证，不出性能数字。
 HOSTS=${HOSTS:-"tikv240 tikv241"}
+[ "${TOPO:-two}" = three ] && HOSTS="tikv240 tikv241 node55"
 BUILD=${BUILD:-1}   # BUILD=0 to skip rebuilding the node binaries
 FORCE=${FORCE:-0}   # FORCE=1 to deploy anyway while something is running
 
@@ -67,6 +70,14 @@ for h in $HOSTS; do
   if [ "$BUILD" = 1 ]; then
     ssh "$h" "source ~/env.sh; cd ~/work/Nezha && go build -o /tmp/nezha-three-normal ./cmd/nezha/" || {
       echo "DEPLOY_FAIL $h: build"; exit 1; }
+    # **bench 工具也要跟着建。** 以前这里只建节点二进制，于是 tikv240 上的 scanverify /
+    # readonly 一直停留在 2026-09-06——早于 eb8b5d0（key 宽到 24B）和 afbcf71（定长编码
+    # 移到客户端）。旧工具按旧编码补齐 key，而节点现在原样存 key，**拿它校验会把每一条
+    # 都报成丢失**，读起来正像快照弄坏了数据。2026-09-16 差点因此白跑一整轮。
+    for t in scanverify readonly randwrite_goroutine countkeys; do
+      ssh "$h" "source ~/env.sh; cd ~/work/Nezha && go build -o /tmp/$t ./cmd/bench/$t/" || {
+        echo "DEPLOY_FAIL $h: build $t"; exit 1; }
+    done
   fi
   # 两份节点脚本都要送。rep-node.sh 此前不在这里，于是对它的改动（比如把 gc_done 的
   # 计数从 '垃圾回收完成' 改成 '轮垃圾回收完成'）**根本到不了服务器**：本地改完、
@@ -74,5 +85,10 @@ for h in $HOSTS; do
   for f in three-node.sh rep-node.sh; do
     scp -q "scripts/multinode/$f" "$h:~/$f" || { echo "DEPLOY_FAIL $h: scp $f"; exit 1; }
   done
+  # 驱动脚本现在也可以**在服务器上**执行（2026-09-16 起：从 Mac 上跑时本机内存压力会把
+  # ssh 饿住，回执静默变空，两轮验证因此报废）。它们从工作树里跑，所以只要仓库到位就行；
+  # 这里额外确认一下工作树里有 gate.sh，免得 checkout 漏了文件而在跑的时候才发现。
+  ssh "$h" "[ -f ~/work/Nezha/scripts/multinode/gate.sh ]" || {
+    echo "DEPLOY_FAIL $h: 工作树里没有 scripts/multinode/gate.sh"; exit 1; }
   echo "DEPLOY_OK $h ${WANT:0:7}"
 done
