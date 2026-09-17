@@ -694,6 +694,46 @@ else
     bad "上列 $FLAGBAD 处用了工具没有的参数——Go 的 flag 会打 usage 然后退出，回执是空的"
 fi
 
+info "=== 二十五、字节数不许走 awk 的数值路径（node55 的 awk 是 32 位的）==="
+# 2026-09-18 实测，同一个值 3237657361（3.2GB 的目录占用）在 node55 上：
+#     awk '{print $1+0}'      -> 3.23766e+09     走 OFMT（%.6g），科学计数法
+#     awk '{printf "%d", $1}' -> 2147483647      走 C 的整数转换，**截断成 2^31-1**
+#     awk '{print $1}'        -> 3237657361      打字段（awk 里字段是字符串），对
+#     cut -f1                 -> 3237657361      对
+# 241/240 上 print $1+0 还能打成整数，所以这个坑**只在 node55 上出现**，而 node55
+# 是 TOPO=three 的第三个节点。后一种写法比前一种更糟：科学计数法一眼看得出不对，
+# 而 2147483647 看起来像个正常数字，会静默地毁掉那一列（采样器的 data_bytes 就这样
+# 被毁过一轮）。
+# node55 的 awk 是 mawk（连 --version 都不认，只认 -W version）。
+#
+# 判据：一个脚本若处理原始字节数（du -sb / df -k / stat -c %s），
+# 就不许出现 `$N+0` 的输出或对字段的 `printf "%d"`。整行注释排除，判据与前几节一致。
+#
+# 正则里**不能要求那对引号**。awk 程序常常写在 shell 的双引号里，于是文件里的字面文本是
+# `printf \"%d\", \$1`——带反斜杠。第一版写成 `printf[^,]*"%d"`，遇到 `\"%d\"` 就匹配不上，
+# 于是注入一行明确的误用之后本节照样报"好"（2026-09-18 实测）。所以只认 `%d`，
+# 并允许字段前面有一个反斜杠。
+#
+# 还要**把本文件排除掉**。上面那句解释里写着 du -sb，下面这行 grep 的模式里写着
+# `print $N+0`，两者都不在注释行上，于是本节会把自己的判据当成被审对象——
+# 与第十九、二十四节踩过的是同一个坑。
+BYTEBAD=0
+while IFS= read -r p; do
+    case "$(basename "$p")" in gate-audit-multinode.sh) continue;; esac
+    grep -qE 'du -sb|du -b|df -k|stat -c %s|stat --format' "$p" || continue
+    while IFS= read -r hit; do
+        ln=${hit%%:*}; line=${hit#*:}
+        printf '%s' "$line" | grep -qE '^[[:space:]]*#' && continue
+        echo "       ${p#"$PROJECT_DIR"/}:${ln}  $(printf '%s' "$line" | cut -c1-110)"
+        BYTEBAD=$((BYTEBAD+1))
+    done < <(grep -nE 'awk[^|]*(print[[:space:]]+\\?\$[0-9]+[[:space:]]*\+[[:space:]]*0|printf[^;]*%d[^;]*,[[:space:]]*\\?\$[0-9]+)' "$p" || true)
+done < <(find "$PROJECT_DIR/scripts" -name '*.sh' | sort)
+if [ "$BYTEBAD" -eq 0 ]; then
+    good "处理字节数的脚本都没走 awk 的数值路径"
+else
+    bad "上列 $BYTEBAD 处把字节数送进了 awk 的数值路径——node55 上会变成科学计数法或被截断成 2^31-1"
+fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"

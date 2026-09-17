@@ -270,14 +270,19 @@ sample)
       fds=$(ls "/proc/$pid/fd" 2>/dev/null | wc -l); fds=${fds:-0}
       cl=$(sed -n "s/.*\"current_log\": *\"\([^\"]*\)\".*/\1/p" "$D/data/kv_state.json" 2>/dev/null | head -1)
       logb=$(stat -c %s "$cl" 2>/dev/null); logb=${logb:-0}
-      # **printf "%d" 而不是 print。** awk 的 print 对数值走 OFMT（%.6g），
-      # 而不同实现对"多大算整数"的判定不一样：2026-09-18 实测同一量级的
-      # du 输出，241 上打成 4844377498、node55 上打成 **4.92555e+09**。
-      # 科学计数法进了 CSV，后面画图的脚本和 bash 的 -gt 比较都会读错。
-      datab=$(du -sb "$D/data" 2>/dev/null | awk "{printf \"%d\", \$1}")
+      # **别让 awk 碰这个数。** 两种写法都错过：
+      #   `awk {print $1+0}`     —— 走 OFMT（%.6g），node55 上打成 4.92555e+09
+      #   `awk {printf "%d"}`    —— 走 C 的整数转换，node55 的 awk 是 32 位的，
+      #                             3.2GB 被**截断成 2147483647**（2^31-1）
+      # 后者比前者更糟：科学计数法一眼看得出不对，而 2147483647 看起来像个正常数字。
+      # du -sb 本来就打的是十进制整数加一个制表符，cut 取第一段即可，不经任何数值转换。
+      datab=$(du -sb "$D/data" 2>/dev/null | cut -f1)
+      case "$datab" in ''|*[!0-9]*) datab=0;; esac
       base=$(sed -n "s/.*\"base_index\":\([0-9]*\).*/\1/p" "$D/data/raft_state.json" 2>/dev/null); base=${base:-0}
       trm=$(sed -n "s/.*\"current_term\":\([0-9]*\).*/\1/p" "$D/data/raft_state.json" 2>/dev/null); trm=${trm:-0}
-      avail=$(df -kP "$D" 2>/dev/null | awk "NR==2{printf \"%d\", \$4}")
+      # 同理：打的是**字段本身**（awk 里字段是字符串），不是数值表达式，
+      # 所以既不过 OFMT 也不过整数转换。`print $4+0` 或 `printf "%d", $4` 都会重新踩上面那两个坑。
+      avail=$(df -kP "$D" 2>/dev/null | awk "NR==2{print \$4}")
       gc=$(cat "$D"/n*.log 2>/dev/null | grep -c "轮垃圾回收完成"); gc=${gc:-0}
       pin=$(cat "$D"/n*.log 2>/dev/null | grep -c "LOG-PINNED"); pin=${pin:-0}
       trc=$(cat "$D"/n*.log 2>/dev/null | grep -c "LOG-TRUNCATE"); trc=${trc:-0}
