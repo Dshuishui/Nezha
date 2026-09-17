@@ -312,7 +312,9 @@ def plot_ab(before_dir, after_dir, outdir):
         ax.set_ylabel("PUT latency (ms)")
         ax.set_title(title)
         ax.grid(axis="y", alpha=0.3)
-    axes[0].legend(fontsize=8)
+    # 图例放在图下方：p50 那个面板的柱子几乎占满纵轴（y 轴从 0 起，而前后差别很小），
+    # 放在图内任何角落都会压住柱子顶端。
+    axes[0].legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=2)
     fig.suptitle("Does a range scan still stall the write path? (mixed phase)", y=1.02)
     save(fig, outdir, "ab-scan-lock")
 
