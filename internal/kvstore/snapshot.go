@@ -322,7 +322,28 @@ func (kvs *KVServer) installSnapshot(span raft.SSTableSpan) (int, raftrpc.Instal
 	}
 
 	// 整体替换期间不能有人在读旧状态，也不能有 GC 在换文件。
+	//
+	// **这个写锁可能要等很久，而等待期间 apply 会一起停。** 读路径按读锁持有 stateMu，
+	// 而 ScanRangeInRaft 是**整段扫描**都持着它——持有时长与结果大小成正比，4GB 数据、
+	// 扫 1/4 键空间时实测 33 秒。Go 的 RWMutex 在有写者等待时不再放新读者进来，
+	// 于是这里一开始等，applyCommand 的读锁就全部排在后面：apply 停一次扫描的时长。
+	//
+	// 触发条件窄——本节点要先作为 leader 接了一次长扫描，又在扫描没结束时掉了 leader
+	// 身份、还收到了快照（扫描只有 leader 会服务，装快照只有 follower 会做）。所以
+	// **没有实测到过**，也没有据此盲改：
+	//   - 直接 TryLock 退回不行：扫描连续时安装会被永久饿死，那是更糟的失效
+	//     （那个副本从此追不上，即 [LOG-STUCK] 的"再也追不上了"）。
+	//   - 正确的改法是读路径不再整段持 stateMu：进来时在一小段临界区里把
+	//     persister/currentLog/分区组一次取下并各自加引用计数，与 pinPartitions 和
+	//     storeRetireMu 已经在做的事同一套。那是一处独立改动。
+	// 先把它变成**可观测**的：等超过一秒就说出来，下次有没有发生就有据可查，
+	// 而不是表现成"这个副本莫名其妙追不上"。
+	waitStart := time.Now()
 	kvs.stateMu.Lock()
+	if waited := time.Since(waitStart); waited > time.Second {
+		fmt.Printf("[SNAPSHOT] 等状态机写锁等了 %v 才拿到——期间 apply 一并被挡住"+
+			"（很可能有一次长范围扫描正持着读锁，见本函数上方注释）\n", waited.Round(time.Millisecond))
+	}
 	defer kvs.stateMu.Unlock()
 
 	kvs.mu.Lock()
