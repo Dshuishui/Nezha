@@ -184,8 +184,18 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 		// 基线：value 就在 RocksDB 里，一次点查即可，既不查偏移也不读日志文件。
 		// GC 那套多路查找在这条路径上没有意义——基线没有 valuelog 需要回收。
 		value, err := kvs.persister.Get(key)
-		if err != nil || value == raft.ErrNoKey {
-			reply.Err = raft.ErrNoKey
+		if err != nil {
+			// "这个 key 不存在"与"读失败"要分开：前者是常态，后者说明存储引擎出了问题，
+			// 报成 NOKEY 会让一次读故障看起来像负载里本来就没有这个 key。
+			// 判据用 errors.Is 而不是比对 value 字符串——以前是拿 value 跟 ErrNoKey
+			// 这个**字符串**比，于是一个内容恰好等于 "ErrNoKey" 的 value 会被当成缺键。
+			if errors.Is(err, raft.ErrKeyNotFound) {
+				reply.Err = raft.ErrNoKey
+				reply.Value = raft.NoKey
+				return reply
+			}
+			fmt.Printf("[READ] baseline 点查失败，按 ErrInternal 上报: %v\n", err)
+			reply.Err = raft.ErrInternal
 			reply.Value = raft.NoKey
 			return reply
 		}

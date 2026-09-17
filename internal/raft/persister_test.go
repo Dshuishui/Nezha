@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -202,5 +203,52 @@ func TestAppliedIndexTravelsWithData(t *testing.T) {
 	// the metadata key must never look like user data to a scan
 	if !IsMetaKey([]byte(appliedIndexKey)) || IsMetaKey([]byte("1")) {
 		t.Fatal("IsMetaKey misclassifies keys")
+	}
+}
+
+// 空 value 是合法的 value：写进去、读回来必须还是空串，而不是"没有这个 key"。
+//
+// 判"有没有这个 key"曾经用 slice.Size() == 0，而长度为 0 有两种情形——key 不存在，
+// 以及 key 存在而 value 是空串。基线路径（-kvSeparation=false，value 直接进存储引擎）
+// 下一条已提交的空 value 因此读回 ErrNoKey。空 value 没有任何地方拒绝：
+// PutInRaft 只校验 key。
+func TestGetDistinguishesEmptyValueFromMissingKey(t *testing.T) {
+	p := newTestPersister(t)
+
+	p.Put("empty", "")
+	v, err := p.Get("empty")
+	if err != nil {
+		t.Fatalf("空 value 的 key 读回报错 %v——被当成了不存在", err)
+	}
+	if v != "" {
+		t.Fatalf("读回 %q; want 空串", v)
+	}
+
+	if _, err := p.Get("never-written"); err == nil {
+		t.Fatal("不存在的 key 读回没有报错")
+	} else if !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("不存在的 key 报 %v; want ErrKeyNotFound（调用方要靠它区分缺键与读失败）", err)
+	}
+
+	// 非空的 value 不受影响
+	p.Put("normal", "value")
+	if v, err := p.Get("normal"); err != nil || v != "value" {
+		t.Fatalf("普通 value 读回 %q, %v; want value, nil", v, err)
+	}
+}
+
+// value 的内容恰好等于 ErrNoKey 这个字符串时，不能被当成缺键。
+// 旧的判据是拿读回来的 value 跟 ErrNoKey **字符串**比对（service.go 的基线分支）。
+func TestGetDoesNotMistakeSentinelShapedValue(t *testing.T) {
+	p := newTestPersister(t)
+	for _, v := range []string{ErrNoKey, NoKey, "ErrNoKey", "NOKEY"} {
+		p.Put("k", v)
+		got, err := p.Get("k")
+		if err != nil {
+			t.Fatalf("value=%q 读回报错 %v", v, err)
+		}
+		if got != v {
+			t.Fatalf("value=%q 读回 %q", v, got)
+		}
 	}
 }

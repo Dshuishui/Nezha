@@ -272,11 +272,17 @@ func (p *Persister) Get(key string) (string, error) {
 		return "", err
 	}
 	defer slice.Free()
-	valueBytes := slice.Data()
-	if slice.Size() == 0 {
-		return ErrNoKey, errors.New("巴嘎，没有这个key")
+	// 判"有没有这个 key"必须用 Exists()，不能用 Size() == 0。
+	//
+	// 长度为 0 有**两种**情形：key 不存在，以及 key 存在而 value 是空串。按长度判会把
+	// 后者当成前者，于是基线路径（-kvSeparation=false，value 直接存在存储引擎里）下
+	// 一条已提交的空 value 读回来是 ErrNoKey——写进去了、提交了，却报"没有这个 key"。
+	// 空 value 没有任何地方拒绝：PutInRaft 只校验 key（raft.ValidateKey）。
+	// 同一个文件里的 Get_opt 用的就是 Exists()，两个姊妹函数对"存在"的判据本来不一致。
+	if !slice.Exists() {
+		return "", ErrKeyNotFound
 	}
-	return string(valueBytes), nil
+	return string(slice.Data()), nil
 }
 
 // ScanRange 执行范围查询，使用固定长度的string类型键
