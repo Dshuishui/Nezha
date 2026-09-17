@@ -388,27 +388,29 @@ func ReadEntry(reader *bufio.Reader, currentOffset int64) (*raft.Entry, int64, e
 // ==================================================
 
 func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvrpc.GetInRaftResponse {
-	if !kvs.startGC { // 还未开始GC，先去旧的rocksdb查询
+	if !kvs.startGC { // 还未开始 GC，只有一路可查：当前 rocksdb 的偏移 + 当前 valuelog
+		var out readOutcome
 		positionBytes, err := kvs.persister.Get_opt(key)
 		if err != nil {
-			fmt.Println("去旧的rocksdb中拿取key对应的index有问题")
-			panic(err)
+			out.note("当前 rocksdb 取偏移", err)
+			return out.finish(reply, key)
 		}
 		if positionBytes == -1 {
-			reply.Err = raft.ErrNoKey
-			reply.Value = raft.NoKey
-			return reply
+			return out.finish(reply, key) // 没有记录：键不存在
 		}
-		read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
+		readKey, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
 		if err != nil {
-			fmt.Println("拿取value有问题")
-			panic(err)
+			out.note("当前 valuelog 按偏移读", err)
+			return out.finish(reply, key)
 		}
-		if read_key == key {
-			reply.Value = value
-		} else {
-			panic("错乱了，新的rocksdb中的key与index不匹配！！！")
+		if readKey != key {
+			// 偏移指向了别的记录：索引与日志不配套，是个真问题。但它在**读侧**，
+			// 报上去并带上现场，不要带走整个节点。
+			out.note("当前 valuelog", fmt.Errorf("偏移 %d 处的 key 是 %q，与请求的 %q 不符",
+				positionBytes, readKey, key))
+			return out.finish(reply, key)
 		}
+		reply.Value = value
 		return reply
 	}
 
@@ -469,27 +471,21 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 			}
 		}()
 
-		// 首先检查新文件的结果
+		// 按优先级逐路取结果：新文件在前，同一个 key 的较新写入在那里。
+		var out readOutcome
 		result := <-newFileResult
-		if result.err != nil {
-			panic("去新的rocksdb中拿取key对应的index有问题")
-		}
+		out.note("新 valuelog", result.err)
 		if result.found {
 			reply.Value = result.value
 			return reply
 		}
-		// 如果新文件没找到，等待旧文件的结果
 		result = <-oldFileResult
-		if result.err != nil {
-			panic("去旧的rocksdb中拿取key对应的index有问题")
-		}
+		out.note("旧 valuelog", result.err)
 		if result.found {
 			reply.Value = result.value
 			return reply
 		}
-		reply.Err = raft.ErrNoKey
-		reply.Value = raft.NoKey
-		return reply
+		return out.finish(reply, key)
 	}
 
 	return reply
@@ -540,23 +536,21 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 			lastSortedFileResult <- searchResult{true, value, nil}
 		}()
 
-		// 首先检查新文件的结果
+		// 按优先级逐路取结果：当前 valuelog 在前
+		var out readOutcome
 		result := <-oldFileResult
-		if result.err != nil {
-			panic("去新的rocksdb中拿取key对应的index有问题")
-		}
+		out.note("当前 valuelog", result.err)
 		if result.found {
 			reply.Value = result.value
 			return reply
 		}
-		// 如果新文件没找到，等待排序文件的结果
 		result = <-lastSortedFileResult
 		if result.err == nil {
 			reply.Value = result.value
-		} else {
-			setReadFailure(reply, result.err)
+			return reply
 		}
-		return reply
+		out.note("上一轮分区", result.err)
+		return out.finish(reply, key)
 	}
 	// during-GC
 	if !kvs.anotherEndGC {
@@ -621,31 +615,27 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 			lastSortedFileResult <- searchResult{true, value, nil}
 		}()
 
-		// 首先检查新文件的结果，再旧文件，再排序文件
+		// 按优先级逐路取结果：新文件、旧文件、上一轮分区
+		var out readOutcome
 		result := <-newFileResult
-		if result.err != nil {
-			panic(fmt.Sprintf("去新的rocksdb中拿取key对应的index有问题: %v", result.err))
-		}
+		out.note("新 valuelog", result.err)
 		if result.found {
 			reply.Value = result.value
 			return reply
 		}
 		result = <-oldFileResult
-		if result.err != nil {
-			panic(fmt.Sprintf("去旧的rocksdb中拿取key对应的index有问题: %v", result.err))
-		}
+		out.note("旧 valuelog", result.err)
 		if result.found {
 			reply.Value = result.value
 			return reply
 		}
-		// 如果新文件没找到，等待排序文件的结果
 		result = <-lastSortedFileResult
 		if result.err == nil {
 			reply.Value = result.value
-		} else {
-			setReadFailure(reply, result.err)
+			return reply
 		}
-		return reply
+		out.note("上一轮分区", result.err)
+		return out.finish(reply, key)
 	}
 	// post-GC
 	// 创建用于接收结果的通道
@@ -685,23 +675,21 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 		anotherSortedFileResult <- searchResult{true, value, nil}
 	}()
 
-	// 首先检查新文件的结果
+	// 按优先级逐路取结果：当前 valuelog 在前，本轮分区在后
+	var out readOutcome
 	result := <-newFileResult
-	if result.err != nil {
-		panic("去新的rocksdb中拿取key对应的index有问题")
-	}
+	out.note("当前 valuelog", result.err)
 	if result.found {
 		reply.Value = result.value
 		return reply
 	}
-	// 如果新文件没找到，等待排序文件的结果
 	result = <-anotherSortedFileResult
 	if result.err == nil {
 		reply.Value = result.value
-	} else {
-		setReadFailure(reply, result.err)
+		return reply
 	}
-	return reply
+	out.note("本轮分区", result.err)
+	return out.finish(reply, key)
 }
 
 // getFromPartitions 把一次点查路由到唯一可能含有该 key 的分区。
@@ -719,6 +707,49 @@ func setReadFailure(reply *kvrpc.GetInRaftResponse, err error) {
 	fmt.Printf("[READ] 读取失败，按 ErrInternal 上报（不是 NOKEY）: %v\n", err)
 	reply.Err = raft.ErrInternal
 	reply.Value = raft.NoKey
+}
+
+// readOutcome 汇总一次**多路查找**的结果。
+//
+// GET 会并发查几处（当前 valuelog、上一轮 valuelog、分区文件），按优先级逐路取结果。
+// 这里要守住两条规矩，此前只有第二条在有序文件那一路上成立：
+//
+//  1. **某一路出错不是答案。** 记下它、继续问下一路——第一路的一次读失败不能盖掉
+//     第二路手里正确的 value。原先是 panic，所以连"继续问"都没有机会。
+//  2. **全都没找到时，出过错就是 ErrInternal，没出错才是 ErrNoKey。** 把读失败
+//     报成"键不存在"会让丢数据看起来像负载配置问题（2026-09-09 定的规矩）。
+//     而 ErrKeyAbsent 是"这一处没有"，是常态，不算错误。
+//
+// 原先 valuelog/RocksDB 那几路是直接 panic（9 处）：一次读失败带走整个节点，
+// 也就是带走一个 Raft 成员。读失败并不威胁 Raft 的安全性论证——那是
+// persistHardState 里 panic 的理由，不是这里的。现场信息保留在日志里。
+type readOutcome struct {
+	err   error
+	where string
+}
+
+// note 记下某一路的失败。只留第一个，后面的路只是补充不了新信息的同类错误。
+func (o *readOutcome) note(where string, err error) {
+	if err == nil || errors.Is(err, ErrKeyAbsent) {
+		return // "这一处没有"是常态
+	}
+	if o.err == nil {
+		o.err, o.where = err, where
+	}
+}
+
+// finish 在所有查找路径都没找到 key 时给出最终应答。
+func (o *readOutcome) finish(reply *kvrpc.GetInRaftResponse, key string) *kvrpc.GetInRaftResponse {
+	if o.err != nil {
+		fmt.Printf("[READ] key=%q 没有任何一路找到，且「%s」出过错，按 ErrInternal 上报（不是 NOKEY）: %v\n",
+			key, o.where, o.err)
+		reply.Err = raft.ErrInternal
+		reply.Value = raft.NoKey
+		return reply
+	}
+	reply.Err = raft.ErrNoKey
+	reply.Value = raft.NoKey
+	return reply
 }
 
 // ErrKeyAbsent 表示"这一处没有这个 key"，与"读取失败"必须区分开。
