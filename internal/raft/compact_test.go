@@ -305,6 +305,64 @@ func TestTruncationTierThreeCapsActivePeer(t *testing.T) {
 }
 
 // follower 上没有 matchIndex，压缩只受 lastApplied 约束；单节点同理（循环为空）。
+// 预算比 catchUpEntries 那个固定窗口更紧时，压缩点必须由预算决定。
+//
+// 这一档此前**没有任何测试**，而它正是 2026-09-17 那个 bug 藏身的地方：d.floor 只用来
+// 抬高 peer 的保护位置，从没推进过 d.point，于是写死的 catchUpEntries 成了预算管不到的
+// 底线。条数看起来完全正常（恒为 catchUpEntries 条），只有换算成字节才露出来——
+// 16KB value 时 5000 条就是 83MB，而预算给的是 16MB。
+//
+// 没有 peer 参与，正是为了把这一条和第三档（截住某个落后副本）分开：即使所有副本都
+// 追平，固定窗口本身也不许超预算。
+func TestBudgetCapsRetentionWindowWithNoLaggingPeer(t *testing.T) {
+	per := logEntryBytes(entryWith(0, 1, "k", strings.Repeat("v", 84)))
+	rf := leaderForTruncTest(per * 20) // 预算只装得下 20 条
+	// 所有副本都追平到最新，第一、二、三档都不会因为某个 peer 而动压缩点。
+	rf.matchIndex[1] = 1100
+	rf.matchIndex[2] = 1100
+	rf.notePeerActive(1)
+	rf.notePeerActive(2)
+
+	// 固定窗口要求保留 500 条（远超预算的 20 条）。
+	d := rf.compactDecisionLocked(500)
+
+	if d.floor != 1080 {
+		t.Fatalf("floor = %d; want 1080（保留最后 20 条）", d.floor)
+	}
+	if d.point != 1080 {
+		t.Errorf("压缩点 = %d; want 1080——预算比固定窗口紧时必须由预算决定；"+
+			"修复前这里是 lastApplied-500=600，即驻留 500 条 / %dB，是预算的 %d 倍",
+			d.point, int64(500)*per, int64(500)*per/(per*20))
+	}
+	if !d.budgetCapsWindow {
+		t.Errorf("budgetCapsWindow = false; want true——这一步必须能被日志和测试看见，"+
+			"否则「为什么慢副本这么快就要快照」没有线索")
+	}
+	if d.cappedBy != -1 {
+		t.Errorf("cappedBy = %d; want -1：没有落后的副本，收窄纯粹来自预算，"+
+			"不该报成「某个副本被截住」", d.cappedBy)
+	}
+}
+
+// 反向：预算宽松时，固定窗口说话，budgetCapsWindow 必须是 false。
+// 没有这一条，上面那个测试用"永远让预算说话"也能过。
+func TestFixedWindowWinsWhenBudgetIsAmple(t *testing.T) {
+	per := logEntryBytes(entryWith(0, 1, "k", strings.Repeat("v", 84)))
+	rf := leaderForTruncTest(per * 10000) // 预算远大于整个日志
+	rf.matchIndex[1] = 1100
+	rf.matchIndex[2] = 1100
+	rf.notePeerActive(1)
+	rf.notePeerActive(2)
+
+	d := rf.compactDecisionLocked(5)
+	if d.budgetCapsWindow {
+		t.Errorf("budgetCapsWindow = true；预算宽松时不该由它决定")
+	}
+	if d.point != rf.lastApplied-5 {
+		t.Errorf("压缩点 = %d; want %d（固定窗口）", d.point, rf.lastApplied-5)
+	}
+}
+
 func TestTruncationWithoutPeers(t *testing.T) {
 	rf := leaderForTruncTest(1 << 30)
 	rf.role = ROLE_FOLLOWER
