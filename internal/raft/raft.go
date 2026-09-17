@@ -593,13 +593,9 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	if len(logEntrys) == 0 {
 		// 一致性检查过了，这才是一次合法的成功心跳。
 		reply.Success = true
-		if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
-			rf.commitIndex = int(args.LeaderCommit)
-			if rf.lastIndex() < rf.commitIndex {
-				rf.commitIndex = rf.lastIndex()
-			}
-			rf.signalApply()
-		}
+		// 确认过的前缀只到 PrevLogIndex。**不能**夹到 rf.lastIndex()：
+		// 本节点若还留着一段未提交的分叉尾巴，那会把它一起提交掉。见 advanceCommitLocked。
+		rf.advanceCommitLocked(args.LeaderCommit, int(args.PrevLogIndex))
 		return reply, nil
 	}
 	// 一致性检查已经在上面做过了（空 entries 也要做），走到这里 PrevLogIndex 处必然匹配。
@@ -609,6 +605,9 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	// var entry Entry
 	var index int
 	var logPos int
+	// lastNew 是本次被接受的最后一条条目的 index，也就是 leader 确认过的前缀末尾。
+	// 从 PrevLogIndex 起算：一条都没接受（全是 nil）时，确认过的仍然只有 PrevLogIndex。
+	lastNew := int(args.PrevLogIndex)
 	for i, logEntry := range logEntrys {
 		if logEntry == nil || logEntry.GetCommand() == nil {
 			util.EPrintf("RaftNode[%d] AppendEntries carried a nil entry or a nil command; skipping it", rf.me)
@@ -616,6 +615,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 		}
 
 		index = int(args.PrevLogIndex) + 1 + i
+		lastNew = index
 		logPos = rf.index2LogPos(index)
 		entry := Entry{
 			Index:       uint32(index), // use the index we computed, not the one in the command
@@ -666,16 +666,48 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	rf.flushBatchLog()
 	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
-	// 更新提交下标
-	if args.LeaderCommit > int32(rf.commitIndex) { // 取leaderCommit和本server中lastIndex的最小值。
-		rf.commitIndex = int(args.LeaderCommit)
-		if rf.lastIndex() < rf.commitIndex { // 感觉，不存在这种情况，走到这里基本都是日志与leader一样了，怎么还会索引比commitindex小
-			rf.commitIndex = rf.lastIndex()
-		}
-		rf.signalApply()
-	}
+	// 更新提交下标。夹在 lastNew（本次确认过的前缀末尾）上，不是本节点日志的末尾。
+	rf.advanceCommitLocked(args.LeaderCommit, lastNew)
 	reply.Success = true
 	return reply, nil
+}
+
+// advanceCommitLocked 按 Raft 论文 AppendEntries 的第 5 步推进 commitIndex：
+//
+//	if leaderCommit > commitIndex: commitIndex = min(leaderCommit, index of last **new** entry)
+//
+// lastNew 是"本次 AppendEntries 里 leader 确认过的前缀末尾"：不带条目时就是
+// args.PrevLogIndex（一致性检查只确认到那里），带条目时是最后一条被接受的条目的 index。
+//
+// 原先这里夹的是 **rf.lastIndex()**——本节点自己日志的末尾。那在"本节点有一段
+// 未提交的分叉尾巴"时是错的，而且错得很严重：
+//
+//	node0 在 term 1 当 leader，两个 follower 被按住，它写下 20002..20065 但永远提交不了；
+//	node0 被杀，node2 在 term 2 当选、写到 40002；node0 重启，日志 (0, 20065] 未提交 64 条。
+//	leader 探到 PrevLogIndex=20001（term 1，匹配）后先发来一次**空** AppendEntries，
+//	LeaderCommit=40002。按 rf.lastIndex() 夹，node0 的 commitIndex 变成 20065——
+//	于是它把自己那 64 条**集群从未提交、而且与 leader 冲突**的条目应用进了状态机。
+//
+// 应用是不可撤销的：随后日志被截断，但那 64 个 key 的错值留在 RocksDB 里，读会返回它们。
+// 2026-09-17 在 conflict-truncation.sh 里实测到：node0 的 run2 日志里出现
+// "底层执行了Put请求"，而它此时既不是 leader、也还没收到过任何新条目。
+// 那一轮之所以没在判据上暴露，是因为 leader 紧接着用同一批 key 的新值覆盖了它们；
+// 换一批 key 就是永久错值。
+//
+// 调用方须持有 rf.mu。
+func (rf *Raft) advanceCommitLocked(leaderCommit int32, lastNew int) {
+	if int(leaderCommit) <= rf.commitIndex {
+		return
+	}
+	target := int(leaderCommit)
+	if lastNew < target {
+		target = lastNew
+	}
+	if target <= rf.commitIndex {
+		return
+	}
+	rf.commitIndex = target
+	rf.signalApply()
 }
 
 func (rf *Raft) HeartbeatInRaft(ctx context.Context, args *raftrpc.AppendEntriesInRaftRequest) (*raftrpc.AppendEntriesInRaftResponse, error) {

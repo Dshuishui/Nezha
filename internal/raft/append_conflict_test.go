@@ -230,3 +230,75 @@ func TestFollowerWritesOneBatchPerAppend(t *testing.T) {
 		t.Fatalf("恢复出 %d 条; want %d", len(fresh.log), n)
 	}
 }
+
+// commitIndex 只能推进到**本次 AppendEntries 确认过的前缀末尾**，不能推进到本节点
+// 自己日志的末尾。
+//
+// 差别只在"本节点留着一段未提交的分叉尾巴"时出现，而那正是故障切换后的常态：
+// 旧 leader 写下一段提交不了的条目、被杀、重启，新 leader 探到共同前缀之后往往
+// 先发一次**空** AppendEntries（心跳），带着一个很高的 LeaderCommit。
+// 按 rf.lastIndex() 夹，那一段分叉条目就被提交并应用进状态机——而集群从未提交它们。
+// 应用不可撤销：日志随后被截断，错值留在 RocksDB 里。
+func TestEmptyAppendDoesNotCommitDivergentTail(t *testing.T) {
+	rf := conflictFollower(t, 1)
+	// term 1 的 leader 发来 5 条并提交前 2 条
+	sendEntries(t, rf, 1, 0, 0,
+		[2]string{"a", "v1"}, [2]string{"b", "v2"}, [2]string{"c", "v3"},
+		[2]string{"d", "v4"}, [2]string{"e", "v5"})
+	if _, err := rf.AppendEntriesInRaft(context.Background(), &raftrpc.AppendEntriesInRaftRequest{
+		Term: 1, LeaderId: 0, PrevLogIndex: 5, PrevLogTerm: 1, LeaderCommit: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rf.commitIndex != 2 {
+		t.Fatalf("前置状态：commitIndex=%d, want 2", rf.commitIndex)
+	}
+
+	// 新 leader（term 2）探到 index 2 处匹配，先发一次空心跳，LeaderCommit 很高。
+	// 它只确认到 PrevLogIndex=2；本节点的 3~5 是分叉的未提交条目。
+	reply, err := rf.AppendEntriesInRaft(context.Background(), &raftrpc.AppendEntriesInRaftRequest{
+		Term: 2, LeaderId: 2, PrevLogIndex: 2, PrevLogTerm: 1, LeaderCommit: 99,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reply.Success {
+		t.Fatalf("一致性检查该过却被拒：ConflictIndex=%d", reply.ConflictIndex)
+	}
+	if rf.commitIndex > 2 {
+		t.Fatalf("commitIndex 被推到 %d——本节点 3~5 是集群从未提交的分叉条目，"+
+			"提交它们等于把错值应用进状态机，而应用不可撤销", rf.commitIndex)
+	}
+}
+
+// 带条目时的上界是 PrevLogIndex + 接受的条目数，同样不是本节点日志的末尾。
+func TestAppendCommitsOnlyUpToLastNewEntry(t *testing.T) {
+	rf := conflictFollower(t, 1)
+	sendEntries(t, rf, 1, 0, 0,
+		[2]string{"a", "v1"}, [2]string{"b", "v2"}, [2]string{"c", "v3"},
+		[2]string{"d", "v4"}, [2]string{"e", "v5"})
+
+	// 新 leader 从 index 3 起只发一条，LeaderCommit 很高。
+	// 确认过的前缀到 index 3；本节点原来的 4、5 被这次截断丢掉，绝不能被提交。
+	reply, err := rf.AppendEntriesInRaft(context.Background(), &raftrpc.AppendEntriesInRaftRequest{
+		Term: 2, LeaderId: 2, PrevLogIndex: 2, PrevLogTerm: 1, LeaderCommit: 99,
+		Entries: []*raftrpc.LogEntry{{
+			Term: 2,
+			Command: &raftrpc.DetailCod{
+				Index: 3, Term: 2, OpType: "Put", Key: "z", Value: "w3",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reply.Success {
+		t.Fatalf("被拒：ConflictIndex=%d", reply.ConflictIndex)
+	}
+	if rf.commitIndex != 3 {
+		t.Fatalf("commitIndex = %d; want 3（PrevLogIndex 2 + 接受 1 条）", rf.commitIndex)
+	}
+	if got := logValues(rf); len(got) != 3 || got[2] != "w3" {
+		t.Fatalf("日志 = %v; want [v1 v2 w3]", got)
+	}
+}
