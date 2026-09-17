@@ -157,6 +157,14 @@ func (p *pool) deleteFrom(begin int) {
 }
 
 // Get see Pool interface.
+//
+// **契约：返回错误时这次调用不持有任何引用。** 引用是由 conn.Close() 释放的
+// （conn.Close 调 p.decrRef），而全部调用方的写法都是
+// `conn, err := p.Get(); if err != nil { return }`——出错时不会有人去 Close。
+// 所以三条出错路径都必须自己把 incrRef 拿到的那一份还回去，否则 p.ref 只增不减：
+// decrRef 里 `newRef == 0` 这个收缩判据从此永不成立，池**再也不会缩回 MaxIdle**，
+// 多出来的物理连接（MaxActive 300 对 MaxIdle 150，最多 150 条）被一直占到进程结束。
+// 其中"扩容时 dial 失败"这条在对端不可达时就会走到，每失败一次永久泄漏一份。
 func (p *pool) Get() (Conn, error) {
 	// the first selected from the created connections
 	nextRef := p.incrRef()
@@ -164,6 +172,7 @@ func (p *pool) Get() (Conn, error) {
 	current := atomic.LoadInt32(&p.current)
 	p.RUnlock()
 	if current == 0 {
+		p.decrRef()
 		return nil, ErrClosed
 	}
 	if nextRef <= current*int32(p.opt.MaxConcurrentStreams) {
@@ -180,7 +189,14 @@ func (p *pool) Get() (Conn, error) {
 		}
 		// the third create one-time connection
 		c, err := p.opt.Dial(p.address[rand.Intn(len(p.address))])
-		return p.wrapConn(c, true), err
+		if err != nil {
+			// 原先是 `return p.wrapConn(c, true), err`：既泄漏引用（调用方出错不 Close），
+			// 又把一个包着 nil ClientConn 的 conn 交了出去——谁真去用 conn.Value() 就是
+			// 空指针。出错时只返回错误。
+			p.decrRef()
+			return nil, err
+		}
+		return p.wrapConn(c, true), nil
 	}
 
 	// the fourth create new connections given back to pool
@@ -209,6 +225,7 @@ func (p *pool) Get() (Conn, error) {
 		atomic.StoreInt32(&p.current, current)
 		if err != nil {
 			p.Unlock()
+			p.decrRef() // 见 Get 的契约说明：出错就不持有引用
 			return nil, err
 		}
 	}
