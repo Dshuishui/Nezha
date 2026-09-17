@@ -263,6 +263,14 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persis
 
 	result := make(map[string]string)
 
+	// 整段扫描只开一次 valuelog。原先是 decodeScanValue → ReadValueFromOffset，
+	// 里面每个 key 都 os.Open + bufio.NewReader + Close 一遍：一次 1000 条的扫描就是
+	// 1000 次开关文件加 1000 个 4KB 缓冲区，而这一切还发生在 kvs.mu 之内。
+	// 有序文件那条路早就用描述符池 + mmap 避开了这件事，valuelog 这条路没有。
+	// 惰性打开：baseline（无标记裸 value）与全内联的情形一次都不需要碰这个文件。
+	lr := &logReader{path: logLocation}
+	defer lr.Close()
+
 	// 从RocksDB中获取范围内的key-value对
 	rdb := persister.GetDb()
 	iter := rdb.NewIterator(ro)
@@ -283,7 +291,7 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persis
 
 		// 存储引擎里存的是什么，取决于当前配置——不能一律当成偏移解析。
 		// 三种形态由首字节的标记区分，baseline 则根本没有标记。
-		value, err := kvs.decodeScanValue(iter.Value().Data(), logLocation)
+		value, err := kvs.decodeScanValue(iter.Value().Data(), lr)
 		if err != nil {
 			return nil, err
 		}
@@ -306,7 +314,7 @@ func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persis
 // 注意 TagOffset 记录共 9 字节，偏移在 [1:]。原先按 [0:8] 解析，把标记字节
 // 当成了偏移的最低位——算出来的是"真实偏移左移 8 位再截断"，看似合法却指向
 // 文件里的任意位置。
-func (kvs *KVServer) decodeScanValue(raw []byte, logLocation string) (string, error) {
+func (kvs *KVServer) decodeScanValue(raw []byte, lr *logReader) (string, error) {
 	if !kvs.kvSeparation {
 		return string(raw), nil
 	}
@@ -320,11 +328,47 @@ func (kvs *KVServer) decodeScanValue(raw []byte, logLocation string) (string, er
 	if err != nil {
 		return "", err
 	}
-	return ReadValueFromOffset(off, logLocation)
+	return lr.valueAt(off)
 }
 
 // ==================================================
-// ReadValueFromOffset 按偏移读出 value。
+// logReader 是一次扫描期间复用的 valuelog 句柄：句柄和 bufio 缓冲区各只建一次，
+// 每个 key 只付一次 Seek。惰性打开，所以不需要读 valuelog 的扫描一次 open 都不做。
+// 不并发使用——一次扫描是单 goroutine 顺序迭代的。
+type logReader struct {
+	path string
+	f    *os.File
+	br   *bufio.Reader
+}
+
+func (lr *logReader) valueAt(position int64) (string, error) {
+	if lr.f == nil {
+		f, err := os.Open(lr.path)
+		if err != nil {
+			return "", fmt.Errorf("failed to open log file: %v", err)
+		}
+		lr.f, lr.br = f, bufio.NewReader(f)
+	}
+	if _, err := lr.f.Seek(position, io.SeekStart); err != nil {
+		return "", fmt.Errorf("failed to seek in file: %v", err)
+	}
+	// Seek 之后缓冲区里还压着上一个位置读出来的字节，必须 Reset，否则读到的是旧内容。
+	lr.br.Reset(lr.f)
+	entry, _, err := ReadEntry(lr.br, 0)
+	if err != nil {
+		return "", fmt.Errorf("failed to read entry: %v", err)
+	}
+	return entry.Value, nil
+}
+
+func (lr *logReader) Close() {
+	if lr.f != nil {
+		lr.f.Close()
+		lr.f, lr.br = nil, nil
+	}
+}
+
+// ReadValueFromOffset 按偏移读出 value（单次读用；扫描请用 logReader，见上）。
 // 接口收的是解码好的 int64 而不是原始字节，这样"忘记剥标记字节"这类错误
 // 没法再从调用点溜进来——解码只有 raft.DecodeOffsetRecord 一个入口。
 func ReadValueFromOffset(position int64, logLocation string) (string, error) {

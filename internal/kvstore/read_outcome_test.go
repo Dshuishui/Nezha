@@ -3,6 +3,7 @@ package kvstore
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"testing"
 
 	"gitee.com/dong-shuishui/FlexSync/api/kvrpc"
@@ -66,5 +67,54 @@ func TestReadOutcomeKeepsFirstError(t *testing.T) {
 	}
 	if out.where != "第一路" {
 		t.Fatalf("现场 = %q; want 第一路", out.where)
+	}
+}
+
+// logReader 在一次扫描里复用同一个句柄和缓冲区，所以**必须**在每次 Seek 之后 Reset
+// bufio：不 Reset 的话缓冲区里还压着上一个偏移读出来的字节，第二个 key 会读到第一个
+// key 的记录——值错了而且不报错。
+func TestLogReaderRereadsAfterSeek(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "RaftState.log")
+
+	rf := &raft.Raft{}
+	rf.SetCurrentLog(path)
+	entries := []*raft.Entry{
+		{Index: 1, CurrentTerm: 1, Key: "k1", Value: "value-one"},
+		{Index: 2, CurrentTerm: 1, Key: "k2", Value: "value-two-longer"},
+		{Index: 3, CurrentTerm: 1, Key: "k3", Value: "v3"},
+	}
+	rf.AppendToLogFile(entries)
+	offsets := append([]int64(nil), rf.GetOffsets()...)
+	rf.CloseLogFile()
+	if len(offsets) != 3 {
+		t.Fatalf("写入后有 %d 个偏移，want 3", len(offsets))
+	}
+
+	lr := &logReader{path: path}
+	defer lr.Close()
+	// 乱序读，并且把同一个偏移读两次：顺序依赖或缓冲区没重置都会在这里露出来
+	for _, i := range []int{2, 0, 1, 0, 2} {
+		got, err := lr.valueAt(offsets[i])
+		if err != nil {
+			t.Fatalf("valueAt(offset[%d]): %v", i, err)
+		}
+		if got != entries[i].Value {
+			t.Fatalf("按偏移 %d 读出 %q，want %q——Seek 之后缓冲区没重置",
+				offsets[i], got, entries[i].Value)
+		}
+	}
+}
+
+// 惰性打开：不需要读 valuelog 的扫描（baseline 裸 value、全内联）一次 open 都不该做。
+// 判据取"文件不存在时构造 logReader 不报错、也不打开"。
+func TestLogReaderOpensLazily(t *testing.T) {
+	lr := &logReader{path: filepath.Join(t.TempDir(), "does-not-exist.log")}
+	if lr.f != nil {
+		t.Fatal("构造时就打开了文件")
+	}
+	lr.Close() // 没打开过也要能安全关闭
+	if _, err := lr.valueAt(0); err == nil {
+		t.Fatal("文件不存在却读成功了")
 	}
 }
