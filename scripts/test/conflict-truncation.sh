@@ -41,7 +41,15 @@ cd "$PROJECT_DIR" || { echo "无项目目录"; exit 1; }
 setup_cgo_env || { echo "cgo 环境准备失败"; exit 1; }
 export TMPDIR=${TMPDIR:-$HOME/work/tmp}; mkdir -p "$TMPDIR"
 
-BASE_N="${BASE:-20000}"      # 基准那批（会提交）
+# 规模必须让**新 leader 的日志总长**留在压缩阈值（internal/raft: logThreshold=20000 条）以内。
+# 否则这个场景根本构造不出来：leader 一压缩，分叉点就落在它保留的窗口之前，日志路径被
+# 整体绕开（走 start<0 那支），冲突截断一次都不会发生。
+# 2026-09-17 实测：BASE=20000（leader 日志 40002 条）连跑三轮，node0 既没被拒
+# （[LOG-REJECT] 0 条）也没进重叠区（[LOG-OVERLAP] 0 条）却收敛了，而 node2 压缩了两次
+# （lastIncludedIndex 15001 → 35066）；BASE=2000 一次就过，[LOG-OVERLAP] 紧跟 [LOG-CONFLICT]。
+# 所以默认值取 2000，而不是"看起来更像真实负载"的 20000——这个用例要验的是那条分支，
+# 不是吞吐。
+BASE_N="${BASE:-2000}"       # 基准那批（会提交）
 TAIL_N="${TAIL:-64}"         # 未提交的尾巴：并发在途请求数，每个贡献一条
 VSIZE="${VSIZE:-256}"        # 基准那批的 value 大小
 NEW_VSIZE="${NEW_VSIZE:-300}" # 新 leader 那批：换个大小，于是同一个 key 的新旧值可区分
@@ -149,6 +157,20 @@ vlog_bytes(){
   n=$(find "$d" -type f -name 'RaftState*' -printf '%s\n' 2>/dev/null | awk '{t+=$1} END{print t+0}')
   echo "${n:-0}"
 }
+
+# 前提自检：新 leader 会写 BASE_N 条覆盖 + 一条 TermLog，加上基准那批，
+# 总长必须小于压缩阈值。超了就直接说清楚"这一轮验不到那条分支"，不要等到判据 b
+# 才以"没构造出冲突"的形式暴露——那看起来像被测系统的问题。
+LOG_THRESHOLD=$(grep -oE 'logThreshold[[:space:]]*=[[:space:]]*[0-9]+' \
+                "$PROJECT_DIR/internal/raft/compact.go" | grep -oE '[0-9]+' | head -1)
+LOG_THRESHOLD=${LOG_THRESHOLD:-20000}
+PROJECTED=$((BASE_N * 2 + TAIL_N + 2))
+info "压缩阈值 ${LOG_THRESHOLD} 条；本轮新 leader 日志预计 ${PROJECTED} 条"
+if [ "$PROJECTED" -ge "$LOG_THRESHOLD" ]; then
+  fail "预计日志 ${PROJECTED} 条 >= 压缩阈值 ${LOG_THRESHOLD}：leader 会压缩过分叉点，"
+  echo "      日志路径被整体绕开，冲突截断这条分支验不到。把 BASE 调小到 $(( (LOG_THRESHOLD - TAIL_N - 2) / 2 - 100 )) 以下。"
+  exit 1
+fi
 
 # ---------- 1. 三节点起来 ----------
 info "拉起三节点"
