@@ -368,3 +368,19 @@ func (kvs *KVServer) Run(ctx context.Context) {
 	<-ctx.Done()
 	kvs.Kill()
 }
+
+// shouldInline 判定一个 value 是否走内联路径。
+//
+// 判据只放在这一处。它有三个调用点——写入（apply.go 决定进存储引擎还是进 valuelog）、
+// GC 预热（partition.go 把小值提前放进内联缓存）、读回填（read.go 未命中后回填）——
+// 三者必须字字一致。若一处写成 <= 而另一处是 <，长度**正好等于阈值**的 value 会被
+// 一边按内联写进存储引擎、另一边按偏移去 valuelog 里找，而 valuelog 里没有它：
+// 一个只在某个特定 value 长度上出现的 NOKEY，且不报任何错。
+//
+// 语义是**严格小于**；阈值 <= 0 表示一条都不内联（main.go 会在 -inlinePlacement
+// 开着时拒绝这种组合，因为那等于开关开着而功能没有）。
+// 空 value 的长度是 0，恒小于任何正阈值，所以它走内联——内联缓存必须把
+// "空 value" 与 "不在缓存里" 区分开，见 InlineCache.Get。
+func (kvs *KVServer) shouldInline(valueLen int) bool {
+	return valueLen < kvs.inlineThreshold
+}

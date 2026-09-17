@@ -111,7 +111,7 @@ func (kvs *KVServer) applyCommand(msg raft.ApplyMsg) {
 		// fmt.Printf("转换后的offset：%v\n", positionBytes)
 
 		tRocks := time.Now()
-		if kvs.inlinePlacement && len(op.Value) < kvs.inlineThreshold {
+		if kvs.inlinePlacement && kvs.shouldInline(len(op.Value)) {
 			// 小值直接落在存储引擎里，不进 valuelog：读路径因此缩短为一次点查，
 			// 且 GC 无需再为它们做一次搬运。
 			recordPlacement(len(op.Value), true)

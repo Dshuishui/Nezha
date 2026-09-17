@@ -63,6 +63,17 @@ func (c *InlineCache) Get(key string) ([]byte, bool) {
 
 // Add 接收 string（Entry.Value 的原生类型）；转 []byte 时 Go 自带拷贝，
 // 缓存不会持有调用方缓冲区的引用。
+//
+// 同一个 key 被重复 Add 是常态而非边角情形：读路径在**未命中之后**回填
+// （read.go 的 readFromSortedFile），而 Zipf 热点下同一个热 key 很容易被多个
+// 并发读者同时判为未命中，于是各自回填一次。
+//
+// 而 lru.Add 对已存在的 key 只是替换 value，**不触发 onEvict 回调**
+// （hashicorp/golang-lru 的语义：命中则 MoveToFront + 改值并直接返回）。
+// 所以旧 value 的字节必须由这里自己扣掉。漏掉的后果不是"统计数字略大"：
+// curBytes 只增不减，淘汰循环因此越淘越多，直到 lru 空了仍然 curBytes > maxBytes；
+// 此后每次 Add 都会被紧随其后的淘汰立刻清空，**缓存永久失效**，
+// 而对外只表现为内联命中率一路掉到 0——AVP 的主要收益数字就是它。
 func (c *InlineCache) Add(key string, val string) {
 	if c == nil {
 		return
@@ -70,11 +81,22 @@ func (c *InlineCache) Add(key string, val string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	cp := []byte(val)
+	// Peek 不改动 LRU 次序、也不计入命中/未命中，只为拿到将被替换掉的那份的大小。
+	if old, ok := c.lru.Peek(key); ok {
+		if b, ok := old.([]byte); ok {
+			c.curBytes -= int64(len(b)) + inlineEntryOverhead
+		}
+	}
 	c.lru.Add(key, cp)
 	c.curBytes += int64(len(cp)) + inlineEntryOverhead
 	// 超预算则淘汰最旧的，直到回到预算内（onEvict 回调负责扣减 curBytes）
 	for c.curBytes > c.maxBytes && c.lru.Len() > 0 {
 		c.lru.RemoveOldest()
+	}
+	// 空缓存的字节数只能是 0。单条就超预算时循环会把它淘汰干净而 curBytes 仍有残值，
+	// 留着它等于把上面那个"永久失效"的状态原样保留下来。
+	if c.lru.Len() == 0 {
+		c.curBytes = 0
 	}
 }
 

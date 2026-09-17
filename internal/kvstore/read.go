@@ -803,7 +803,7 @@ func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (stri
 	}
 
 	// 小值回填内联缓存，供后续读命中（Zipf 热点下命中率很高）
-	if len(entry.Value) < kvs.inlineThreshold {
+	if kvs.shouldInline(len(entry.Value)) {
 		index.InlineValues.Add(key, entry.Value)
 	}
 

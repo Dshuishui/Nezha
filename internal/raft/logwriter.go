@@ -161,7 +161,7 @@ func (rf *Raft) OverwriteLogFileFrom(e []*Entry, startPos int64) {
 // 一个都没截掉。活着的时候读是对的（rf.Offsets 指向新写的那一份），但重启时
 // RecoverLog 顺序回放会先撞上旧记录，索引不连续，节点直接起不来：
 //
-//	RaftState.log: log not contiguous at offset 76: got index 1, want 4
+//	RaftState.log: log not contiguous at offset 69: got index 1, want 4
 //
 // 而这个偏移在两种寻常情况下就是 0：全新节点收到的第一条，以及 GC 换文件之后写进
 // 新文件的第一条（SetCurrentLog 把 logOffset 归零）。都不是边角情形。

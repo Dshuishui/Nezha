@@ -379,7 +379,7 @@ func (pw *partitionWriter) Add(entry *raft.Entry) error {
 	pw.n++
 
 	// AVP：小值在预算内预热进内联缓存，读命中即可免去一次文件 seek
-	if len(entry.Value) < pw.kvs.inlineThreshold {
+	if pw.kvs.shouldInline(len(entry.Value)) {
 		pw.inline.Add(entry.Key, entry.Value)
 	}
 

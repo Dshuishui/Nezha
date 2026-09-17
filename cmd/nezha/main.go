@@ -110,6 +110,19 @@ func main() {
 		}
 	}
 
+	// -inlinePlacement 的判据是 len(value) < -inlineThreshold（严格小于，见
+	// KVServer.shouldInline）。阈值 <= 0 时这个条件恒为假，于是内联一条都不发生——
+	// 开关开着、日志照打、功能没有。和上面 -gcThresholdGB 那条是同一类问题：
+	// 一个被接受、被打印、然后被忽略的参数。
+	if cfg.InlinePlacement && cfg.InlineThreshold <= 0 {
+		log.Fatalf("nezha: -inlinePlacement 开着但 -inlineThreshold=%d，判据是"+
+			"「len(value) < 阈值」，阈值 <= 0 时恒为假，一条都不会内联。"+
+			"要内联请给正的阈值；不要内联就别加 -inlinePlacement。", cfg.InlineThreshold)
+	}
+	if cfg.InlineThreshold < 0 {
+		log.Fatalf("nezha: -inlineThreshold=%d 不能为负", cfg.InlineThreshold)
+	}
+
 	// 先把 fd 软上限抬到硬上限，再建节点。必须在 New 之前：New 会装载分区组，
 	// 每个分区常驻一个描述符，而抬上限不需要任何权限。理由见 util.RaiseFDLimit。
 	fmt.Printf("[LIMITS] %s\n", util.RaiseFDLimit())
