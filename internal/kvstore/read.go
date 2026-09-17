@@ -707,23 +707,6 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 	return out.finish(reply, key)
 }
 
-// getFromPartitions 把一次点查路由到唯一可能含有该 key 的分区。
-//
-// 分区区间互不重叠，候选因此只有一个，查找本身仍是原来的"稀疏索引二分 + 块内顺序扫描"。
-// 相对改造前的单个大文件，索引更小、局部性更好。
-// setReadFailure 按错误的性质回应：只有"这一处确实没有"才是 ErrNoKey，
-// 其余一律是 ErrInternal——读失败时 key 是否存在是**未知**的，不能替客户端断言它不存在。
-func setReadFailure(reply *kvrpc.GetInRaftResponse, err error) {
-	if errors.Is(err, ErrKeyAbsent) {
-		reply.Err = raft.ErrNoKey
-		reply.Value = raft.NoKey
-		return
-	}
-	fmt.Printf("[READ] 读取失败，按 ErrInternal 上报（不是 NOKEY）: %v\n", err)
-	reply.Err = raft.ErrInternal
-	reply.Value = raft.NoKey
-}
-
 // readOutcome 汇总一次**多路查找**的结果。
 //
 // GET 会并发查几处（当前 valuelog、上一轮 valuelog、分区文件），按优先级逐路取结果。
@@ -754,6 +737,10 @@ func (o *readOutcome) note(where string, err error) {
 }
 
 // finish 在所有查找路径都没找到 key 时给出最终应答。
+//
+// 出过错就必须是 ErrInternal：读失败时"这个 key 到底存不存在"是**未知**的，
+// 不能替客户端断言它不存在。（这条判据原先在一个独立的 setReadFailure 里，
+// readOutcome 接手之后它就没有调用点了——两份并存迟早漂移，所以并进来。）
 func (o *readOutcome) finish(reply *kvrpc.GetInRaftResponse, key string) *kvrpc.GetInRaftResponse {
 	if o.err != nil {
 		fmt.Printf("[READ] key=%q 没有任何一路找到，且「%s」出过错，按 ErrInternal 上报（不是 NOKEY）: %v\n",
@@ -775,6 +762,13 @@ func (o *readOutcome) finish(reply *kvrpc.GetInRaftResponse, key string) *kvrpc.
 // 客户端据此认定数据没了。用哨兵把两者分开，调用方才有得判。
 var ErrKeyAbsent = errors.New(raft.ErrNoKey)
 
+// getFromPartitions 把一次点查路由到唯一可能含有该 key 的分区。
+//
+// 分区区间互不重叠，候选因此只有一个，查找本身仍是原来的"稀疏索引二分 + 块内顺序扫描"。
+// 相对改造前的单个大文件，索引更小、局部性更好。
+//
+// cacheHit 只是**回报**这次查找是不是被内联缓存接住的，计数留给汇合点：
+// 这一路的结果可能压根没被采用（当前 valuelog 优先），没被采用的查找不该算进命中率。
 func (kvs *KVServer) getFromPartitions(key string, ps *PartitionSet) (_ string, cacheHit bool, _ error) {
 	if ps == nil {
 		return "", false, errors.New("invalid partition set: set is nil")
