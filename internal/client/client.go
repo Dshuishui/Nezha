@@ -64,8 +64,35 @@ const (
 // lossy — that documentation is exactly what the old storage-layer padding had.
 var ErrLeadingZero = errors.New("client: key has a leading zero, which the fixed-width encoding cannot represent distinctly (use KeyPadNone to send keys verbatim)")
 
+// isDecimal reports whether the key is made only of ASCII digits. Padding is meaningful
+// only for those; see encodeKey.
+func isDecimal(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		if key[i] < '0' || key[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // encodeKey applies KeyPadWidth. It never truncates: a key at least as long as the width
 // goes out untouched, so a wider key is stored in full rather than silently cut short.
+//
+// 补零**只对十进制整数做**。非数字的 key 原样发出去，因为左补零会打乱它们的字节序：
+// "user1" 与 "user12" 补到十位是 "00000user1" 与 "0000user12"，第 5 个字节上
+// '0' < 'u'，于是 "user12" 排在 "user1" **前面**。存储层按字节序排、分区按字节区间
+// 路由、SCAN 建立在这个序上，所以补零把一个正确的序改成了错的。
+// 这与上面 ErrLeadingZero 是同一个原则：把"只对规范十进制成立"从注释里的说明
+// 变成代码里的约束。
+//
+// **已知限制**：超过 w 位的十进制 key 原样通过，而它的字节序不再等于数值序——
+// w=10 时 "10000000000"（11 位）按字节排在 "9999999999" 之前。
+// 不截断是对的（截断会让不同的 key 撞成一个），但要换来正确的序就得换一种编码。
+// 现有 benchmark 的键空间上限约 10^8，够用；把键空间推到 10^10 以上之前，
+// SCAN 的区间判定不能再假定"字节序 == 数值序"。client_test.go 里钉住了这一条。
 func (c *Client) encodeKey(key string) (string, error) {
 	w := c.opts.KeyPadWidth
 	if w <= 0 {
@@ -74,17 +101,17 @@ func (c *Client) encodeKey(key string) (string, error) {
 	if len(key) > 1 && key[0] == '0' {
 		return "", ErrLeadingZero
 	}
-	if len(key) >= w {
+	if len(key) >= w || !isDecimal(key) {
 		return key, nil
 	}
 	return strings.Repeat("0", w-len(key)) + key, nil
 }
 
-// decodeKey undoes encodeKey. Only a key of exactly the padded width can have been padded
-// by us, so anything else is returned as it came back.
+// decodeKey undoes encodeKey. Only an all-digit key of exactly the padded width can have
+// been padded by us, so anything else is returned as it came back.
 func (c *Client) decodeKey(key string) string {
 	w := c.opts.KeyPadWidth
-	if w <= 0 || len(key) != w {
+	if w <= 0 || len(key) != w || !isDecimal(key) {
 		return key
 	}
 	trimmed := strings.TrimLeft(key, "0")

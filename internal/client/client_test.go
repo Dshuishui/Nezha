@@ -224,3 +224,66 @@ func TestDefaultsSelectKeyPadWidth(t *testing.T) {
 			o.KeyPadWidth, DefaultKeyPadWidth)
 	}
 }
+
+// 非数字的短 key 必须原样发出去，不能补零。
+//
+// 左补零会打乱它们的字节序："user1" 与 "user12" 补到十位是 "00000user1" 与
+// "0000user12"，第 5 个字节上 '0' < 'u'，于是 "user12" 排到了 "user1" 前面。
+// 存储层按字节序排、分区按字节区间路由、SCAN 建立在这个序上——补零把一个
+// 本来正确的序改成了错的。
+func TestEncodeKeyDoesNotPadNonDecimalKeys(t *testing.T) {
+	c := &Client{opts: Options{KeyPadWidth: 10}}
+	for _, k := range []string{"user1", "user12", "a", "k-1", "1a", "a1", "1.5", "-7"} {
+		got, err := c.encodeKey(k)
+		if err != nil {
+			t.Errorf("encodeKey(%q): %v", k, err)
+			continue
+		}
+		if got != k {
+			t.Errorf("encodeKey(%q) = %q，非数字 key 必须原样通过（补零会打乱字节序）", k, got)
+		}
+		if back := c.decodeKey(got); back != k {
+			t.Errorf("往返失败 %q -> %q -> %q", k, got, back)
+		}
+	}
+
+	// 补零之后的序必须与补零之前一致——这正是"只对十进制补零"要保住的性质。
+	a, _ := c.encodeKey("user1")
+	b, _ := c.encodeKey("user12")
+	if !(a < b) {
+		t.Errorf("encodeKey 之后 %q 不再小于 %q——序被补零改掉了", a, b)
+	}
+}
+
+// 数字 key 在**同一位宽内**，补零之后的字节序必须等于数值序。
+// 这是 SCAN 区间判定赖以成立的性质。
+func TestEncodeKeyPreservesNumericOrderWithinWidth(t *testing.T) {
+	c := &Client{opts: Options{KeyPadWidth: 10}}
+	prev := ""
+	for _, n := range []string{"0", "1", "2", "9", "10", "99", "100", "999999999", "1234567890"} {
+		got, err := c.encodeKey(n)
+		if err != nil {
+			t.Fatalf("encodeKey(%q): %v", n, err)
+		}
+		if prev != "" && !(prev < got) {
+			t.Errorf("%q 编码为 %q，不大于前一个 %q——字节序与数值序不一致", n, got, prev)
+		}
+		prev = got
+	}
+}
+
+// **已知限制**，钉在这里而不是只写在注释里：超过位宽的十进制 key 原样通过，
+// 它的字节序不再等于数值序。不截断是对的（截断会让不同的 key 撞成一个），
+// 但要换来正确的序就得换一种编码。
+// 这个用例存在的意义是：哪天把键空间推过 10^10，它会**立刻**提醒你 SCAN
+// 的区间判定不能再假定"字节序 == 数值序"。改掉编码时连它一起改。
+func TestKeysWiderThanPadWidthLoseNumericOrder(t *testing.T) {
+	c := &Client{opts: Options{KeyPadWidth: 10}}
+	small, _ := c.encodeKey("9999999999")  // 10 位
+	large, _ := c.encodeKey("10000000000") // 11 位，数值更大
+	if large < small {
+		return // 这就是当前的已知行为
+	}
+	t.Fatalf("超宽 key 的字节序变了：%q 不再小于 %q——若是有意改的编码，"+
+		"请同时更新 encodeKey 的「已知限制」说明与依赖字节序的 SCAN 判定", large, small)
+}
