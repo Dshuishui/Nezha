@@ -3,6 +3,7 @@ package kvstore
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -222,6 +223,46 @@ func (kvs *KVServer) loadPartitionSet(base string, metas []partitionMeta) (*Part
 		if err != nil {
 			ps.Close()
 			return nil, fmt.Errorf("file descriptor pool for %s: %v", path, err)
+		}
+		// Lo/Hi 是**路由**用的：find 与 overlapping 全靠它们决定"这个 key 该去哪个分区"。
+		// 字节数校验了，它们却一直是照抄清单、不做任何核对——而错了的后果是最坏的那种：
+		// Lo 偏高或 Hi 偏低会让 find 对一个**确实在文件里**的 key 返回 nil，
+		// 读路径把"这一处没有"当作常态，于是它变成一个静默的 NOKEY。
+		//
+		// Lo 免费精确核对：稀疏索引的第一项按构造就是文件里最小的 key
+		// （见 SparseIndexBuilder.Observe 的"第一条永远建立索引点"）。
+		// Hi 要读一个块：从最后一个索引点扫到 EOF，拿到真正的末 key。代价有界
+		// （默认 indexBlockKB=4KB，800 个分区也就一次性读 3.2MB），换来的是精确判定。
+		// 第一版只核对"最后一个索引点不超过 Hi"，那个判据**太弱**：块粒度等于分区目标值时
+		// 每个分区只有一个索引点、它就是首 key，于是只能查出"Hi 低于首 key"这一种，
+		// 而"Hi 落在分区中间"——恰好是让后半段 key 全部路由不到的那种——查不出来。
+		// 与字节数不符一样，对不上就拒绝启动，而不是带着错的路由去服务读。
+		if len(sparse) > 0 {
+			if first := sparse[0].PaddedKey; m.Lo != first {
+				ps.Close()
+				return nil, fmt.Errorf("partition %s: manifest Lo=%q but the file starts at %q",
+					path, m.Lo, first)
+			}
+			last, err := lastKeyFrom(path, sparse[len(sparse)-1].Offset, size)
+			if err != nil {
+				ps.Close()
+				return nil, fmt.Errorf("partition %s: 读末尾块以核对 Hi: %v", path, err)
+			}
+			if last != m.Hi {
+				ps.Close()
+				return nil, fmt.Errorf("partition %s: manifest Hi=%q but the file ends at %q",
+					path, m.Hi, last)
+			}
+		}
+		if n := len(ps.parts); n > 0 {
+			// find/overlapping 都用 sort.Search，它要求清单**按 Lo 升序且区间互不重叠**。
+			// 乱序或重叠会让二分返回任意结果——同样是静默的错答案。
+			if prev := ps.parts[n-1]; m.Lo <= prev.Hi {
+				ps.Close()
+				return nil, fmt.Errorf("partition %s: range [%q,%q] overlaps the previous [%q,%q]; "+
+					"find/overlapping 的二分要求升序且不重叠",
+					path, m.Lo, m.Hi, prev.Lo, prev.Hi)
+			}
 		}
 		ps.parts = append(ps.parts, &SortedFileIndex{
 			Sparse:       sparse,
@@ -576,4 +617,33 @@ func (kvs *KVServer) reapPartitions() int {
 		fmt.Printf("[GC] %d 个退役分区组仍被引用（快照传输中），它们的文件暂不删除\n", len(stillHeld))
 	}
 	return removed
+}
+
+// lastKeyFrom 从 from 扫到 size，返回最后一条记录的 key。
+// 只用于装载时核对清单的 Hi：from 取最后一个稀疏索引点，所以读的是最后一个块，代价有界。
+func lastKeyFrom(path string, from, size int64) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err := f.Seek(from, io.SeekStart); err != nil {
+		return "", err
+	}
+	r := bufio.NewReaderSize(io.LimitReader(f, size-from), 64*1024)
+	last := ""
+	for {
+		entry, _, err := ReadEntry(r, 0)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return "", err
+		}
+		last = entry.Key
+	}
+	if last == "" {
+		return "", fmt.Errorf("末尾块 [%d,%d) 里没有完整记录", from, size)
+	}
+	return last, nil
 }

@@ -502,3 +502,74 @@ func TestPinPartitionsWithNoSet(t *testing.T) {
 	}
 	release()
 }
+
+// 清单里的 Lo/Hi 是**路由**用的：find 与 overlapping 全靠它们决定一个 key 该去哪个分区。
+// 字节数早就校验了，Lo/Hi 却一直照抄清单。错了的后果是最坏的那种——Lo 偏高或 Hi 偏低
+// 会让 find 对一个确实在文件里的 key 返回 nil，而读路径把"这一处没有"当作常态，
+// 于是它变成一个静默的 NOKEY。
+//
+// Lo 能免费精确核对：稀疏索引的第一项按构造就是文件里最小的 key。
+func TestLoadPartitionSetVerifiesManifestRanges(t *testing.T) {
+	dir := t.TempDir()
+	kvs := newTestServer(4096)
+	base := filepath.Join(dir, "sorted_1")
+
+	ps := writeEntries(t, kvs, base, 500, 64)
+	good := ps.manifest()
+	ps.Close()
+	if len(good) < 2 {
+		t.Fatalf("需要至少两个分区才能测重叠，实际 %d", len(good))
+	}
+
+	// 健康的清单必须装得上——只测"坏的被拒"是灵敏而不特异
+	if reloaded, err := kvs.loadPartitionSet(base, good); err != nil {
+		t.Fatalf("健康清单被拒：%v", err)
+	} else {
+		reloaded.Close()
+	}
+
+	clone := func() []partitionMeta { return append([]partitionMeta(nil), good...) }
+
+	// Lo 偏高：第一个分区的最小 key 就路由不到了
+	bad := clone()
+	bad[0].Lo = "9999999999"
+	if got, err := kvs.loadPartitionSet(base, bad); err == nil {
+		got.Close()
+		t.Error("Lo 与文件首 key 不符却装上了——那些 key 会静默读成不存在")
+	}
+
+	// Hi 落在分区**中间**：后半段 key 全部路由不到，而且完全静默。
+	// 这一档是判据强弱的分水岭——只核对"最后一个索引点不超过 Hi"查不出它，
+	// 因为块粒度等于分区目标值时每个分区只有一个索引点、它就是首 key。
+	bad = clone()
+	bad[0].Hi = bad[0].Lo // 声称只含一个 key，实际含四十多个
+	if got, err := kvs.loadPartitionSet(base, bad); err == nil {
+		got.Close()
+		t.Error("Hi 落在分区中间却装上了——它后面的 key 会静默读成不存在")
+	}
+
+	// Hi 偏高也要查出来：它会把本该落进空隙的 key 路由进这个分区，
+	// 于是读到的是"这个分区里没有"，而正确答案可能在别处。
+	bad = clone()
+	bad[0].Hi = "9999999999"
+	if got, err := kvs.loadPartitionSet(base, bad); err == nil {
+		got.Close()
+		t.Error("Hi 高于文件末 key 却装上了")
+	}
+
+	// 区间重叠：find/overlapping 的二分要求升序且不重叠，重叠会让它返回任意结果
+	bad = clone()
+	bad[1].Lo = bad[0].Lo
+	if got, err := kvs.loadPartitionSet(base, bad); err == nil {
+		got.Close()
+		t.Error("区间重叠的清单装上了——二分的前提不成立")
+	}
+
+	// 字节数不符这条原先就有，一起钉住，免得重构时丢掉
+	bad = clone()
+	bad[0].Size = good[0].Size + 1
+	if got, err := kvs.loadPartitionSet(base, bad); err == nil {
+		got.Close()
+		t.Error("字节数与文件实际长度不符却装上了")
+	}
+}
