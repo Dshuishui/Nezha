@@ -112,9 +112,9 @@ def plot_latency(csvpath, outdir):
         ax.set_title(op)
         ax.grid(axis="y", alpha=0.3, which="both")
         if ax is axes[0]:
-            ax.set_ylabel("延迟 (ms)")
-    axes[0].legend(title="value", fontsize=8)
-    fig.suptitle("三节点 PUT / GET / SCAN 延迟分位数（对数轴）", y=1.02)
+            ax.set_ylabel("Latency (ms)")
+    axes[0].legend(title="value size", fontsize=8)
+    fig.suptitle("Three-node latency percentiles (log scale)", y=1.02)
     save(fig, outdir, "latency")
 
 
@@ -163,12 +163,12 @@ def plot_series(archive, outdir):
         t0 = min(c["ts"][0] for c in data.values())
         panels = [
             ("rss_kb", lambda v: v / 1024.0, "RSS (MB)"),
-            ("fds", lambda v: v, "打开的 fd 数"),
-            ("gc", lambda v: v, "GC 轮数"),
+            ("fds", lambda v: v, "Open fds"),
+            ("gc", lambda v: v, "GC rounds"),
             # 画的是**绝对占用**而不是放大率：放大率的分母（逻辑字节）历史口径是
             # "补齐宽度 10 + value"，而那个口径本身有争议（见 maintable.sh 里 LOGICAL
             # 那段）。绝对占用没有口径问题，而"有没有随轮数无界增长"看绝对值就够了。
-            ("data_bytes", lambda v: v / 1048576.0, "数据目录 (MB)"),
+            ("data_bytes", lambda v: v / 1048576.0, "Data dir (MB)"),
         ]
         fig, axes = plt.subplots(len(panels), 1, figsize=(7.2, 2.0 * len(panels)),
                                  sharex=True)
@@ -185,8 +185,8 @@ def plot_series(archive, outdir):
             ax.set_ylabel(ylabel, fontsize=9)
             ax.grid(alpha=0.3)
         axes[0].legend(fontsize=8, ncol=3)
-        axes[-1].set_xlabel("时间 (分钟，自本格开始)")
-        fig.suptitle(f"{cellname}：内存 / fd / GC / 盘占用", y=0.995)
+        axes[-1].set_xlabel("Minutes since cell start")
+        fig.suptitle(f"{cellname}: memory, fds, GC rounds, disk", y=0.995)
         save(fig, outdir, f"series-{cellname}")
 
 
@@ -199,29 +199,45 @@ def plot_lag(archive, outdir):
         data = read_samples(celldir)
         if len(data) < 2:
             continue
-        # 三个节点的采样时刻不完全对齐（各自独立的循环），所以按秒取整后对齐，
-        # 缺的时刻不插值——插出来的"落后"是画图脚本编的，不是测到的。
-        by_ts = defaultdict(dict)
+        # 三个节点的采样时刻不会重合：三个独立的循环，各自的相位不同。
+        # 第一版按**秒**取整再要求三台都有，于是基本对不上——A-64B 那一格直接被跳过
+        # （A-256B 侥幸有几秒重合，所以问题只在一半的图上显形，更难发现）。
+        #
+        # 改成按窗口分桶，桶宽取采样间隔的两倍，桶内取每个节点**最近的一次实测值**。
+        # 这不是插值：报出去的每个数都是真采到的，只是把"同一时间段"定义得比一秒宽。
+        # 仍然要求三台在这个桶里都有值——缺一台就不画那个点，不拿上一轮的值顶替。
+        ts_all = sorted(t for cols in data.values() for t in cols["ts"])
+        if len(ts_all) < 2:
+            continue
+        # 采样间隔从数据自己推，不写死：驱动的 SAMPLE_IV 在不同跑法里是 15 或 30。
+        gaps = sorted(b - a for a, b in zip(ts_all, ts_all[1:]) if b > a)
+        step = gaps[len(gaps) // 2] * 2 if gaps else 30.0
+        step = max(step, 2.0)
+        buckets = defaultdict(dict)
         for node, cols in data.items():
             for t, b in zip(cols["ts"], cols["base_index"]):
-                by_ts[int(t)][node] = b
-        common = sorted(t for t, d in by_ts.items() if len(d) == len(data))
+                k = int(t // step)
+                prev = buckets[k].get(node)
+                if prev is None or t >= prev[0]:
+                    buckets[k][node] = (t, b)
+        common = sorted(k for k, d in buckets.items() if len(d) == len(data))
         if not common:
-            print(f"{cellname}: 三个节点没有共同的采样时刻，跳过")
+            print(f"{cellname}: no window holds a sample from all {len(data)} nodes, skipped")
             continue
-        t0 = common[0]
+        by_ts = {k: {n: v[1] for n, v in buckets[k].items()} for k in common}
+        t0 = common[0] * step
         fig, ax = plt.subplots(figsize=(7.2, 3.0))
         for node in sorted(data):
             color, ls, _ = NODE_STYLE[node]
-            xs = [(t - t0) / 60.0 for t in common]
-            ys = [max(by_ts[t].values()) - by_ts[t][node] for t in common]
+            xs = [(k * step - t0) / 60.0 for k in common]
+            ys = [max(by_ts[k].values()) - by_ts[k][node] for k in common]
             ax.plot(xs, ys, color=color, ls=ls, lw=1.2, label=node)
-        ax.set_xlabel("时间 (分钟)")
-        ax.set_ylabel("压缩点落后最快节点 (条)")
+        ax.set_xlabel("Minutes since cell start")
+        ax.set_ylabel("Entries behind the leading node\n(compaction point)")
         ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v/1e6:.1f}M" if v >= 1e6 else f"{v:.0f}"))
         ax.grid(alpha=0.3)
         ax.legend(fontsize=8)
-        ax.set_title(f"{cellname}：副本落后（压缩点口径）")
+        ax.set_title(f"{cellname}: replica lag")
         save(fig, outdir, f"lag-{cellname}")
 
 
@@ -282,22 +298,22 @@ def plot_ab(before_dir, after_dir, outdir):
     if not vsizes:
         sys.exit("两个 CSV 没有共同的 value 档")
     fig, axes = plt.subplots(1, 2, figsize=(8.0, 3.2))
-    for ax, key, title in ((axes[0], "p50", "p50（应当不变）"),
-                           (axes[1], "max", "max（要看的就是它）")):
+    for ax, key, title in ((axes[0], "p50", "p50 (should not move)"),
+                           (axes[1], "max", "max (the one to read)")):
         xs = range(len(vsizes))
         b = [rows_b[v].get(key, 0.0) for v in vsizes]
         a = [rows_a[v].get(key, 0.0) for v in vsizes]
-        ax.bar([x - 0.2 for x in xs], b, width=0.4, label="修复前",
+        ax.bar([x - 0.2 for x in xs], b, width=0.4, label="before",
                color="#b45f06", hatch="//", edgecolor="white")
-        ax.bar([x + 0.2 for x in xs], a, width=0.4, label="修复后",
+        ax.bar([x + 0.2 for x in xs], a, width=0.4, label="after",
                color="#1f4e79", edgecolor="white")
         ax.set_xticks(list(xs))
         ax.set_xticklabels([f"{v}B" for v in vsizes])
-        ax.set_ylabel("PUT 延迟 (ms)")
+        ax.set_ylabel("PUT latency (ms)")
         ax.set_title(title)
         ax.grid(axis="y", alpha=0.3)
     axes[0].legend(fontsize=8)
-    fig.suptitle("范围扫描是否还按住写入路径（混合阶段）", y=1.02)
+    fig.suptitle("Does a range scan still stall the write path? (mixed phase)", y=1.02)
     save(fig, outdir, "ab-scan-lock")
 
 
