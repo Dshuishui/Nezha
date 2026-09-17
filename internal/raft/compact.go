@@ -46,7 +46,17 @@ func (rf *Raft) compactLog() {
 
 		rf.mu.Lock()
 
-		if len(rf.log) <= logThreshold {
+		// **触发条件是"条数超了**或者**字节超了"**，不能只看条数。
+		// logThreshold 是写死的 20000 条，而一条的大小随 value 差两个数量级：
+		// 64B value 一条约 280B（20000 条 = 5.6MB），16KB value 一条约 16.6KB
+		// （20000 条 = 317MB，已经超过默认预算 256MB）。只看条数的话，大 value 档
+		// 在"压缩还没被允许启动"的阶段就已经把预算撑爆了——2026-09-17 实测：
+		// 16KB value、预算 16MB，[LOG-TRUNCATE] 一次都没发，而日志驻留 83MB。
+		budget := rf.logBudgetBytes
+		if budget <= 0 {
+			budget = defaultLogBudgetBytes
+		}
+		if len(rf.log) <= logThreshold && rf.logBytes <= budget {
 			rf.mu.Unlock()
 			continue
 		}
@@ -76,6 +86,13 @@ func (rf *Raft) compactLog() {
 		}
 		// 没被预算截住、但仍在按住压缩点的副本：日志是有界的（预算兜着），
 		// 所以这只是一条值得知道的事件，不再是"内存会一直涨"。
+		// 预算把保留窗口压得比 catchUpEntries 更短：大 value 档的正常结果，但要说出来，
+		// 否则"为什么慢副本这么快就要快照"没有线索。
+		if d.budgetCapsWindow {
+			fmt.Printf("[LOG-BUDGET] 保留窗口由预算决定而非固定条数：内存日志 %d 条 / %dMB，"+
+				"预算 %dMB，压缩点取到 %d（固定窗口本会保留 %d 条）\n",
+				len(rf.log), rf.logBytes>>20, d.budget>>20, d.point, catchUpEntries)
+		}
 		if d.pinnedBy >= 0 && d.cappedBy < 0 && d.pinnedAt-safeIndex >= logPinWarnEntries {
 			fmt.Printf("[LOG-PINNED] peer[%d] 只复制到 %d，压缩点被从 %d 按到 %d："+
 				"内存日志驻留 %d 条 / %dMB（预算 %dMB，未超）\n",
@@ -268,6 +285,9 @@ type compactDecision struct {
 	pinnedAt   int // 若没有任何 peer 约束，本该压到哪
 	cappedBy   int // 被预算截住的 peer，-1 = 没有
 	cappedAt   int // 它复制到了哪
+	// 预算比 catchUpEntries 那个固定窗口更紧，于是压缩点由预算决定。
+	// 大 value 档才会发生：16KB value 时 5000 条就是 83MB。
+	budgetCapsWindow bool
 }
 
 // compactDecisionLocked 按三档规则算出压缩点。调用方须持有 rf.mu。
@@ -304,6 +324,25 @@ func (rf *Raft) compactDecisionLocked(catchUpEntries int) compactDecision {
 	// 日志整体在预算内时 floor 退化为 lastIncludedIndex，也就是不构成约束——
 	// 所以第三档不必再判一次是否超预算。
 	d.floor = rf.budgetFloorLocked(d.budget)
+
+	// **保留窗口本身也要受预算约束。** 上面那句注释说"压缩点不得比 lastApplied 落后
+	// 超过预算那么多字节，活跃副本也不例外"，但 d.floor 此前只用来抬高某个 peer 的
+	// 保护位置，从没用来推进 d.point——于是 catchUpEntries 这个**写死的 5000 条**成了
+	// 一个预算管不到的底线：
+	//     64B value  → 5000 条 =  2.4MB，无所谓
+	//     16KB value → 5000 条 =   83MB，预算给 16MB 时超 5 倍
+	//     64KB value → 5000 条 =  330MB，超过默认预算 256MB
+	// 2026-09-17 实测（16KB value、预算 16MB）：驻留恒为 5016 条 / 83MB，
+	// [LOG-TRUNCATE] 一次未发，而闸门按"条数不涨"判了通过——违约对它不可见。
+	//
+	// 代价要说明白：预算紧时保留窗口变短，慢副本更早落到压缩点之前、更早需要快照，
+	// 而快照比补日志贵得多。**这正是第三档设计时就接受的取舍**（"让它回来时去要快照"），
+	// 不是新引入的行为；此前只是这条取舍在大 value 档被那 5000 条悄悄绕过了。
+	if d.floor > d.point {
+		d.point = d.floor
+		d.pinnedAt = d.point
+		d.budgetCapsWindow = true
+	}
 
 	// matchIndex 仅在成为 leader 时分配；follower 上为 nil，此时无需 peer 约束。
 	// 单节点时该循环为空，压缩仅受 lastApplied 约束。
