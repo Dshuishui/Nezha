@@ -200,6 +200,31 @@ is_self() { local target; target=$(host_bare_ip "$1"); [ -n "$target" ] || retur
 ON_SERVER=0; case "$SELF_IPS" in *" 192.168.1."*) ON_SERVER=1;; esac
 ssh_target() { if [ "$ON_SERVER" = 1 ]; then host_user_ip "$1"; else echo "$1"; fi; }
 
+# require_driver_host —— 在服务器上跑时，驱动脚本**只能跑在 tikv240 上**。
+#
+# 2026-09-17 实测的可达矩阵（免密 ssh）：
+#     240 -> 241 通、240 -> 55 通、240 -> 240 不通（自己的公钥不在自己的 authorized_keys）
+#     241 -> 任何一台 都不通
+#     55  -> 任何一台 都不通
+# 只有 240 持有能进另两台的私钥。所以指挥其他节点的驱动脚本必须在 240 上执行；
+# 放在 241 或 55 上，第一个 `rq` 就拿不到回执。
+#
+# 为什么要主动拦：那次失败**看起来像别的东西**。把 snapshot-vs-gc.sh 放到 241 上跑，
+# 第一个节点没有回执，而当时守卫的退出码被管道吃掉（见 gate-audit 第二十二节），
+# 于是整轮带着两个节点跑完并给出了一个"结论"。拦在开头，比事后看出来便宜得多。
+#
+# 从 Mac 上跑不受这条限制：Mac 的 ~/.ssh/config 能进三台。
+require_driver_host() {
+    [ "$ON_SERVER" = 1 ] || return 0
+    case "$SELF_IPS" in
+        *" 192.168.1.240 "*) return 0;;
+    esac
+    echo "驱动脚本必须在 tikv240 上执行（本机是 $(hostname -I 2>/dev/null | awk '{print $1}')）。" >&2
+    echo "只有 240 能免密 ssh 到另两台；在 241/55 上跑，第一个远端调用就拿不到回执。" >&2
+    echo "理由与实测矩阵见 scripts/multinode/gate.sh 的 require_driver_host。" >&2
+    return 1
+}
+
 # r / rq —— 唯一的远端执行入口。指向本机就本地跑，否则走 ssh；两者都带**总超时**。
 # SSH_TIMEOUT 默认 600s（写 2 万条 × 1KB 正常约 100s，压力下见过 12 分钟），
 # rq 给控制类命令用，90s 足够，超了就是真出问题了。

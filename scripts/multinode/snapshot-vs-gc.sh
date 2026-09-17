@@ -21,6 +21,7 @@ set -u
 cd "$(dirname "$0")"
 # shellcheck source=scripts/multinode/gate.sh
 . ./gate.sh
+require_driver_host || exit 1   # 只能在 tikv240 上跑，理由见 gate.sh
 [ "$TOPO" = two ] || [ "$TOPO" = three ] || { echo "TOPO 只认 two|three" >&2; exit 1; }
 
 LOG=snapshot-vs-gc.log; : > "$LOG"

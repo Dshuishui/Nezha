@@ -10,6 +10,7 @@ cd "$(dirname "$0")"
 # `-leaderCheck` 自 811ac32 起默认开，follower 上的读一律回 ErrWrongLeader，而客户端
 # 的 -servers 只有一个地址时 redirect 无处可去——本脚本的直读步骤因此从 2026-09-13
 # 起恒判失败，直到 2026-09-16 才发现。理由与判定见 gate.sh 的 gate_read_ok。
+require_driver_host || exit 1   # 只能在 tikv240 上跑，理由见 gate.sh
 MODE=${MODE:-restart}; LOG=recover-$MODE.log; : > "$LOG"
 RDFLAG="EXTRA='-leaderCheck=false'"
 # r / rq / host_of / addr_of / peers_str / servers_str 全在 gate.sh，理由见那里。

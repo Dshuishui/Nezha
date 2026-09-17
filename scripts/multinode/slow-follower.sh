@@ -21,6 +21,7 @@ cd "$(dirname "$0")"
 # shellcheck source=scripts/multinode/gate.sh
 . ./gate.sh
 
+require_driver_host || exit 1   # 只能在 tikv240 上跑，理由见 gate.sh
 LOG=slow-follower-multi.log; : > "$LOG"
 # fail 必须在这里初始化，不能放到第 7 步。第一版放在第 7 步开头，于是第 6 步置的
 # fail=1 会被它重置成 0——那一步的失败就静默丢了。
