@@ -169,6 +169,18 @@ round can run for minutes, and an install waiting on the write lock would block 
 that whole time (Go's `RWMutex` stops admitting readers once a writer waits), so GC and
 install refuse rather than wait, with the leader's resend backoff supplying the retry.
 
+A snapshot that would move the node **backwards** is refused, and the check has to happen
+before any pointer is swapped — `InstallSnapshotState` cannot roll back a half-applied swap,
+and its caller's only option there is `log.Fatalf`. `installSnapshot` already skipped a
+snapshot older than `kvs.lastAppliedIndex`, with a comment claiming the Raft layer had the
+same check ("index <= committed 就丢掉"); it did not, and the bound in the comment is the
+stricter one that matters. `RecoverLog` resets `commitIndex` to the snapshot's applied index,
+so entries that are committed but not yet applied are dropped. On three nodes that is a
+safety problem rather than a performance one: if the other replica holding them then fails,
+the third can be elected without them and committed data is gone. etcd checks exactly this
+(`s.Metadata.Index <= r.raftLog.committed`). `Raft.SnapshotRegresses` now answers it, against
+`commitIndex` and against the compaction point, before the caller touches anything.
+
 Transfers are idempotent retries, never resumable, which is what all three of etcd, TiKV and
 CockroachDB do (TiKV replays from the start after a receiver crash; CockroachDB does one
 atomic ingest-and-excise). So half-received state is worth nothing: the incoming directory

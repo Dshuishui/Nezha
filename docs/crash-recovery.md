@@ -61,6 +61,21 @@ has the same durability as the data.
 - A conflict overwrite truncates the file at the end of the new content. The old code moved
   the write position back to the previous end of file, leaving stale bytes that a sequential
   replay would read as records.
+- Append and overwrite are separate entry points (`AppendToLogFile`,
+  `OverwriteLogFileFrom`). One method used to serve both, with `startPos == 0` meaning
+  "append at the end" — but 0 is a legitimate overwrite position, because the first record
+  of a log file sits at offset 0. A follower that found its conflict at the first record
+  therefore performed the overwrite as an append: the new record landed after the stale ones
+  and nothing was truncated. Live reads stayed correct, since `rf.Offsets` pointed at the new
+  copy, so the damage only surfaced at the next restart, where the sequential replay reads
+  the stale records first and recovery refuses to start:
+
+  ```
+  RaftState.log: log not contiguous at offset 69: got index 1, want 4
+  ```
+
+  Offset 0 is not a corner case: it is the first entry a fresh node receives, and the first
+  entry written into a new file after a GC switch (`SetCurrentLog` resets `logOffset`).
 
 ## Startup sequence
 
@@ -135,10 +150,60 @@ No data-race reports on any node in any scenario. Unit tests cover the log rebui
 across GC files, truncated tails, gap and base-mismatch rejection, overwrite truncation, the
 hard-state round trip and the applied-index batch.
 
+## Commit rules on the receiving side
+
+Two AppendEntries bugs sat here, and both were invisible in normal operation because they
+only bite when a follower still holds an **uncommitted divergent tail** — the state a node
+is in right after it led a term it could not commit. That is the ordinary state after a
+failover, not an exotic one.
+
+**`commitIndex` is bounded by the last *new* entry, not by the follower's own log end.**
+The Raft paper's AppendEntries step 5 is `commitIndex = min(leaderCommit, index of last new
+entry)`. Both of our advance sites clamped to `rf.lastIndex()`. With a divergent tail the
+leader's empty heartbeat — which only confirms the prefix up to `PrevLogIndex` — would carry
+a high `leaderCommit` and push the follower's `commitIndex` past the confirmed prefix,
+committing entries the cluster never committed and which conflict with the leader's log.
+Applying cannot be undone: the log is truncated moments later, but those keys keep the wrong
+values in the store and reads return them. `advanceCommitLocked` now takes the confirmed
+prefix — `args.PrevLogIndex` for an empty append, the last index actually accepted otherwise.
+The comment at the second site used to read 「感觉，不存在这种情况」; that is precisely the
+case it doubted.
+
+**The leader's conflict back-off has to move.** When a follower rejects with a
+`ConflictTerm`, the leader must find the last entry in its own log with that term and retry
+from just past it. Our loop instead walked down from `PrevLogIndex` for the first entry whose
+term *differed* from `ConflictTerm` and took that index + 1 — but reaching this branch means
+the leader's term at `PrevLogIndex` already differs, so the loop broke on its first iteration
+and returned the `nextIndex` it already had. It never backed off, so the follower was
+unrepairable through the log path: the same probe retried forever, the leader never sent
+entries overlapping the divergent tail, and the conflict truncation that would have fixed it
+never ran. Nothing reported an error. `backOffNextIndexLocked` is now a separate method (so
+the arithmetic is directly testable) and asserts the property the bug violated: `nextIndex`
+must strictly decrease on every rejection.
+
+The offset queue's invariant is now checked rather than assumed. `rf.Offsets[0]` corresponds
+to index `shotOffset + 1`, and a conflicting index is necessarily unapplied — committed
+entries agree across replicas by Log Matching, so a differing index is above
+`commitIndex >= lastApplied == shotOffset`. A `commitIndex` pushed past the confirmed prefix
+breaks that, and the conflict branch would then index the queue out of range; it now reports
+which invariant broke instead of a bare `index out of range`.
+
 ## Known gaps
 
-- Conflict truncation on a follower is exercised only by a unit test; the cluster scripts
-  kill the leader after the writes finish, so no uncommitted tail is left behind.
+- ~~Conflict truncation on a follower is exercised only by a unit test; the cluster scripts
+  kill the leader after the writes finish, so no uncommitted tail is left behind.~~ Closed:
+  `internal/raft/append_conflict_test.go` drives the real `AppendEntriesInRaft` conflict path
+  (conflict at the first entry, mid-log, and a leader log shorter than the local one, each
+  checked in memory, in the offset queue, and through recovery from the file on disk), and
+  `scripts/test/conflict-truncation.sh` builds the same shape on a live three-node cluster.
+
+  That script's scale is part of its premise. The new leader's log must stay under
+  `logThreshold`; past it the leader compacts, the divergence point leaves its retained
+  window, the log path is skipped entirely (`start < 0`) and the conflict branch is never
+  reached — silently. At `BASE=20000` three runs showed the restarted node converging with
+  zero `[LOG-REJECT]` and zero `[LOG-OVERLAP]`, having never been rejected and never reached
+  the overlapping region. The default is 2000 and the script refuses to run if the projected
+  leader log would cross the threshold.
 - ~~No InstallSnapshot: a node that falls behind the leader's compaction point cannot catch
   up.~~ Closed; see `docs/snapshot-replication.md`.
 - After the second GC round the first round's sorted file (`RaftState_sorted_1`) is left on

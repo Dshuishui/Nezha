@@ -85,6 +85,31 @@ covers it was ingested is dropped rather than held, so a later replay cannot res
 older value. Term rules apply to `InstallSSTable` like to any Raft RPC (stale leaders are
 refused; a newer term demotes the receiver).
 
+## Two bugs that only the baseline arms could show
+
+Both live on the `-kvSeparation=false` path, which is what `original`, `pasv` and `lsm-raft`
+share, so a run of the KV-separated systems alone would never surface them.
+
+- **An empty value is a value.** `Persister.Get` decided whether a key existed with
+  `slice.Size() == 0`. Zero length has two causes — the key is absent, and the key is present
+  with an empty value — so a committed empty value read back as `ErrNoKey`: written,
+  replicated, committed, and then reported as a key that does not exist. Nothing rejects an
+  empty value; `PutInRaft` validates only the key. `Get_opt`, in the same file, already used
+  `slice.Exists()`; the two sibling functions disagreed about what "present" means. `Get` now
+  uses `Exists()` and returns `ErrKeyNotFound`, and `StartGet`'s baseline branch classifies
+  with `errors.Is` rather than comparing the returned value against the `ErrNoKey` *string* —
+  that comparison also meant a value whose contents happen to equal `"ErrNoKey"` was reported
+  as a missing key.
+- **A failed read is not a missing key, and must not kill the node.** The KV-separated read
+  paths carried nine panics between them, so one bad read took down a Raft member. Read
+  failure does not threaten Raft's safety argument — that is the reason `persistHardState`
+  panics, and it does not carry over. One of those panics needed no corruption at all:
+  `Get_opt` returns `ErrInlineValue` for a `TagInline` record, so restarting a node that was
+  written with `-inlinePlacement` but started without it panicked with a message pointing
+  nowhere near the cause. They also aborted the whole GET when the *first* of several search
+  paths failed, even when a later path held the key; `readOutcome` now carries the rule —
+  note the error, keep looking, and let it decide the reply only if no path found the key.
+
 ## Known trade-offs
 
 - A follower's visible state lags the leader by at most one span. Reads are served by the
