@@ -16,6 +16,16 @@ RDFLAG="EXTRA='-leaderCheck=false'"
 # （recover.sh 与 slow-follower.sh 已接入 gate.sh 的集中拓扑，可以用 TOPO=three。）
 [ "$TOPO" = two ] || { echo "$0 暂不支持 TOPO=${TOPO}：脚本内地址仍写死两台拓扑" >&2; exit 1; }
 
+# 中途死掉必须停掉自己起的节点。happy path（第 70 行）和 START_FAIL 分支都会停，
+# 但两者之间任何一次退出——set -u 撞到未定义变量、ssh 超时、Ctrl-C——都会把两个节点
+# 留在 240/241 上。那两台是**共用**的，留下的进程会占住端口与磁盘，而下一次运行只会
+# 报"启动失败"，指不到这里。trap 收不到 SIGKILL，所以它不是万能的，但覆盖其余情形。
+cleanup_rep_nodes() {
+  rq tikv240 '~/rep-node.sh stop leader' >/dev/null 2>&1 || true
+  rq tikv241 '~/rep-node.sh stop follower' >/dev/null 2>&1 || true
+}
+trap cleanup_rep_nodes EXIT
+
 LOG=rep.log; : > "$LOG"
 # r / rq 在 gate.sh（带总超时、本机直跑、别名->用户名@IP），理由见那里。
 say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }

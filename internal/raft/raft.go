@@ -633,7 +633,11 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			// util.DPrintf("追加RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] Index[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, index, rf.Offsets)
 		} else { // 重叠部分
 			if rf.log[logPos].Term != logEntry.Term {
-				util.DPrintf("RaftNode[%d] conflicting entry at index %d: local term %d, leader term %d; truncating from here", rf.me, index, rf.log[logPos].Term, logEntry.Term)
+				// 日志分叉是个稀少而重要的事件，用与 [LOG-TRUNCATE]/[LOG-STUCK] 同一档的
+				// 无条件标记打出来。此前只有 DPrintf，混在调试噪声里，验证脚本没法据此
+				// 确认"截断这条路真的走到了"——而判据的前提立不住，结论就没有意义。
+				fmt.Printf("[LOG-CONFLICT] index=%d 本地 term=%d，leader term=%d，从这里截断\n",
+					index, rf.log[logPos].Term, logEntry.Term)
 				// 覆盖写会回退写入位置并截掉之后的字节。缓冲里若还压着本轮攒下的追加条目，
 				// 它们正落在截断点之后——必须先落盘，否则连同 rf.Offsets 一起对不上。
 				// （冲突一定出现在追加之前，所以实际上这里永远是空的；显式刷一次是把

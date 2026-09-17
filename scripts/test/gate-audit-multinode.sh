@@ -573,6 +573,76 @@ else
     bad "上列守卫的 || 绑在管道上（退出码是 tee 的，恒为 0）——守卫不会触发。先赋值再判。"
 fi
 
+info "=== 二十三、被审的脚本集合必须是**发现**出来的，不能靠手写清单 ==="
+# 前面第八、十、十一、十三、十四、十五、十七、十八节都带着一份写死的文件名清单
+# （failover.sh recover.sh lsmraft.sh …）。清单本身就是一个失效点：新写的驱动脚本
+# 不在清单里，于是**整类判据对它一条都不生效**，而自审照样全绿。
+# 2026-09-17 实测：scripts/test/ 下的驱动（crash-recovery.sh、gc-rounds.sh，以及当天
+# 新写的 conflict-truncation.sh）从来没有被上面任何一节审过；同一天还发现
+# two-node-rounds.sh 起了两个节点却没有 EXIT trap——它不在第十三节的清单里。
+#
+# 所以这一节先把"驱动脚本"**判定**出来（会起节点的脚本），再对整个集合施加两条
+# 判得准的检查。判定规则：出现 nohup 且带节点参数，或者调用了 three-node.sh /
+# rep-node.sh 的 start。
+discover_drivers() {
+    local p
+    while IFS= read -r p; do
+        if grep -q 'nohup' "$p" && grep -qE -- '-internalAddress|-peers' "$p"; then
+            echo "$p"; continue
+        fi
+        grep -qE '(three-node|rep-node)\.sh[^|]*(start|restart)' "$p" && echo "$p"
+    done < <(find "$PROJECT_DIR/scripts" -name '*.sh' | sort)
+}
+DRIVERS=$(discover_drivers)
+if [ -z "$DRIVERS" ]; then
+    bad "一个驱动脚本都没发现——判定规则本身失效了"
+else
+    good "发现 $(echo "$DRIVERS" | wc -l | tr -d ' ') 个会起节点的脚本"
+fi
+
+# (a) 会起节点的脚本必须有 EXIT trap，否则中途死掉会把节点留在**共用**的机器上。
+#     三个例外，都是按设计如此，写在这里而不是靠读者自己判断：
+#       three-node.sh / rep-node.sh 是节点管理脚本，stop 是它自己的一个子命令；
+#       gate.sh 是被 source 的库，trap 归调用方；
+#       gc-election.sh 刻意把节点留下供事后检查（脚本末尾自己说明了）。
+for p in $DRIVERS; do
+    b=$(basename "$p")
+    case "$b" in three-node.sh|rep-node.sh|gate.sh|gc-election.sh) continue;; esac
+    rel=${p#"$PROJECT_DIR"/}
+    if grep -qE '^[[:space:]]*trap .*EXIT' "$p"; then
+        good "$rel 有 EXIT trap"
+    else
+        bad "$rel 会起节点却没有 EXIT trap——中途死掉会把节点留在共用机器上"
+    fi
+done
+
+# (b) 凡是等选举的脚本，不许用固定 sleep。判据与第十一节一致，但集合是发现出来的。
+#
+# 判定要**两个**条件同时成立，只看 kill 是不够的：单节点的 benchmark 收尾时也 kill -9
+# 自己的节点，那不是"杀 leader 逼选举"，它压根没有选举可等。第一版只看 kill，于是
+# amplification / groupcommit-sweep / maintable / gc-rounds 四个单节点脚本全被误报——
+# 这正是本文件开头说的那个毛病：灵敏而不特异。
+# 所以再要求它是**多节点**的：peers 列表里有逗号，或者它调用了 three-node.sh /
+# rep-node.sh 的 start（那两个脚本天然是多节点拓扑）。
+for p in $DRIVERS; do
+    b=$(basename "$p")
+    case "$b" in three-node.sh|rep-node.sh|gate.sh) continue;; esac
+    kills=0
+    grep -qE 'kill -9|kill9|kill -CONT|-CONT ' "$p" && kills=1
+    [ "$kills" = 1 ] || continue
+    multi=0
+    grep -qE -- '-peers[^\n]*,' "$p" && multi=1
+    grep -qE '(three-node|rep-node)\.sh[^|]*(start|restart)' "$p" && multi=1
+    grep -qE 'PEERS=.*,' "$p" && multi=1
+    [ "$multi" = 1 ] || continue
+    rel=${p#"$PROJECT_DIR"/}
+    if grep -qE 'wait_new_leader|leader_wins|won_count|Candidate -> Leader|-> Leader' "$p"; then
+        good "$rel 按「当选次数/日志标记」轮询等选举"
+    else
+        bad "$rel 杀了 leader 却没有轮询判据——固定 sleep 会把脚本常量钉在源码常量上"
+    fi
+done
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"
