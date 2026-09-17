@@ -137,6 +137,8 @@ func (rf *Raft) RecoverLog(files []LogFile, lastApplied int) (lastIndex int, err
 		rf.lastApplied = rf.lastIncludedIndex
 		rf.commitIndex = rf.lastIncludedIndex
 		rf.shotOffset = rf.lastIncludedIndex
+		// 盘上的东西都是已落盘的，已落盘前沿就是 base（见 durableIndex）
+		rf.persistedIndex.Store(int64(rf.lastIncludedIndex))
 		util.DPrintf("RaftNode[%d] recovery complete: log empty, everything compacted at base %d, term=%d votedFor=%d",
 			rf.me, rf.lastIncludedIndex, rf.currentTerm, rf.votedFor)
 		return rf.lastIncludedIndex, nil
@@ -156,6 +158,9 @@ func (rf *Raft) RecoverLog(files []LogFile, lastApplied int) (lastIndex int, err
 	rf.lastApplied = lastApplied
 	rf.commitIndex = lastApplied
 	rf.shotOffset = lastApplied // invariant: Offsets[0] belongs to index lastApplied+1
+	// 回放出来的每一条都在盘上，所以已落盘前沿就是日志末尾。不摆正的话它停在 0，
+	// commit 判据会把 leader 自己的一票算成 0，写入永远提交不了。
+	rf.persistedIndex.Store(int64(lastIndex))
 	util.DPrintf("RaftNode[%d] recovery complete: log (%d, %d], %d entries pending apply, term=%d votedFor=%d",
 		rf.me, base, lastIndex, len(offsets), rf.currentTerm, rf.votedFor)
 	return lastIndex, nil

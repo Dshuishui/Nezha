@@ -282,6 +282,11 @@ func (rf *Raft) writeEntries(e []*Entry, startPos int64, overwrite bool) {
 	if n := len(e); n > 0 {
 		rf.lastWrittenIndex = int(e[n-1].Index)
 		rf.lastWrittenTerm = int32(e[n-1].CurrentTerm)
+		// 已落盘的前沿。commit 判据拿它当 leader 自己的一票（见 durableIndex）：
+		// 攒批模式下 rf.log 领先于磁盘，拿 rf.log 的末尾投票等于用一份还没落盘的
+		// 副本凑多数派。覆盖写（冲突截断）会让这个值**变小**，那是对的——
+		// 截断点之后的字节已经不属于日志了，所以无条件存。
+		rf.persistedIndex.Store(int64(e[n-1].Index))
 	}
 
 	rf.Offsets = append(rf.Offsets, offsets...)

@@ -373,3 +373,56 @@ func TestBackOffAlwaysMovesNextIndexDown(t *testing.T) {
 		t.Errorf("nextIndex 退到了 %d，不能小于 1", rf.nextIndex[0])
 	}
 }
+
+// commit 判据里 leader 自己的那一票必须取**已落盘**的位置。
+//
+// 立即写入模式下 rf.log 的末尾就等于已落盘（Start 先 AppendToLogFile 再 appendLog）。
+// 攒批模式打破了这个不变式：只入队、立刻 appendLog，rf.log 领先磁盘一个窗口。
+// 单节点时 leader 就是整个多数派，拿 rf.log 末尾投票 = 每条都在 fsync 之前就被提交、
+// 被 apply、被读看见；此时崩一次，那条读已经返回过的写就没了。
+func TestDurableIndexHoldsBackCommit(t *testing.T) {
+	rf := conflictFollower(t, 1)
+
+	// 内存日志有 5 条，但只有前 2 条写出去了
+	sendEntries(t, rf, 1, 0, 0,
+		[2]string{"a", "v1"}, [2]string{"b", "v2"}, [2]string{"c", "v3"},
+		[2]string{"d", "v4"}, [2]string{"e", "v5"})
+	if rf.lastIndex() != 5 {
+		t.Fatalf("前置：lastIndex=%d, want 5", rf.lastIndex())
+	}
+	rf.persistedIndex.Store(2)
+	if got := rf.durableIndex(); got != 2 {
+		t.Fatalf("durableIndex = %d; want 2——它必须取 min(内存末尾, 已写出末尾)", got)
+	}
+
+	// 已写出前沿追上来之后，就不再压着
+	rf.persistedIndex.Store(5)
+	if got := rf.durableIndex(); got != 5 {
+		t.Fatalf("durableIndex = %d; want 5", got)
+	}
+
+	// 已写出前沿跑到内存日志前面（不该发生）时取更保守的那个，不能报出一个不存在的 index
+	rf.persistedIndex.Store(99)
+	if got := rf.durableIndex(); got != 5 {
+		t.Fatalf("durableIndex = %d; want 5——前沿超过内存日志时必须夹回来", got)
+	}
+}
+
+// 真写一批日志之后，已落盘前沿必须自己跟上；冲突覆盖之后必须**回退**
+// （截断点之后的字节已经不属于日志了）。
+func TestPersistedIndexTracksWritesAndTruncation(t *testing.T) {
+	rf := conflictFollower(t, 1)
+	sendEntries(t, rf, 1, 0, 0,
+		[2]string{"a", "v1"}, [2]string{"b", "v2"}, [2]string{"c", "v3"})
+	if got := rf.persistedIndex.Load(); got != 3 {
+		t.Fatalf("写完三条后 persistedIndex = %d; want 3", got)
+	}
+	// 新 leader 从 index 2 起覆盖一条：盘上最后一条变成 2
+	sendEntries(t, rf, 2, 1, 1, [2]string{"z", "w2"})
+	if got := rf.persistedIndex.Load(); got != 2 {
+		t.Fatalf("覆盖后 persistedIndex = %d; want 2——截断之后前沿必须回退", got)
+	}
+	if got := rf.durableIndex(); got != 2 {
+		t.Fatalf("durableIndex = %d; want 2", got)
+	}
+}

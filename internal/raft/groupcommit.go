@@ -63,6 +63,10 @@ func (rf *Raft) runFlusher() {
 		// 空转返回。少了这一次唤醒，它只能等 10ms 兜底超时——实测单客户端下
 		// 攒批模式的延迟因此从 1.12ms 退回 10.8ms。
 		rf.signalApply()
+		// 也要叫醒提交检查。commit 判据现在取**已落盘**的位置（durableIndex），
+		// 而 Start 里那次 signalCommit 发生在本批落盘**之前**——那时判据还看不到
+		// 这一批。少了这一次唤醒，单节点下每条日志都要多等一次兜底轮询。
+		rf.signalCommit()
 		rf.mu.Unlock()
 		recordBatch(len(b.entries))
 		close(b.done)

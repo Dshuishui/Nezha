@@ -169,6 +169,11 @@ type Raft struct {
 	inflightSnaps int            // 正在传的快照数；> 0 时压缩整个跳过
 	snapReleaseAt time.Time      // 传输结束之后继续保护日志到这个时刻
 
+	// persistedIndex 是已经写出到日志文件的最后一个 index（攒批模式下会落后于 rf.log）。
+	// 只由 writeEntries 写、由 durableIndex 读，所以用 atomic 而不是挂在某把锁下——
+	// 读它的是 commit 路径，不该为此再取 logMu。
+	persistedIndex atomic.Int64
+
 	// logBytes 是 rf.log 当前占的字节数，由 compact.go 里那四个入口维护。
 	// 截断预算按字节，所以它必须精确——见 compact.go 的"rf.log 的字节计量"一节。
 	logBytes int64
@@ -1151,7 +1156,17 @@ func (rf *Raft) electionLoop() {
 
 func (rf *Raft) updateCommitIndex() {
 	sortedMatchIndex := make([]int, 0)
-	sortedMatchIndex = append(sortedMatchIndex, rf.lastIndex()) // 补充自己位置的index
+	// leader 自己的那一票必须取**已落盘**的位置，不是 rf.log 的末尾。
+	//
+	// 立即写入模式下两者相等：Start 先 AppendToLogFile（Flush + fsync）再 appendLog，
+	// 所以进了 rf.log 就等于已落盘——那行「确保日志落盘之后，再更新log」说的就是这个。
+	// **攒批模式打破了这个不变式**：它只 enqueueForFlush，然后立刻 appendLog，
+	// rf.log 因此领先于磁盘一个攒批窗口。拿 rf.lastIndex() 投票就等于用一份**还没落盘**
+	// 的副本去凑多数派。
+	// 单节点时 leader 就是整个多数派（groupcommit-sweep.sh 正是 -peers 单地址 + -syncWAL），
+	// 于是每一条都在 fsync 之前就被提交、被 apply、被读看见；此时崩一次，
+	// 那条**读已经返回过**的写就没了。
+	sortedMatchIndex = append(sortedMatchIndex, rf.durableIndex()) // 补充自己位置的index
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -2102,4 +2117,18 @@ func (rf *Raft) backOffNextIndexLocked(peerId int, prevLogIndex, conflictTerm, c
 		// 这时候我们将返回的conflictIndex设置为nextIndex即可
 		rf.nextIndex[peerId] = int(conflictIndex)
 	}
+}
+
+// durableIndex 返回本节点日志中**已落盘**的最后一个 index。
+//
+// 取 min(内存日志末尾, 已写出末尾)：攒批时前者领先，冲突截断时后者会变小，
+// 两种情形都必须取更保守的那个。persistedIndex 由 writeEntries 在写完之后存，
+// 用 atomic 是为了让 updateCommitIndex 不必为它再取一次 logMu
+// （那会把 logMu 拖进 commit 路径）。
+func (rf *Raft) durableIndex() int {
+	last := rf.lastIndex()
+	if p := int(rf.persistedIndex.Load()); p < last {
+		return p
+	}
+	return last
 }
