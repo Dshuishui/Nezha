@@ -334,6 +334,26 @@ run_cell() { # $1=phase $2=total_mb $3=vsize
         sleep 10
     done
     say "[${cell}] GC 轮数 = ${gcmax}（连续 ${stable} 次不变）"
+    # **轮数不变 ≠ 没有一轮在途中。** 计数数的是"轮垃圾回收完成"这行，而 numGC 在一轮
+    # **开始**时就自增、产物文件也随之改名。于是完成数可以连续 40 秒不变，而下一轮正在
+    # 往盘上写：2026-09-18 实测，第 8 轮完成后判了稳定，而第 9 轮在途，紧接着的
+    # lost-keys.py 读到一个写了一半的布局、报错退出，回执为空 -> NA。
+    # 所以再等 gc_in_progress 落回 false，这个字段就是节点自己写的、口径不会错。
+    local k2 inflight
+    for k2 in $(seq 1 60); do
+        inflight=0
+        for i in 0 1 2; do
+            rq "$(host_of "$i")" "grep -c '\"gc_in_progress\": true' ~/work/three-$i/data/kv_state.json 2>/dev/null" \
+                | grep -q '^1' && inflight=1
+        done
+        [ "$inflight" = 0 ] && break
+        sleep 10
+    done
+    if [ "$inflight" != 0 ]; then
+        warn "[${cell}] 600s 内仍有节点的 gc_in_progress 为 true，后面读盘的检查可能读到半成品"
+    else
+        say "[${cell}] 三个节点的 gc_in_progress 都已落回 false（等了 $((k2*10))s）"
+    fi
     if [ "$gcmax" -lt 1 ] && [ "$SYSTEM" != nezha-nogc ] && [ "$SYSTEM" != original ]; then
         say "[$cell] GC 一轮都没跑（阈值 ${GCGB}GB）——读路径不走有序文件，这一格测的不是要测的东西"
         fail=1; return 1
@@ -349,9 +369,15 @@ run_cell() { # $1=phase $2=total_mb $3=vsize
         # **超时要给够。** 这个脚本把盘上出现过的 key 全收进一个 Python 集合再做差集，
         # 4570 万个 key 要跑十几分钟，而 r() 默认 SSH_TIMEOUT=600s 是按"写 2 万条"那个
         # 量级定的。2026-09-18 实测：4GB 那一格因此被 with_timeout 掐断、回执为空。
-        lost=$(SSH_TIMEOUT=${LOST_TIMEOUT:-7200} r "$(host_of 0)" \
-               "cd ~/work/Nezha && python3 scripts/bench/lost-keys.py ~/work/three-0 $n $vs $INLINE_TH" \
-               | grep -o '丢失 [0-9]*' | grep -o '[0-9]*')
+        # stderr 要留下来。r() 把 stderr 丢进 /dev/null（那是为了让控制类调用安静），
+        # 于是这个检查失败时只剩一个 NA，**看不出是超时、是 python 报错、还是路径不对**。
+        # 2026-09-18 就为此查了半天：真因是 GC 在途、读到半成品，而 NA 本身什么都没说。
+        # 所以这里用 2>&1 收进文件，拿不到数字时把最后几行打出来。
+        local lostlog="$d/lost-keys.out"
+        SSH_TIMEOUT=${LOST_TIMEOUT:-7200} r "$(host_of 0)" \
+            "cd ~/work/Nezha && python3 scripts/bench/lost-keys.py ~/work/three-0 $n $vs $INLINE_TH 2>&1" \
+            > "$lostlog" 2>&1
+        lost=$(grep -o '丢失 [0-9]*' "$lostlog" | grep -o '[0-9]*' | tail -1)
         lost="${lost:-NA}"
         # **NA 在 LOST_KEYS=fail 下必须判失败。**
         #
@@ -361,7 +387,8 @@ run_cell() { # $1=phase $2=total_mb $3=vsize
         # 而命中率看不出来（CLAUDE.md 记着这一条）。
         # "拿不到判据不等于判据通过"是 gate.sh 里反复写的规则，这里却违反了它。
         if [ "$lost" = NA ]; then
-            say "[$cell] 丢 key 检查没有回执（超时或脚本失败）——拿不到判据不等于通过"
+            say "[$cell] 丢 key 检查没有回执——拿不到判据不等于通过。它自己的输出末尾："
+            tail -6 "$lostlog" 2>/dev/null | sed 's/^/        /' | tee -a "$LOG"
             [ "$LOST_KEYS" = fail ] && { fail=1; return 1; }
             warn "[$cell] LOST_KEYS=warn，继续，但这一格**没有**做过丢 key 检查"
         elif [ "$lost" -gt 0 ]; then
