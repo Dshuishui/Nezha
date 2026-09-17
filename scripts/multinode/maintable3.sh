@@ -31,6 +31,8 @@
 #                     按剩余字节而不是百分比：node55 常态就在 93%（别人的 1.4T 占着）。
 #   LAG_ENTRIES=200000  压缩点跨节点的最大允许落差，超了记一条警告（不直接判失败，
 #                     理由见 lag_check）。
+#   LAG_STREAK=3      连续这么多次检查都超阈值才报。一轮 GC 的错位会产生一次尖峰而
+#                     马上收回，实测两次（见 lag_check），报它只会训练人忽略这个警告。
 #   LOST_KEYS=fail    读之前数一遍盘上丢了多少 key。GC 搬丢记录不报任何错。
 #   PHASES="A B C"    A=冒烟(TOTAL_MB 缩到 SMOKE_MB) B=正式 C=kill9 重启再校验
 #   SMOKE_MB=400     A 阶段的数据量
@@ -147,6 +149,7 @@ scol() { printf '%s' "$1" | head -1 | cut -d, -f"$2"; }
 # `lag_check >/dev/null`——那把 warn 的那一行也一起吞了，于是"有节点落后"的警告在终端上
 # 一次都看不见。这正是本仓库反复踩的那个形态：判据自己坏了。
 LAG_SPREAD=NA
+LAG_OVER=0
 lag_check() {
     local i s b mn="" mx="" who="" lines=""
     for i in 0 1 2; do
@@ -159,9 +162,29 @@ lag_check() {
     done
     [ -n "$mn" ] || { LAG_SPREAD=NA; return 0; }
     LAG_SPREAD=$((mx - mn))
+    # **只报"持续"的落差，一次尖峰不报。**
+    #
+    # 一轮 GC 的错位必然产生一次尖峰：某台先跑完一轮，它就删了旧库旧日志、压缩点往前跳，
+    # 而另两台还揣着两份。2026-09-18 的 4GB 跑里出现过两次，都自己收了：
+    #     64B 写入期   峰值 717 万 -> 41 万（node1 多跑完一轮）
+    #     256B 混合期  峰值 277 万 -> 95 万（leader 少跑一轮，混合负载全压在它身上）
+    # 两次都在轮数追平后收敛，**都是良性的**。一个每次都报、每次都良性的警告只会
+    # 训练人去忽略它——而这个判据存在的意义正是"某台真的掉队了"。
+    # 所以要求连续 LAG_STREAK 次检查都超阈值才报。真掉队的副本压缩点会一直落后，
+    # 尖峰不会。
     if [ "$LAG_SPREAD" -gt "$LAG_ENTRIES" ]; then
-        warn "压缩点跨节点落差 ${LAG_SPREAD} 条（最慢 node${who} = ${mn}，最快 = ${mx}，阈值 ${LAG_ENTRIES}）"
-        echo "$lines" | tee -a "$LOG"
+        LAG_OVER=$((LAG_OVER + 1))
+        if [ "$LAG_OVER" -ge "${LAG_STREAK:-3}" ]; then
+            warn "压缩点跨节点落差连续 ${LAG_OVER} 次超阈值，现为 ${LAG_SPREAD} 条（最慢 node${who} = ${mn}，最快 = ${mx}，阈值 ${LAG_ENTRIES}）"
+            echo "$lines" | tee -a "$LOG"
+        fi
+    else
+        # 收回阈值之内就清零，并且把刚才那串尖峰说出来——"出现过又收了"本身是有用的
+        # 信息（它就是 GC 错位的指纹），但它不该长得像一次失败。
+        if [ "$LAG_OVER" -gt 0 ]; then
+            say "压缩点落差曾连续 ${LAG_OVER} 次超阈值，现已收回 ${LAG_SPREAD} 条（GC 轮数错位的常见形态）"
+        fi
+        LAG_OVER=0
     fi
 }
 
