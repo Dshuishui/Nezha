@@ -84,9 +84,20 @@ rounds(){ grep -c '轮垃圾回收完成' "$DATA/n.log" 2>/dev/null || echo 0; }
 dirmb(){ du -sm "$DATA/data" 2>/dev/null | awk '{print $1}'; }
 
 info "数据集 $(( DATASET/1048576 ))MB，分区目标 ${PARTITION_MB}MB，吸收比例 ${ABSORB_RATIO:-（不传）}，GC 下限 $(awk -v g=$GCGB 'BEGIN{printf "%.1f", g*1024}')MB"
-printf '%-6s %-8s %-8s %-10s %s\n' "阶段" "GC轮数" "目录MB" "空间放大" "分区数"
+printf '%-6s %-8s %-8s %-10s %-8s %-10s %s\n' "阶段" "GC轮数" "静止MB" "静止放大" "峰值MB" "峰值放大" "分区数"
 
 for pass in $(seq 0 "$PASSES"); do
+  # **峰值也要量，不能只量静止态。** 下面那个 dirmb 是在"GC 轮数连续三次不变"之后取的，
+  # 也就是 GC 已经把尾部吸收完的静止态。而 ABSORB_RATIO 真正影响的是"多久吸收一次"，
+  # 也就是**峰值尾部**：比例越大，尾部允许涨得越高才开一轮。
+  # 2026-09-17 扫 0.05/0.25/0.5/0.9 时四档静止放大**完全一样（7.02）**——不是比例没用，
+  # 是这个口径量不到它。
+  #
+  # 采样必须盖到 GC 等待窗口**之后**才停（与 raftlog-memory / memory-curve 同一条教训，
+  # 见闸门自审第二十节）：GC 就发生在那段等待里，先停采样等于把要看的那一段排除掉。
+  : > "$DATA/dirsz-$pass.txt"
+  ( while kill -0 "$PID" 2>/dev/null; do dirmb >> "$DATA/dirsz-$pass.txt"; sleep 2; done ) &
+  SAMPLER=$!
   /tmp/rounds-scanverify -servers "$ADDR" -leader 0 -dnums "$ENTRIES" -vsize "$VSIZE" \
       -span 50 -sample 20 > "$DATA/pass$pass.out" 2>&1
   grep -q VERIFY_OK "$DATA/pass$pass.out" || { tail -5 "$DATA/pass$pass.out"; die "第 $pass 遍写入或即时校验失败"; }
@@ -97,9 +108,14 @@ for pass in $(seq 0 "$PASSES"); do
     if [ "$r" = "$prev" ]; then stable=$((stable+1)); [ "$stable" -ge 3 ] && break; else stable=0; prev=$r; fi
     sleep 2
   done
+  kill $SAMPLER 2>/dev/null; wait $SAMPLER 2>/dev/null
   mb=$(dirmb); parts=$(ls "$DATA"/data/valuelog/*.p* 2>/dev/null | wc -l | tr -d ' ')
-  printf '%-6s %-8s %-8s %-10s %s\n' "第${pass}遍" "$(rounds)" "$mb" \
-    "$(awk -v m="$mb" -v l="$LOGICAL" 'BEGIN{printf "%.2f", m*1048576/l}')" "$parts"
+  # 峰值取采样序列的最大值；采样为空就报 ?，不要用静止值冒充峰值。
+  peak=$(awk '$1 ~ /^[0-9]+$/ && $1 > m { m = $1; seen = 1 } END { if (seen) print m; else print "?" }' "$DATA/dirsz-$pass.txt")
+  peakamp="?"
+  [ "$peak" != "?" ] && peakamp=$(awk -v m="$peak" -v l="$LOGICAL" 'BEGIN{printf "%.2f", m*1048576/l}')
+  printf '%-6s %-8s %-8s %-10s %-8s %-10s %s\n' "第${pass}遍" "$(rounds)" "$mb" \
+    "$(awk -v m="$mb" -v l="$LOGICAL" 'BEGIN{printf "%.2f", m*1048576/l}')" "$peak" "$peakamp" "$parts"
   kill -0 "$PID" 2>/dev/null || { tail -20 "$DATA/n.log"; die "节点在第 $pass 遍后崩溃"; }
 done
 
