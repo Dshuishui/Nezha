@@ -148,15 +148,27 @@ func (kvs *KVServer) firstGCMigrate(firstSortedFilePath string, oldFile *os.File
 	for it.SeekToFirst(); it.Valid(); it.Next() {
 		key := it.Key()
 		value := it.Value()
-		defer key.Free()
-		defer value.Free()
+		// Free 必须在循环体里**立即**调用，不能 defer。
+		//
+		// Go 对循环内的 defer 不做开放编码优化：每一个都是堆上分配的 _defer 记录，
+		// 压在 goroutine 的 defer 链上直到**函数返回**才释放。而这一轮迭代的是整个库，
+		// 于是 defer 记录的数量是 O(key 数)——1000 万 key 就是 2000 万条记录压着，
+		// 返回时再一次性执行完。这是"内存随 key 数量而非数据量增长"的又一处，
+		// 与 rf.log、稀疏索引那几处同类。
+		// gc_absorb.go（后写的第二轮）用的就是立即 Free，两轮本来不一致。
 		if raft.IsMetaKey(key.Data()) {
+			key.Free()
+			value.Free()
 			continue // recovery metadata (applied index), not user data; do not migrate it
 		}
 
 		// 记录可能是 [TagOffset, offset8]（去 valuelog 取）也可能是
 		// [TagInline, value]（value 就在这条记录里）——由 entryFromRecord 分流。
+		// entryFromRecord 只拷不留引用（string(...) 拷贝、偏移解码不持有底层字节），
+		// 所以取完就能放。
 		entry, err := kvs.entryFromRecord(string(key.Data()), value.Data(), oldFile)
+		key.Free()
+		value.Free()
 		if err != nil {
 			pw.Abort()
 			return err

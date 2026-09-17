@@ -299,24 +299,32 @@ func (p *Persister) ScanRange_opt(startKey, endKey string) (map[string]int64, er
 	for it.Seek([]byte(startKey)); it.Valid(); it.Next() { // Valid判断键是否存在，不存在就直接下一个
 		key := it.Key()
 		value := it.Value()
-		defer key.Free()
-		defer value.Free()
-
+		// Free 立即调用，不能 defer：Go 对循环内的 defer 不做开放编码优化，
+		// 每个都是堆上分配的 _defer 记录、压到**函数返回**才释放，于是数量是
+		// O(扫描范围)。一次 gapkey=1000 的 SCAN 就是 2000 条记录，而 benchmark
+		// 要做二十万次这样的调用。gc_absorb.go 用的就是立即 Free。
 		// 检查是否超出范围
 		if string(key.Data()) > endKey {
+			key.Free()
+			value.Free()
 			break
 		}
 		if IsMetaKey(key.Data()) { // 恢复用的 applied index，不是用户数据
+			key.Free()
+			value.Free()
 			continue
 		}
 
 		// 解析值
-		valueInt64, err := parseValueInt64(value.Data())
-		if err != nil {
-			return nil, fmt.Errorf("error parsing value: %v", err)
+		k := string(key.Data())
+		valueInt64, perr := parseValueInt64(value.Data())
+		key.Free()
+		value.Free()
+		if perr != nil {
+			return nil, fmt.Errorf("error parsing value: %v", perr)
 		}
 
-		result[string(key.Data())] = valueInt64
+		result[k] = valueInt64
 	}
 
 	if err := it.Err(); err != nil {
@@ -351,21 +359,29 @@ func (p *Persister) ScanRange(startKey, endKey string) (map[string]string, error
 	for it.Seek([]byte(startKey)); it.Valid(); it.Next() {
 		key := it.Key()
 		value := it.Value()
-		defer key.Free()
-		defer value.Free()
-
+		// Free 立即调用，不能 defer：Go 对循环内的 defer 不做开放编码优化，
+		// 每个都是堆上分配的 _defer 记录、压到**函数返回**才释放，于是数量是
+		// O(扫描范围)。一次 gapkey=1000 的 SCAN 就是 2000 条记录，而 benchmark
+		// 要做二十万次这样的调用。gc_absorb.go 用的就是立即 Free。
 		// 检查是否超出范围
 		if string(key.Data()) > endKey {
+			key.Free()
+			value.Free()
 			break
 		}
 		if IsMetaKey(key.Data()) { // 恢复用的 applied index，不是用户数据
+			key.Free()
+			value.Free()
 			continue
 		}
 
 		// 直接使用字符串值
+		k := string(key.Data())
 		valueString := string(value.Data())
+		key.Free()
+		value.Free()
 
-		result[string(key.Data())] = valueString
+		result[k] = valueString
 	}
 
 	if err := it.Err(); err != nil {
