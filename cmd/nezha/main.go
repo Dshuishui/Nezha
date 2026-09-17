@@ -110,6 +110,17 @@ func main() {
 		}
 	}
 
+	// GC 的触发下限是 floor = gcThresholdGB × 1GB（gcloop.go）。阈值 <= 0 时 floor 为 0，
+	// 第一轮的判据 `tailBytes < need` 恒为假——GC 会在每次 5 秒检查时都跑一遍，
+	// 把一个几乎空的 valuelog 反复重写，而且每轮都新建一个 RocksDB 库。
+	// 默认值是 4000（GB），所以只有显式给 0 或负数才会撞上；显式给了就直接拒绝，
+	// 不要让它变成一个"跑起来之后才看出不对"的配置。
+	if cfg.GCEnabled && cfg.GCThresholdGB <= 0 {
+		log.Fatalf("nezha: GC 开着但 -gcThresholdGB=%g，触发下限会变成 0，"+
+			"于是每 5 秒就重写一遍空的 valuelog。要频繁跑 GC 请给一个小的**正数**"+
+			"（例如 0.004）；确实不要 GC 请写 -system nezha-nogc。", cfg.GCThresholdGB)
+	}
+
 	// -inlinePlacement 的判据是 len(value) < -inlineThreshold（严格小于，见
 	// KVServer.shouldInline）。阈值 <= 0 时这个条件恒为假，于是内联一条都不发生——
 	// 开关开着、日志照打、功能没有。和上面 -gcThresholdGB 那条是同一类问题：

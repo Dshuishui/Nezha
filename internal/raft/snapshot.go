@@ -328,3 +328,28 @@ func (rf *Raft) resetPeerSnapLocked() {
 		rf.peerSnap[i] = peerSnapshot{}
 	}
 }
+
+// SnapshotRegresses 判断一份位点为 base、覆盖到 last 的快照装下去会不会让本节点**后退**。
+//
+// 装快照是整体替换：RecoverLog 会把 commitIndex 重设为快照里的 applied。所以一份比本节点
+// 已提交位置更旧的快照装下去，等于丢掉本地已经提交的条目。三节点里若另一个副本随后失败，
+// 剩下那个可以在缺少这些条目的情况下当选——**已提交数据丢失**，是安全性违背而非性能问题。
+// etcd 的判据同样在这一层：`s.Metadata.Index <= r.raftLog.committed` 就丢掉。
+//
+// kvstore 的 installSnapshot 本来就有一条"比本节点 applied 还旧就跳过"的检查，注释里写着
+// "Raft 层同样有这条"——而这一层当时**并没有**。补上它，同时把判据从 applied 换成
+// commitIndex：applied 落后于 commitIndex 的那段是已提交未应用，丢掉它同样是丢已提交数据。
+//
+// 必须在调用方换任何指针**之前**问：InstallSnapshotState 走到一半失败是没法回滚的
+// （调用方只能 log.Fatalf），所以拒绝要发生在那之前。
+func (rf *Raft) SnapshotRegresses(base, last int) (bool, string) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if base < rf.lastIncludedIndex {
+		return true, fmt.Sprintf("快照位点 %d 早于本节点的压缩点 %d", base, rf.lastIncludedIndex)
+	}
+	if last < rf.commitIndex {
+		return true, fmt.Sprintf("快照只覆盖到 %d，而本节点已提交到 %d", last, rf.commitIndex)
+	}
+	return false, ""
+}

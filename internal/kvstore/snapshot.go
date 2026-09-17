@@ -334,7 +334,7 @@ func (kvs *KVServer) installSnapshot(span raft.SSTableSpan) (int, raftrpc.Instal
 		return kvs.lastAppliedIndex, raftrpc.InstallSSTableStatus_FAILED
 	}
 	if kvs.lastAppliedIndex >= sm.LastIndex {
-		// 比本节点还旧的快照直接忽略。Raft 层同样有这条（index <= committed 就丢掉）。
+		// 比本节点还旧的快照直接忽略。
 		la := kvs.lastAppliedIndex
 		kvs.mu.Unlock()
 		util.DPrintf("[SNAPSHOT] 快照到 %d，本节点已 applied 到 %d，跳过", sm.LastIndex, la)
@@ -343,6 +343,16 @@ func (kvs *KVServer) installSnapshot(span raft.SSTableSpan) (int, raftrpc.Instal
 	kvs.installing = true
 	prevPartitions, prevLog, prevStore := kvs.lastPartitions, kvs.currentLog, kvs.currentDBPath
 	kvs.mu.Unlock()
+
+	// Raft 侧再判一次"会不会后退"。上面那条用的是 KV 层的 applied，而真正不能后退的是
+	// **commitIndex**：applied 落后于 commitIndex 的那一段是已提交未应用，装快照会把
+	// commitIndex 重设为快照里的 applied，于是那一段已提交的条目被丢掉。
+	// 必须在换任何指针之前问：InstallSnapshotState 走到一半失败没法回滚，
+	// 调用方只能 log.Fatalf。
+	if regress, why := kvs.raft.SnapshotRegresses(sm.LastIncludedIndex, sm.LastIndex); regress {
+		util.DPrintf("[SNAPSHOT] 拒绝会让本节点后退的快照：%s", why)
+		return kvs.appliedIndexNow(), raftrpc.InstallSSTableStatus_SKIPPED
+	}
 	defer func() {
 		kvs.mu.Lock()
 		kvs.installing = false

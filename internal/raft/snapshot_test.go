@@ -238,3 +238,34 @@ func waitFor(t *testing.T, cond func() bool, msg string) {
 	}
 	t.Fatal(msg)
 }
+
+// 装快照是整体替换：RecoverLog 会把 commitIndex 重设为快照里的 applied。
+// 所以一份"覆盖范围还没到本节点已提交位置"的快照装下去就是丢已提交条目——
+// 三节点里另一个副本随后失败时，剩下那个可以在缺少这些条目的情况下当选。
+// 判据必须在调用方换任何指针之前问：InstallSnapshotState 走到一半失败没法回滚。
+func TestSnapshotRegressesRejectsStaleSnapshots(t *testing.T) {
+	cases := []struct {
+		name                 string
+		lastIncluded, commit int
+		base, last           int
+		want                 bool
+	}{
+		{"正常推进", 100, 150, 100, 400, false},
+		{"刚好接上已提交位置", 100, 150, 100, 150, false},
+		{"覆盖不到已提交位置", 100, 150, 100, 149, true},
+		{"位点早于本节点压缩点", 100, 150, 99, 400, true},
+		{"全新节点", 0, 0, 0, 500, false},
+		{"位点与压缩点相同、覆盖更远", 300, 300, 300, 900, false},
+	}
+	for _, c := range cases {
+		rf := &Raft{lastIncludedIndex: c.lastIncluded, commitIndex: c.commit}
+		got, why := rf.SnapshotRegresses(c.base, c.last)
+		if got != c.want {
+			t.Errorf("%s：SnapshotRegresses(%d, %d) = %v (%q); want %v",
+				c.name, c.base, c.last, got, why, c.want)
+		}
+		if got && why == "" {
+			t.Errorf("%s：判成后退却没给原因", c.name)
+		}
+	}
+}
