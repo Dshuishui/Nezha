@@ -386,7 +386,7 @@ run_cell() { # $1=phase $2=total_mb $3=vsize
     # ---- 混合：扫描的同时写和点读 ----
     # 立意见文件开头。判据不是吞吐，而是"混合时的 PUT/GET 延迟比单独跑时差多少"，
     # 以及 GC 轮数在这段里是否停滞。
-    local MIXL="" MIXT=""
+    local MIXL="" MIXT="" MIXPL="" MIXPT="" MIXSL="" MIXST=""
     if [ "$MIXED_SEC" -gt 0 ]; then
         # **规模按条数定，不能用 timeout 掐。** 第一版是 `timeout $MIXED_SEC <客户端>`，
         # 而三个 bench 工具都是在**跑完之后**才打 [LATENCY]/[THROUGHPUT]——被 SIGTERM
@@ -422,6 +422,13 @@ run_cell() { # $1=phase $2=total_mb $3=vsize
         wait "$SP" 2>/dev/null; wait "$WP" 2>/dev/null; wait "$GP" 2>/dev/null
         MIXL=$(grep '^\[LATENCY\]' "$d/mixed-get.out" | tail -1)
         MIXT=$(grep '^\[THROUGHPUT\]' "$d/mixed-get.out" | tail -1)
+        # 混合阶段的 **PUT** 才是那个发现的关键数字（扫描按住 apply → PUT 的 max 爆掉），
+        # 而第一版只把混合 GET 写进 CSV，PUT 与 SCAN 只打进日志。于是画图要用的那一列
+        # 根本不在表里，只能回去翻 mixed-put.out。三个都进表。
+        MIXPL=$(grep '^\[LATENCY\]' "$d/mixed-put.out" | tail -1)
+        MIXPT=$(grep '^\[THROUGHPUT\]' "$d/mixed-put.out" | tail -1)
+        MIXSL=$(grep '^\[LATENCY\]' "$d/mixed-scan.out" | tail -1)
+        MIXST=$(grep '^\[THROUGHPUT\]' "$d/mixed-scan.out" | tail -1)
         say "[${cell}] 混合 GET  $(printf '%s' "${MIXL:-无输出}" | cut -c1-130)"
         say "[${cell}] 混合 PUT  $(grep '^\[LATENCY\]' "$d/mixed-put.out" | tail -1 | cut -c1-130)"
         say "[${cell}] 混合 SCAN $(grep '^\[LATENCY\]' "$d/mixed-scan.out" | tail -1 | cut -c1-130)"
@@ -472,7 +479,9 @@ run_cell() { # $1=phase $2=total_mb $3=vsize
     emit PUT  "$PUTL"  "$PUTT"  "NA"
     emit GET  "$GETL"  "$GETT"  "$(field "$HIT" ratio)"
     emit SCAN "$SCANL" "$SCANT" "$(field "$YIELD" pairs_per_query)"
-    [ -n "$MIXL" ] && emit MIXGET "$MIXL" "$MIXT" "NA"
+    [ -n "$MIXL" ]  && emit MIXGET  "$MIXL"  "$MIXT"  "NA"
+    [ -n "$MIXPL" ] && emit MIXPUT  "$MIXPL" "$MIXPT" "NA"
+    [ -n "$MIXSL" ] && emit MIXSCAN "$MIXSL" "$MIXST" "NA"
 
     cleanup_nodes
     return 0
