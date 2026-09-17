@@ -15,6 +15,7 @@ import (
 	"syscall"
 
 	"gitee.com/dong-shuishui/FlexSync/internal/kvstore"
+	"gitee.com/dong-shuishui/FlexSync/internal/util"
 )
 
 func main() {
@@ -108,6 +109,10 @@ func main() {
 				"确实不要 GC 请写 -system nezha-nogc，别只靠把阈值调大。", cfg.GCThresholdGB)
 		}
 	}
+
+	// 先把 fd 软上限抬到硬上限，再建节点。必须在 New 之前：New 会装载分区组，
+	// 每个分区常驻一个描述符，而抬上限不需要任何权限。理由见 util.RaiseFDLimit。
+	fmt.Printf("[LIMITS] %s\n", util.RaiseFDLimit())
 
 	node, err := kvstore.New(cfg)
 	if err != nil {

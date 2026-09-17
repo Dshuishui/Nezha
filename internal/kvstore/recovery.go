@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gitee.com/dong-shuishui/FlexSync/internal/raft"
+	"gitee.com/dong-shuishui/FlexSync/internal/util"
 )
 
 // kvState is what the KV layer persists for crash recovery. It is written at two
@@ -253,6 +254,12 @@ func (kvs *KVServer) recoverOrInit(initialDB string) (files []raft.LogFile, appl
 		kvs.lastGCFinish = true
 		fmt.Printf("[RECOVER] partition set rebuilt: %s (%d partitions, %d bytes)\n",
 			st.SortedFile, parts.Len(), parts.TotalSize())
+		// 分区数此刻才知道，所以余量检查放在这里。超了不拦启动——只是警告，
+		// 因为够不够还取决于实际读并发；但要在**开始跑之前**说，而不是等某次选举
+		// 写状态文件时 panic（那时现场指向 electionLoop，看不出真因）。
+		if w := util.CheckFDHeadroom(parts.Len()); w != "" {
+			fmt.Printf("[LIMITS] %s\n", w)
+		}
 	}
 
 	if st.GCInProgress {
