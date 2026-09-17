@@ -40,8 +40,24 @@ BIN=/tmp/nezha-rounds
 
 LOGICAL=$(( ENTRIES * (10 + VSIZE) ))
 DATASET=$(( ENTRIES * (20 + 10 + VSIZE) ))
-# 下限取得比"比例触发"要小，好让比例真正起作用而不是被下限盖住
-GCGB=$(awk -v b="$DATASET" 'BEGIN{printf "%.9f", b/8/1073741824}')
+# 下限取得比"比例触发"要小，好让比例真正起作用而不是被下限盖住。
+#
+# **但这个意图有个门槛，而它此前没被写出来也没被检查。** 触发条件是
+#     need = max(下限, 分区总量 × ABSORB_RATIO)
+# 下限在这里是 DATASET/8，而 GC 把数据吸收完之后分区总量 ≈ DATASET，所以比例要压过
+# 下限就得 `DATASET × ratio > DATASET/8`，即 **ratio > 0.125——与数据量无关**。
+# 比例低于这个门槛时，那一档从头到尾都是下限驱动的，测的不是比例。
+# 2026-09-17 我照默认参数扫 0.05 就是这样：跑完、判过、什么也没测到，而且三个点的
+# 空间放大全都一样（7.02），因为它们实际上跑的是同一个触发条件。
+GC_FLOOR_DIVISOR="${GC_FLOOR_DIVISOR:-8}"
+GCGB=$(awk -v b="$DATASET" -v d="$GC_FLOOR_DIVISOR" 'BEGIN{printf "%.9f", b/d/1073741824}')
+if [ -n "${ABSORB_RATIO:-}" ]; then
+  awk -v r="$ABSORB_RATIO" -v d="$GC_FLOOR_DIVISOR" 'BEGIN{exit !(r*d > 1)}' || {
+    warn "ABSORB_RATIO=$ABSORB_RATIO 配 GC_FLOOR_DIVISOR=$GC_FLOOR_DIVISOR：比例永远压不过下限"
+    warn "  （需要 ratio × divisor > 1），这一档全程是下限驱动的，测不到比例的影响。"
+    warn "  要扫这么低的比例，把下限调小：GC_FLOOR_DIVISOR=$(awk -v r="$ABSORB_RATIO" 'BEGIN{printf "%d", 2/r}')"
+  }
+fi
 
 info "构建 $(git rev-parse --short HEAD)"
 go build -o "$BIN" ./cmd/nezha/ || die "节点编译失败"
@@ -89,10 +105,20 @@ done
 
 R=$(rounds)
 echo
+# 轮数下限这条断言是为"改造前封顶两轮"设的回归守卫，**它对 ABSORB_RATIO 无感知**：
+# 比例调大就是要让 GC 少触发，轮数自然变少。2026-09-17 实测 ABSORB_RATIO=0.9 跑出 4 轮，
+# 被判成"轮数上限可能没真正去掉"——原因猜错了，而错误的原因比没有原因更费时间。
+# 所以改了比例就必须一起给 MIN_ROUNDS：这条断言只有在"比例已知"的前提下才有意义。
+if [ -n "${ABSORB_RATIO:-}" ] && [ "$ABSORB_RATIO" != 0.25 ] && [ "${MIN_ROUNDS-unset}" = 5 ]; then
+  warn "ABSORB_RATIO=$ABSORB_RATIO 非默认，而 MIN_ROUNDS 仍是默认的 5：轮数下限对比例无感知，"
+  warn "  比例调大本就会让轮数变少。本轮只判正确性，不判轮数下限（要判就显式给 MIN_ROUNDS）。"
+  MIN_ROUNDS=""
+fi
 if [ -z "$MIN_ROUNDS" ]; then
-  warn "未设轮数下限（对照组：改造前封顶两轮，本来就跑不满）"
+  warn "未设轮数下限（对照组：改造前封顶两轮，本来就跑不满；或比例非默认，见上）"
 elif [ "$R" -lt "$MIN_ROUNDS" ]; then
-  die "只跑了 $R 轮 GC，少于要求的 $MIN_ROUNDS 轮——轮数上限可能没真正去掉"
+  die "只跑了 $R 轮 GC，少于要求的 $MIN_ROUNDS 轮（吸收比例 ${ABSORB_RATIO:-默认}）——"\
+      "比例是默认值时这说明轮数上限可能没真正去掉；比例调大过则是预期行为，应显式设 MIN_ROUNDS"
 fi
 ok "共跑了 $R 轮 GC"
 
