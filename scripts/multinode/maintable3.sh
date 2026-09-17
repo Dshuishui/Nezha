@@ -37,6 +37,7 @@
 #   PHASES="A B C"    A=冒烟(TOTAL_MB 缩到 SMOKE_MB) B=正式 C=kill9 重启再校验
 #   SMOKE_MB=400     A 阶段的数据量
 #   C_MB=$TOTAL_MB C_VSIZES=<VSIZES 的第一档>   C 阶段的规模与档位
+#   C_VERIFY=200000   C 阶段逐条校验覆盖前多少个 key（**不是全部**，理由见 phase_c）
 #   OUT=              CSV 路径
 #
 # 为什么要有混合阶段：`scanNewFile` 整段迭代都握着 kvs.mu，而 applyLoop 用的是同一把锁
@@ -251,10 +252,11 @@ node_extra() {
     printf '%s' "$e"
 }
 
-start_cluster() { # $1=vsize $2=entries
-    local vs=$1 n=$2 i P IP OUT w rc NS EX started=0
+start_cluster() { # $1=vsize $2=entries [$3=额外追加给节点的 flag]
+    local vs=$1 n=$2 extra=${3:-} i P IP OUT w rc NS EX started=0
     NS=$(node_system) || return 1
     EX=$(node_extra)
+    [ -n "$extra" ] && EX="$EX $extra"
     for i in 0 1 2; do
         read -r P IP <<<"$(port_of "$i")"
         OUT=$(rq "$(host_of "$i")" \
@@ -561,10 +563,45 @@ phase_c() { # $1=vsize
     rec=$(record_bytes "$vs")
     n=$(awk -v mb="$C_MB" -v r="$rec" 'BEGIN{printf "%d", mb*1048576/r}')
     cell="C-${vs}B"; d="$HOME/work/mt3-$LABEL/$cell"; mkdir -p "$d"
-    say "===== [$cell] 崩溃恢复：写 $n 条 → kill -9 三台 → 重启 → 逐条校验 ====="
-    start_cluster "$vs" "$n" || return 1
+    say "===== [${cell}] 崩溃恢复：写 ${n} 条 → kill -9 三台 → 重启 → 校验 ====="
+    # **必须用 -leaderCheck=false 起。** 第 4 步的 readonly 用 kvc.GetFrom(0, k)，
+    # 故意不跟随重定向——它要看的就是 `-servers` 里**第一个**节点自己的本地状态，
+    # 而那恰好是恢复正确性要验的东西（node0 有没有把自己的库重建对）。
+    # 而 -leaderCheck 自 811ac32 起默认**开**，follower 上的读一律回 ErrWrongLeader，
+    # 于是重启后若 node0 不是 leader，那一步会**恒判失败**，而原因看起来像"数据不对"。
+    # 这个坑 gate.sh 的 gate_read_ok 里记着，recover.sh 用的就是这个办法。
+    start_cluster "$vs" "$n" "-leaderCheck=false" || return 1
 
-    out=$(r "$CLIENT_HOST" "source ~/env.sh; /tmp/scanverify -servers $ALL -leader 0 -dnums $n -vsize $vs -span 50 -sample 20" | grep -vE 'new pool success')
+    # **播种与校验必须分工，不能全交给 scanverify。**
+    #
+    # scanverify 是**单线程**写（`for i := 0; i < dnums; i++ { Put }`，没有 goroutine，
+    # 也没有 -cnums），实测约 3480 条/s。4570 万条要 3.65 小时，而这一格真正要测的
+    # kill/重启/校验只在最后几分钟。2026-09-18 实地撞上：C 阶段起来 5 分钟不动，
+    # 查出来是这个。
+    #
+    # 也不能换成 randwrite_goroutine 一把做完：它给所有 key 写**同一个固定值**
+    # （util.GenerateLargeValue），而 scanverify / readonly 期望的是**从 key 派生**的值，
+    # 拿 readonly 去校验它会把每一条都报成值错。
+    #
+    # 所以：
+    #   1. randwrite_goroutine 并发写满 n 条 —— 盘上真有 C_MB 的数据，恢复要重放的就是它
+    #   2. scanverify 覆盖前 C_VERIFY 个 key 成可校验的值并即时校验
+    #   3. kill -9 / 重启 / 等选举
+    #   4. readonly 只读地重校验那 C_VERIFY 个 key（它不写，所以可以重复跑）
+    # 覆盖率要说清楚：**逐条校验只覆盖前 C_VERIFY 个 key**，不是全部 n 条
+    # （其余 n-C_VERIFY 条是 randwrite_goroutine 写的固定值，按 key 派生的口径校验不了）。
+    # 全量的保障来自恢复之后再数一遍盘上的 key（lost-keys.py），两者互补：
+    # 前者验"值对不对"，后者验"条数少没少"。
+    local CV=${C_VERIFY:-200000}
+    [ "$CV" -gt "$n" ] && CV=$n
+    say "[${cell}] 1/4 并发写满 ${n} 条（100 客户端）"
+    run_watched "$cell/seed" "$d/seed.out" \
+        "source ~/env.sh; /tmp/mt3-randwrite_goroutine -cnums 100 -dnums $n -vsize $vs -servers $ALL" \
+        || return 1
+    grep -q '^\[THROUGHPUT\]' "$d/seed.out" || { tail -10 "$d/seed.out" | tee -a "$LOG"
+        say "[${cell}] 播种没有吞吐输出"; fail=1; return 1; }
+    say "[${cell}] 2/4 用可校验的值覆盖前 ${CV} 个 key 并即时校验"
+    out=$(SSH_TIMEOUT=${LOST_TIMEOUT:-7200} r "$CLIENT_HOST" "source ~/env.sh; /tmp/scanverify -servers $ALL -leader 0 -dnums $CV -vsize $vs -span 50 -sample 20" | grep -vE 'new pool success')
     echo "$out" | tail -3 | sed 's/^/    /' | tee -a "$LOG"
     echo "$out" | grep -q VERIFY_OK || { say "[$cell] 写入阶段就没校验通过"; fail=1; return 1; }
 
@@ -590,10 +627,37 @@ phase_c() { # $1=vsize
     # （gate-audit 第十一节与第二十三(b) 节都钉着这条）。
     wait_new_leader "$wins" 90 || return 1
 
-    out=$(r "$CLIENT_HOST" "source ~/env.sh; /tmp/scanverify -servers $ALL -leader 0 -dnums $n -vsize $vs -span 50 -sample 40" | grep -vE 'new pool success')
-    echo "$out" | tail -3 | sed 's/^/    /' | tee -a "$LOG"
-    echo "$out" | grep -q VERIFY_OK || { say "[$cell] 重启后校验没通过"; fail=1; return 1; }
-    say "[$cell] 重启后逐条校验通过"
+    # 重启后用 **readonly**，不是 scanverify：后者会先把那批 key 重写一遍，
+    # 于是"重启后读到的"其实是"重启后刚写进去的"，恢复正确性根本没被检验。
+    # -check 给到 CV：readonly 查的是 key 0..check-1（**顺序，不是随机抽样**），
+    # 所以给 CV 就正好覆盖 scanverify 写过的那整段。20 万次点查单线程约 60 秒，付得起。
+    say "[${cell}] 4/4 重启后只读校验 key 0..$((CV-1))（node0 的本地状态）"
+    out=$(SSH_TIMEOUT=${LOST_TIMEOUT:-7200} r "$CLIENT_HOST" "source ~/env.sh; /tmp/mt3-readonly -servers $(addr_of 0) -dnums $CV -vsize $vs -span 50 -sample 40 -check $CV" | grep -vE 'new pool success')
+    echo "$out" | tail -4 | sed 's/^/    /' | tee -a "$LOG"
+    if ! echo "$out" | grep -q FAILOVER_VERIFY_OK; then
+        # 三种结局要分开，混成一句"读失败"会让最常见的误配根本查不出来。
+        gate_read_ok "$out" "${cell} 重启后直读 node0" | tee -a "$LOG"
+        fail=1; return 1
+    fi
+    say "[${cell}] 重启后 key 0..$((CV-1)) 逐条校验通过（node0 本地状态）"
+    # 全量保障：盘上到底还有多少 key。逐条校验只覆盖了 CV 个，这一步覆盖全部 n 条。
+    if [ "$LOST_KEYS" != off ]; then
+        SSH_TIMEOUT=${LOST_TIMEOUT:-7200} r "$(host_of 0)" \
+            "cd ~/work/Nezha && python3 scripts/bench/lost-keys.py ~/work/three-0 $n $vs 0 2>&1" \
+            > "$d/lost-keys.out" 2>&1
+        local clost
+        clost=$(grep -o '丢失 [0-9]*' "$d/lost-keys.out" | grep -o '[0-9]*' | tail -1)
+        if [ -z "$clost" ]; then
+            say "[${cell}] 恢复后数盘上 key 没有回执，它自己的输出末尾："
+            tail -6 "$d/lost-keys.out" 2>/dev/null | sed 's/^/        /' | tee -a "$LOG"
+            [ "$LOST_KEYS" = fail ] && { fail=1; return 1; }
+        elif [ "$clost" -gt 0 ]; then
+            say "[${cell}] 恢复后盘上丢了 ${clost} 条"
+            [ "$LOST_KEYS" = fail ] && { fail=1; return 1; }
+        else
+            say "[${cell}] 恢复后盘上 ${n} 条一条不少"
+        fi
+    fi
     stop_sampling
     collect_cell "$cell"
     cleanup_nodes
@@ -624,10 +688,10 @@ done
 # bench 工具按 mt3- 前缀单独建一份：deploy.sh 建的 /tmp/scanverify 等是共用的，
 # 正在跑别的验证时覆盖它们会把那一轮也换掉。
 say "构建节点与客户端工具"
-for t in randwrite_goroutine zipf_read scan_pro; do
+for t in randwrite_goroutine zipf_read scan_pro readonly; do
     r "$CLIENT_HOST" "source ~/env.sh; cd ~/work/Nezha && go build -o /tmp/mt3-$t ./cmd/bench/$t/ && echo BUILD_OK_$t" | tee -a "$LOG"
 done
-for t in randwrite_goroutine zipf_read scan_pro; do
+for t in randwrite_goroutine zipf_read scan_pro readonly; do
     grep -q "BUILD_OK_$t" "$LOG" || { say "$t 没建出来"; exit 1; }
 done
 
