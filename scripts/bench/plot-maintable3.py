@@ -173,10 +173,21 @@ def plot_series(archive, outdir):
         fig, axes = plt.subplots(len(panels), 1, figsize=(7.2, 2.0 * len(panels)),
                                  sharex=True)
         for ax, (key, conv, ylabel) in zip(axes, panels):
+            dropped = []
             for node, cols in sorted(data.items()):
                 color, ls, _ = NODE_STYLE[node]
+                # **被 32 位截断的序列要丢掉，不能画。**
+                # node55 的 awk 是 mawk，`printf "%d"` 把 2GB 以上的字节数截成 2^31-1。
+                # 那个值画出来是一条平在 2048MB 的线，**看起来像"这台只用了一半的盘"**，
+                # 而图会脱离 meta 单独流传。2026-09-18 的 4GB 那一组就是这样。
+                # 判据：这一列有一半以上的点恰好等于 2^31-1。
+                vals = cols[key]
+                clamped = sum(1 for v in vals if v == 2147483647)
+                if clamped * 2 >= len(vals) and len(vals) > 0:
+                    dropped.append(node)
+                    continue
                 xs = [(t - t0) / 60.0 for t in cols["ts"]]
-                ys = [conv(v) for v in cols[key]]
+                ys = [conv(v) for v in vals]
                 # GC 轮数是阶跃量，用 step 画；连线会让"某一刻跳了一轮"看成斜坡。
                 if key == "gc":
                     ax.step(xs, ys, where="post", color=color, ls=ls, lw=1.4, label=node)
@@ -184,6 +195,11 @@ def plot_series(archive, outdir):
                     ax.plot(xs, ys, color=color, ls=ls, lw=1.2, label=node)
             ax.set_ylabel(ylabel, fontsize=9)
             ax.grid(alpha=0.3)
+            if dropped:
+                # 说出来它为什么不在图上。静默丢掉一条线，读者只会以为那台没数据。
+                ax.text(0.99, 0.04, "%s: 32-bit clamped, omitted" % ", ".join(dropped),
+                        transform=ax.transAxes, ha="right", va="bottom",
+                        fontsize=7, color="#b00020")
         axes[0].legend(fontsize=8, ncol=3)
         axes[-1].set_xlabel("Minutes since cell start")
         fig.suptitle(f"{cellname}: memory, fds, GC rounds, disk", y=0.995)
