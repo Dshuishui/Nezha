@@ -618,6 +618,7 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	// lastNew 是本次被接受的最后一条条目的 index，也就是 leader 确认过的前缀末尾。
 	// 从 PrevLogIndex 起算：一条都没接受（全是 nil）时，确认过的仍然只有 PrevLogIndex。
 	lastNew := int(args.PrevLogIndex)
+	overlapLogged := false
 	for i, logEntry := range logEntrys {
 		if logEntry == nil || logEntry.GetCommand() == nil {
 			util.EPrintf("RaftNode[%d] AppendEntries carried a nil entry or a nil command; skipping it", rf.me)
@@ -642,6 +643,16 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			rf.batchLog = append(rf.batchLog, &entry) // 攒够一批再落盘，见 flushBatchLog
 			// util.DPrintf("追加RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] Index[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, index, rf.Offsets)
 		} else { // 重叠部分
+			if !overlapLogged {
+				// 每次 AppendEntries 只打一行：进入了重叠区，比较的是哪两个 term。
+				// "探针没进重叠区"与"进了但没判出冲突"是两种完全不同的故障，
+				// 而现有输出分不开它们（2026-09-17 为此连跑三轮还没定位）。
+				overlapLogged = true
+				fmt.Printf("[LOG-OVERLAP] index=%d 本地 term=%d，leader term=%d，本次带 %d 条"+
+					"（本节点日志 (%d, %d]）\n",
+					index, rf.log[logPos].Term, logEntry.Term, len(logEntrys),
+					rf.lastIncludedIndex, rf.lastIndex())
+			}
 			if rf.log[logPos].Term != logEntry.Term {
 				// 日志分叉是个稀少而重要的事件，用与 [LOG-TRUNCATE]/[LOG-STUCK] 同一档的
 				// 无条件标记打出来。此前只有 DPrintf，混在调试噪声里，验证脚本没法据此
@@ -1317,34 +1328,7 @@ func (rf *Raft) doAppendEntries(peerId int) {
 				rf.matchIndex[peerId] = rf.nextIndex[peerId] - 1 // 记录已经复制到其他server的日志的最后index的情况
 				rf.updateCommitIndex()                           // 更新commitIndex
 			} else {
-				// 回退优化，参考：https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations
-				// nextIndexBefore := rf.nextIndex[peerId] // 仅为打印log
-
-				if reply.ConflictTerm != -1 { // follower的prevLogIndex位置term冲突了
-					// 我们找leader log中conflictTerm最后出现位置，如果找到了就用它作为nextIndex，否则用follower的conflictIndex
-					conflictTermIndex := -1
-					for index := args.PrevLogIndex; index >= int32(rf.firstIndex()); index-- {
-						// if rf.log[rf.index2LogPos(int(index))].Term == reply.ConflictTerm {
-						// 	conflictTermIndex = int(index)
-						// 	break
-						// }
-						// 我认为下方这个效果更好，这样PrevLogIndex的值就为 index
-						if rf.termAt(int(index)) != reply.ConflictTerm {
-							conflictTermIndex = int(index + 1)
-							break
-						}
-					}
-					if conflictTermIndex != -1 { // leader log出现了这个term，那么从这里prevLogIndex之前的最晚出现位置尝试同步
-						rf.nextIndex[peerId] = conflictTermIndex
-					} else {
-						rf.nextIndex[peerId] = int(reply.ConflictIndex) // 用follower首次出现term的index作为同步开始
-					}
-				} else {
-					// follower没有发现prevLogIndex term冲突, 可能是被snapshot了或者日志长度不够
-					// 这时候我们将返回的conflictIndex设置为nextIndex即可
-					rf.nextIndex[peerId] = int(reply.ConflictIndex)
-				}
-				// util.DPrintf("RaftNode[%d] back-off nextIndex, peer[%d] nextIndexBefore[%d] nextIndex[%d]", rf.me, peerId, nextIndexBefore, rf.nextIndex[peerId])
+				rf.backOffNextIndexLocked(peerId, args.PrevLogIndex, reply.ConflictTerm, reply.ConflictIndex)
 			}
 			// rf.SyncChans[peerId] <- rf.peers[peerId]
 			rf.armSync(peerId, strconv.Itoa(peerId))
@@ -2061,4 +2045,59 @@ func (rf *Raft) StartLoops(ctx context.Context) {
 		}
 		util.DPrintf("Raft has been closed")
 	}()
+}
+
+// backOffNextIndexLocked 处理一次被拒的 AppendEntries：把这个 peer 的 nextIndex 往回退。
+// 调用方须持有 rf.mu。抽成独立方法是为了能直接测它的算术——原先它埋在
+// doAppendEntries 的回执 goroutine 里，一个恒为空操作的判据因此三个月没人发现。
+func (rf *Raft) backOffNextIndexLocked(peerId int, prevLogIndex, conflictTerm, conflictIndex int32) {
+	// 回退优化，参考：https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations
+	// nextIndexBefore := rf.nextIndex[peerId] // 仅为打印log
+
+	if reply.ConflictTerm != -1 { // follower 在 PrevLogIndex 处的 term 与 leader 不同
+		// 判据（students' guide 的写法）：在 leader 日志里找 **term == ConflictTerm
+		// 的最后一条**，nextIndex 取它的下一个；找不到就退到 follower 报的 ConflictIndex。
+		//
+		// 这里原先写的是"从 PrevLogIndex 往下找第一条 term **不等于** ConflictTerm 的，
+		// 取它 +1"，并注释「我认为下方这个效果更好」。那个判据在**它要处理的那种情形下
+		// 恒为空操作**：会走到这个分支，前提就是 leader 在 PrevLogIndex 处的 term 与
+		// ConflictTerm 不同，于是循环第一次迭代就命中、返回 PrevLogIndex+1，
+		// 也就是原来的 nextIndex——一步都没退。
+		//
+		// 后果是 follower **永远修不好**：
+		//   leader 日志 1..20001 为 term 1、20002..40002 为 term 2；
+		//   follower 有一段 term 1 的分叉尾巴到 20065。
+		//   第一次按长度被拒 → nextIndex=20066 → PrevLogIndex=20065；
+		//   follower 报 ConflictTerm=1；leader 在 20065 处是 term 2 ≠ 1 →
+		//   nextIndex 又是 20066。同一个探针无限重试，探针从不进入重叠区，
+		//   所以连冲突截断都不会发生。
+		// 2026-09-17 实测：conflict-truncation.sh 的判据 b 时而通过时而失败，
+		// 差别只在 leader 有没有**恰好**已经压缩过——压缩之后 firstIndex 越过了
+		// 冲突点，循环一次都不执行，反而落到正确的 ConflictIndex 回退上。
+		// 也就是说它能恢复是撞上的，不是这段代码的功劳。
+		lastOfTerm := -1
+		for index := args.PrevLogIndex; index >= int32(rf.firstIndex()); index-- {
+			if rf.termAt(int(index)) == reply.ConflictTerm {
+				lastOfTerm = int(index)
+				break
+			}
+		}
+		if lastOfTerm != -1 {
+			rf.nextIndex[peerId] = lastOfTerm + 1
+		} else {
+			rf.nextIndex[peerId] = int(reply.ConflictIndex) // 用 follower 首次出现该 term 的 index
+		}
+		// 无论走哪一支，nextIndex 必须**严格变小**，否则就是同一个探针重试。
+		// 这一条是上面那个 bug 的直接教训：判据错了不会报错，只会永远不收敛。
+		if rf.nextIndex[peerId] > int(args.PrevLogIndex) {
+			rf.nextIndex[peerId] = int(args.PrevLogIndex)
+		}
+		if rf.nextIndex[peerId] < 1 {
+			rf.nextIndex[peerId] = 1
+		}
+	} else {
+		// follower没有发现prevLogIndex term冲突, 可能是被snapshot了或者日志长度不够
+		// 这时候我们将返回的conflictIndex设置为nextIndex即可
+		rf.nextIndex[peerId] = int(reply.ConflictIndex)
+	}
 }

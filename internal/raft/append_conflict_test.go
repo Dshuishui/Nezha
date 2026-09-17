@@ -302,3 +302,74 @@ func TestAppendCommitsOnlyUpToLastNewEntry(t *testing.T) {
 		t.Fatalf("日志 = %v; want [v1 v2 w3]", got)
 	}
 }
+
+// leader 侧的回退：被拒之后 nextIndex 必须**严格变小**，否则就是同一个探针无限重试。
+//
+// 原先的判据是"从 PrevLogIndex 往下找第一条 term **不等于** ConflictTerm 的，取它 +1"。
+// 它在自己要处理的那种情形下恒为空操作：会走到这个分支，前提就是 leader 在
+// PrevLogIndex 处的 term 与 ConflictTerm 不同，于是第一次迭代就命中、返回
+// PrevLogIndex+1——一步都没退。follower 因此永远修不好，而且不报任何错。
+func TestBackOffAlwaysMovesNextIndexDown(t *testing.T) {
+	// leader 日志：1..20 为 term 1，21..40 为 term 2
+	mk := func() *Raft {
+		rf := &Raft{me: 2, peers: make([]string, 3), currentTerm: 2,
+			nextIndex: make([]int, 3), matchIndex: make([]int, 3)}
+		for i := 1; i <= 40; i++ {
+			term := int32(1)
+			if i > 20 {
+				term = 2
+			}
+			rf.log = append(rf.log, &raftrpc.LogEntry{Term: term,
+				Command: &raftrpc.DetailCod{Index: int32(i), Term: term, OpType: "Put"}})
+		}
+		return rf
+	}
+
+	// follower 在 PrevLogIndex=25 处是 term 1（一段分叉的尾巴），首次出现 term 1 的位置是 1
+	rf := mk()
+	rf.nextIndex[0] = 26
+	rf.backOffNextIndexLocked(0, 25, 1, 1)
+	if rf.nextIndex[0] >= 26 {
+		t.Fatalf("nextIndex = %d，没有比 PrevLogIndex+1=26 更小——同一个探针会无限重试", rf.nextIndex[0])
+	}
+	// leader 里 term 1 的最后一条是 20，所以应当从 21 重试
+	if rf.nextIndex[0] != 21 {
+		t.Errorf("nextIndex = %d; want 21（leader 里 term 1 的最后一条是 20）", rf.nextIndex[0])
+	}
+
+	// leader 里根本没有那个 term：退到 follower 报的 ConflictIndex
+	rf = mk()
+	rf.nextIndex[0] = 26
+	rf.backOffNextIndexLocked(0, 25, 7, 13)
+	if rf.nextIndex[0] != 13 {
+		t.Errorf("leader 没有 term 7 时 nextIndex = %d; want 13（follower 报的 ConflictIndex）", rf.nextIndex[0])
+	}
+
+	// 长度不足的拒绝（ConflictTerm = -1）：直接用 ConflictIndex
+	rf = mk()
+	rf.nextIndex[0] = 41
+	rf.backOffNextIndexLocked(0, 40, -1, 31)
+	if rf.nextIndex[0] != 31 {
+		t.Errorf("nextIndex = %d; want 31", rf.nextIndex[0])
+	}
+
+	// 反复被拒必须单调收敛到 1，不能卡住。卡住是原判据的实际行为。
+	rf = mk()
+	rf.nextIndex[0] = 41
+	prev := rf.nextIndex[0]
+	for i := 0; i < 50; i++ {
+		p := rf.nextIndex[0] - 1
+		if p < 1 {
+			break
+		}
+		// follower 在每个位置都报一个 leader 没有的 term，逼最保守的回退
+		rf.backOffNextIndexLocked(0, int32(p), 99, int32(p))
+		if rf.nextIndex[0] >= prev {
+			t.Fatalf("第 %d 次回退：nextIndex %d -> %d，没有变小", i, prev, rf.nextIndex[0])
+		}
+		prev = rf.nextIndex[0]
+	}
+	if rf.nextIndex[0] < 1 {
+		t.Errorf("nextIndex 退到了 %d，不能小于 1", rf.nextIndex[0])
+	}
+}
