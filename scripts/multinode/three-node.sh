@@ -270,10 +270,14 @@ sample)
       fds=$(ls "/proc/$pid/fd" 2>/dev/null | wc -l); fds=${fds:-0}
       cl=$(sed -n "s/.*\"current_log\": *\"\([^\"]*\)\".*/\1/p" "$D/data/kv_state.json" 2>/dev/null | head -1)
       logb=$(stat -c %s "$cl" 2>/dev/null); logb=${logb:-0}
-      datab=$(du -sb "$D/data" 2>/dev/null | awk "{print \$1+0}")
+      # **printf "%d" 而不是 print。** awk 的 print 对数值走 OFMT（%.6g），
+      # 而不同实现对"多大算整数"的判定不一样：2026-09-18 实测同一量级的
+      # du 输出，241 上打成 4844377498、node55 上打成 **4.92555e+09**。
+      # 科学计数法进了 CSV，后面画图的脚本和 bash 的 -gt 比较都会读错。
+      datab=$(du -sb "$D/data" 2>/dev/null | awk "{printf \"%d\", \$1}")
       base=$(sed -n "s/.*\"base_index\":\([0-9]*\).*/\1/p" "$D/data/raft_state.json" 2>/dev/null); base=${base:-0}
       trm=$(sed -n "s/.*\"current_term\":\([0-9]*\).*/\1/p" "$D/data/raft_state.json" 2>/dev/null); trm=${trm:-0}
-      avail=$(df -kP "$D" 2>/dev/null | awk "NR==2{print \$4+0}")
+      avail=$(df -kP "$D" 2>/dev/null | awk "NR==2{printf \"%d\", \$4}")
       gc=$(cat "$D"/n*.log 2>/dev/null | grep -c "轮垃圾回收完成"); gc=${gc:-0}
       pin=$(cat "$D"/n*.log 2>/dev/null | grep -c "LOG-PINNED"); pin=${pin:-0}
       trc=$(cat "$D"/n*.log 2>/dev/null | grep -c "LOG-TRUNCATE"); trc=${trc:-0}

@@ -103,7 +103,21 @@ fail=0
 say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 warn() { say "[注意] $*"; }
 
-trap cleanup_nodes EXIT   # 定义在 gate.sh，理由见那里
+# **采样器也要收掉，不能只用 gate.sh 的 cleanup_nodes。**
+#
+# cleanup_nodes 只发 `three-node.sh stop`，而采样循环的退出条件是
+# `while [ -f "$D/sampler.pid" ]`——节点死了它照样接着跑，往 CSV 里写一堆 rss=0 的行，
+# 而且**三台共用机器上各留一个后台循环**。2026-09-18 实测：驱动中途失败退出之后，
+# 三个采样器仍在跑，是手工停掉的。共用机器上不留自己的残留是硬约束。
+#
+# 顺序是先停采样器再停节点：反过来的话，节点没了而采样器还活着的那几秒会写进几行
+# 全零，看起来像"进程崩了"。
+mt3_cleanup() {
+    local i
+    for i in 0 1 2; do rq "$(host_of "$i")" "~/three-node.sh samplestop $i" >/dev/null 2>&1 || true; done
+    cleanup_nodes
+}
+trap mt3_cleanup EXIT
 
 # 启动前再清一遍：trap 覆盖不了 SIGKILL，残留会把下一轮的启动顶掉。
 cleanup_nodes
