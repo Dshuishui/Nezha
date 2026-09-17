@@ -556,6 +556,23 @@ else
     bad "上列位置的注释插在 \\ 续行之后——命令会被拆成两半，且 bash -n 查不出来"
 fi
 
+info "=== 二十二、守卫的退出码不许被管道吃掉 ==="
+# 2026-09-17：七处写成了 `require_out ... | tee -a "$LOG" || die`。`||` 作用在**整个管道**
+# 上，而管道的退出码是最后一条命令（tee）的，恒为 0——守卫永远不触发。
+# 实测：start node0 没有回执，[闸门] 那行照常打出来，脚本照样往下跑，整轮跑完才发现
+# 只有两个节点在跑。我加 require_out 正是为了让静默失败变响，第一版却用一根管子把它废了。
+#
+# 判据只匹配 `|| ` **紧跟在管道之后**的形式；先赋值再判（`w=$(g); rc=$?; ... [ $rc = 0 ] || ...`）
+# 里也有 tee 和 ||，但 || 绑的是 `[ ... ]`，是对的，不能误报。
+BADPIPE=$(grep -rnE '^[^#]*\b(require_out|gate_read_ok|gate_report_ok)\b[^|]*\|[[:space:]]*tee[^|;]*\|\|' \
+          "$PROJECT_DIR/scripts/" 2>/dev/null || true)
+if [ -z "$BADPIPE" ]; then
+    good "没有守卫的退出码被管道吃掉"
+else
+    echo "$BADPIPE" | sed "s#$PROJECT_DIR/##" | sed 's/^/       /' | cut -c1-140
+    bad "上列守卫的 || 绑在管道上（退出码是 tee 的，恒为 0）——守卫不会触发。先赋值再判。"
+fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"

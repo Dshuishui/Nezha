@@ -54,7 +54,12 @@ restart_node() { # 回执必须有：2026-09-16 这一句静默返回空串，�
   # 连 n1.log 都没生成），而脚本接着去读它、空转 41 分钟才判失败，原因还显示成"数据不对"。
   local out; out=$(rq "$(host_of "$1")" "~/three-node.sh restart $1" | tail -1)
   say "${out:-（无回执）}"
-  require_out "$out" "restart node$1" | tee -a "$LOG" || { fail=1; return 1; }
+  # 不要写成 `require_out ... | tee ... || die`：`||` 作用在**整个管道**上，而管道的
+  # 退出码是最后一条命令（tee）的，恒为 0，于是守卫永远不触发。我加 require_out 正是
+  # 为了让静默失败变响，第一版却用一根管子把它废掉了（2026-09-17 实测：start node0
+  # 没有回执、[闸门] 那行打出来了、脚本照样往下跑）。先赋值再判。
+  w=$(require_out "$out" "restart node$1"); rc=$?; [ -n "$w" ] && echo "$w" | tee -a "$LOG"
+  [ $rc = 0 ] || { fail=1; return 1; }
   case "$out" in RESTARTED*) ;; *) say "restart node$1 回执不是 RESTARTED"; fail=1; return 1;; esac
   sleep 6; rq "$(host_of "$1")" "~/three-node.sh recoverlog $1" | sed 's/^/    /' | tee -a "$LOG"; }
 
@@ -78,7 +83,8 @@ for i in 0 1 2; do
   PX=""; [ "$i" = 0 ] && PX="$P0"; [ "$i" = 2 ] && PX="$P2"
   OUT=$(rq "$(host_of "$i")" "$PX BIN=race PEERS='$PEERSTR' $RDFLAG ~/three-node.sh start $i $P $IP $VS_A $N" | tail -1)
   say "${OUT:-（无回执）}"
-  require_out "$OUT" "start node$i" | tee -a "$LOG" || { fail=1; break; }
+  w=$(require_out "$OUT" "start node$i"); rc=$?; [ -n "$w" ] && echo "$w" | tee -a "$LOG"
+  [ $rc = 0 ] || { fail=1; break; }
   [ "$i" = 0 ] && sleep 3
 done
 grep -c "STARTED node" "$LOG" | grep -q '^3$' || { say "有节点没起来，终止"; exit 1; }
@@ -95,7 +101,7 @@ if [ "$MODE" = midgc ]; then
   say "$(r "$(host_of 2)" "grep -h 'GC-PAUSE\|设置kvs.currentLog' ~/work/three-2/n.log | tail -2")"
   say "===== 3. 在 GC 中途 kill -9 node2 ====="
   K=$(rq "$(host_of 2)" "~/three-node.sh kill9 2"); say "${K:-（无回执）}"
-  require_out "$K" "kill9 node2" | tee -a "$LOG" || fail=1
+  w=$(require_out "$K" "kill9 node2"); rc=$?; [ -n "$w" ] && echo "$w" | tee -a "$LOG"; [ $rc = 0 ] || fail=1
   wait $WPID
   say "===== 4. 重启 node2，应重做第 1 轮 GC ====="
   restart_node 2
@@ -115,7 +121,7 @@ else
   wait_gc 0 1 2
   say "===== S1-a. kill -9 follower node2 ====="
   K=$(rq "$(host_of 2)" "~/three-node.sh kill9 2"); say "${K:-（无回执）}"
-  require_out "$K" "kill9 node2" | tee -a "$LOG" || fail=1
+  w=$(require_out "$K" "kill9 node2"); rc=$?; [ -n "$w" ] && echo "$w" | tee -a "$LOG"; [ $rc = 0 ] || fail=1
   say "===== S1-b. node2 缺席期间经 leader 重写 $N × ${VS_B}B ====="
   write_all 0 $VS_B
   say "===== S1-c. 重启 node2，等它追平后直读 ====="
@@ -124,7 +130,7 @@ else
   say "===== S2-a. kill -9 leader node0 ====="
   W0=$(leader_wins); W0=${W0:-0}
   K=$(rq "$(host_of 0)" "~/three-node.sh kill9 0"); say "${K:-（无回执）}"
-  require_out "$K" "kill9 node0" | tee -a "$LOG" || fail=1
+  w=$(require_out "$K" "kill9 node0"); rc=$?; [ -n "$w" ] && echo "$w" | tee -a "$LOG"; [ $rc = 0 ] || fail=1
   wait_new_leader "$W0" 40
   for i in 1 2; do r "$(host_of "$i")" "grep -hE 'Candidate -> Leader' ~/work/three-$i/n*.log 2>/dev/null | tail -1" | sed "s/^/    node$i /"; done | tee -a "$LOG"
   say "===== S2-b. 经新 leader 重写 $N × ${VS_C}B ====="

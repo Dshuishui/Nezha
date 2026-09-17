@@ -53,7 +53,7 @@ GC_FLOOR_DIVISOR="${GC_FLOOR_DIVISOR:-8}"
 GCGB=$(awk -v b="$DATASET" -v d="$GC_FLOOR_DIVISOR" 'BEGIN{printf "%.9f", b/d/1073741824}')
 if [ -n "${ABSORB_RATIO:-}" ]; then
   awk -v r="$ABSORB_RATIO" -v d="$GC_FLOOR_DIVISOR" 'BEGIN{exit !(r*d > 1)}' || {
-    warn "ABSORB_RATIO=$ABSORB_RATIO 配 GC_FLOOR_DIVISOR=$GC_FLOOR_DIVISOR：比例永远压不过下限"
+    warn "ABSORB_RATIO=$ABSORB_RATIO 配 GC_FLOOR_DIVISOR=${GC_FLOOR_DIVISOR}：比例永远压不过下限"
     warn "  （需要 ratio × divisor > 1），这一档全程是下限驱动的，测不到比例的影响。"
     warn "  要扫这么低的比例，把下限调小：GC_FLOOR_DIVISOR=$(awk -v r="$ABSORB_RATIO" 'BEGIN{printf "%d", 2/r}')"
   }

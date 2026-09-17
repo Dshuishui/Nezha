@@ -62,7 +62,12 @@ for i in 0 1 2; do
     EXTRA='-raftLogBudgetMB $BUDGET_MB -gcThresholdGB $GCGB -absorbRatio $ABSORB -partitionTargetMB 2 -leaderCheck=false' \
     ~/three-node.sh start $i $P $IP $VSIZE $WARMUP" | tail -1)
   say "${OUT:-（无回执）}"
-  require_out "$OUT" "start node$i" | tee -a "$LOG" || die "start node$i 没有回执"
+  # 不要写成 `require_out ... | tee ... || die`：`||` 作用在**整个管道**上，而管道的
+  # 退出码是最后一条命令（tee）的，恒为 0，于是守卫永远不触发。我加 require_out 正是
+  # 为了让静默失败变响，第一版却用一根管子把它废掉了（2026-09-17 实测：start node0
+  # 没有回执、[闸门] 那行打出来了、脚本照样往下跑）。先赋值再判。
+  w=$(require_out "$OUT" "start node$i"); rc=$?; [ -n "$w" ] && echo "$w" | tee -a "$LOG"
+  [ $rc = 0 ] || die "start node$i 没有回执"
 done
 sleep 12
 

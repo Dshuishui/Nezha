@@ -75,7 +75,12 @@ for i in 0 1 2; do
   read -r P IP <<<"$(port_of $i)"
   OUT=$(rq "$(host_of "$i")" "BIN=$BIN SYSTEM=nezha-nogc PEERS='$(peers_str)' EXTRA='-raftLogBudgetMB $BUDGET_MB -leaderCheck=false' ~/three-node.sh start $i $P $IP $VSIZE $WARMUP" | tail -1)
   say "${OUT:-（无回执）}"
-  require_out "$OUT" "start node$i" | tee -a "$LOG" || die "start node$i 没有回执"
+  # 不要写成 `require_out ... | tee ... || die`：`||` 作用在**整个管道**上，而管道的
+  # 退出码是最后一条命令（tee）的，恒为 0，于是守卫永远不触发。我加 require_out 正是
+  # 为了让静默失败变响，第一版却用一根管子把它废掉了（2026-09-17 实测：start node0
+  # 没有回执、[闸门] 那行打出来了、脚本照样往下跑）。先赋值再判。
+  w=$(require_out "$OUT" "start node$i"); rc=$?; [ -n "$w" ] && echo "$w" | tee -a "$LOG"
+  [ $rc = 0 ] || die "start node$i 没有回执"
 done
 [ "$(grep -c 'STARTED node' "$LOG")" = 3 ] || die "有节点没起来"
 sleep 12
