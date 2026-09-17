@@ -723,11 +723,13 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 //	LeaderCommit=40002。按 rf.lastIndex() 夹，node0 的 commitIndex 变成 20065——
 //	于是它把自己那 64 条**集群从未提交、而且与 leader 冲突**的条目应用进了状态机。
 //
-// 应用是不可撤销的：随后日志被截断，但那 64 个 key 的错值留在 RocksDB 里，读会返回它们。
-// 2026-09-17 在 conflict-truncation.sh 里实测到：node0 的 run2 日志里出现
-// "底层执行了Put请求"，而它此时既不是 leader、也还没收到过任何新条目。
-// 那一轮之所以没在判据上暴露，是因为 leader 紧接着用同一批 key 的新值覆盖了它们；
-// 换一批 key 就是永久错值。
+// 应用是不可撤销的：随后日志被截断，但那些 key 的错值留在 RocksDB 里，读会返回它们。
+//
+// 证据来自单元测试而不是集群日志：TestEmptyAppendDoesNotCommitDivergentTail 里把旧的
+// rf.lastIndex() 上界放回去，commitIndex 立刻被推到 5，而 3~5 是 leader 从未确认的分叉条目。
+// （最初我把集群日志里的"底层执行了Put请求"当成了现场——那一行是 apply 路径上
+// `op.SeqId%10000 == 0` 的节流进度打印，不是"应用了那段尾巴"的证据。记在这里，
+// 因为凭它推断过一次错误的因果。）
 //
 // 调用方须持有 rf.mu。
 func (rf *Raft) advanceCommitLocked(leaderCommit int32, lastNew int) {
@@ -2054,7 +2056,7 @@ func (rf *Raft) backOffNextIndexLocked(peerId int, prevLogIndex, conflictTerm, c
 	// 回退优化，参考：https://thesquareplanet.com/blog/students-guide-to-raft/#an-aside-on-optimizations
 	// nextIndexBefore := rf.nextIndex[peerId] // 仅为打印log
 
-	if reply.ConflictTerm != -1 { // follower 在 PrevLogIndex 处的 term 与 leader 不同
+	if conflictTerm != -1 { // follower 在 PrevLogIndex 处的 term 与 leader 不同
 		// 判据（students' guide 的写法）：在 leader 日志里找 **term == ConflictTerm
 		// 的最后一条**，nextIndex 取它的下一个；找不到就退到 follower 报的 ConflictIndex。
 		//
@@ -2076,8 +2078,8 @@ func (rf *Raft) backOffNextIndexLocked(peerId int, prevLogIndex, conflictTerm, c
 		// 冲突点，循环一次都不执行，反而落到正确的 ConflictIndex 回退上。
 		// 也就是说它能恢复是撞上的，不是这段代码的功劳。
 		lastOfTerm := -1
-		for index := args.PrevLogIndex; index >= int32(rf.firstIndex()); index-- {
-			if rf.termAt(int(index)) == reply.ConflictTerm {
+		for index := prevLogIndex; index >= int32(rf.firstIndex()); index-- {
+			if rf.termAt(int(index)) == conflictTerm {
 				lastOfTerm = int(index)
 				break
 			}
@@ -2085,12 +2087,12 @@ func (rf *Raft) backOffNextIndexLocked(peerId int, prevLogIndex, conflictTerm, c
 		if lastOfTerm != -1 {
 			rf.nextIndex[peerId] = lastOfTerm + 1
 		} else {
-			rf.nextIndex[peerId] = int(reply.ConflictIndex) // 用 follower 首次出现该 term 的 index
+			rf.nextIndex[peerId] = int(conflictIndex) // 用 follower 首次出现该 term 的 index
 		}
 		// 无论走哪一支，nextIndex 必须**严格变小**，否则就是同一个探针重试。
 		// 这一条是上面那个 bug 的直接教训：判据错了不会报错，只会永远不收敛。
-		if rf.nextIndex[peerId] > int(args.PrevLogIndex) {
-			rf.nextIndex[peerId] = int(args.PrevLogIndex)
+		if rf.nextIndex[peerId] > int(prevLogIndex) {
+			rf.nextIndex[peerId] = int(prevLogIndex)
 		}
 		if rf.nextIndex[peerId] < 1 {
 			rf.nextIndex[peerId] = 1
@@ -2098,6 +2100,6 @@ func (rf *Raft) backOffNextIndexLocked(peerId int, prevLogIndex, conflictTerm, c
 	} else {
 		// follower没有发现prevLogIndex term冲突, 可能是被snapshot了或者日志长度不够
 		// 这时候我们将返回的conflictIndex设置为nextIndex即可
-		rf.nextIndex[peerId] = int(reply.ConflictIndex)
+		rf.nextIndex[peerId] = int(conflictIndex)
 	}
 }
