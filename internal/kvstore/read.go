@@ -418,6 +418,9 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 		found bool
 		value string
 		err   error
+		// cacheHit 只对分区那一路有意义：这次查找是不是被内联缓存接住了。
+		// 计数留到汇合点，因为"这一路的结果有没有被采用"只有那里知道。
+		cacheHit bool
 	}
 
 	if kvs.startGC {
@@ -429,22 +432,22 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 		go func() {
 			positionBytes, err := kvs.persister.Get_opt(key)
 			if err != nil {
-				newFileResult <- searchResult{false, "", err}
+				newFileResult <- searchResult{false, "", err, false}
 				return
 			}
 			if positionBytes == -1 {
-				newFileResult <- searchResult{false, "", nil}
+				newFileResult <- searchResult{false, "", nil, false}
 				return
 			}
 			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
 			if err != nil {
-				newFileResult <- searchResult{false, "", err}
+				newFileResult <- searchResult{false, "", err, false}
 				return
 			}
 			if read_key == key {
-				newFileResult <- searchResult{true, value, nil}
+				newFileResult <- searchResult{true, value, nil, false}
 			} else {
-				newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
+				newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file"), false}
 			}
 		}()
 
@@ -452,22 +455,22 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 		go func() {
 			positionBytes, err := kvs.oldPersister.Get_opt(key)
 			if err != nil {
-				oldFileResult <- searchResult{false, "", err}
+				oldFileResult <- searchResult{false, "", err, false}
 				return
 			}
 			if positionBytes == -1 {
-				oldFileResult <- searchResult{false, "", nil}
+				oldFileResult <- searchResult{false, "", nil, false}
 				return
 			}
 			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
 			if err != nil {
-				oldFileResult <- searchResult{false, "", err}
+				oldFileResult <- searchResult{false, "", err, false}
 				return
 			}
 			if read_key == key {
-				oldFileResult <- searchResult{true, value, nil}
+				oldFileResult <- searchResult{true, value, nil, false}
 			} else {
-				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in old file")}
+				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in old file"), false}
 			}
 		}()
 
@@ -497,6 +500,9 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 		found bool
 		value string
 		err   error
+		// cacheHit 只对分区那一路有意义：这次查找是不是被内联缓存接住了。
+		// 计数留到汇合点，因为"这一路的结果有没有被采用"只有那里知道。
+		cacheHit bool
 	}
 	if !kvs.anotherStartGC {
 		// 创建用于接收结果的通道
@@ -507,33 +513,33 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 		go func() {
 			positionBytes, err := kvs.persister.Get_opt(key)
 			if err != nil {
-				oldFileResult <- searchResult{false, "", err}
+				oldFileResult <- searchResult{false, "", err, false}
 				return
 			}
 			if positionBytes == -1 {
-				oldFileResult <- searchResult{false, "", nil}
+				oldFileResult <- searchResult{false, "", nil, false}
 				return
 			}
 			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
 			if err != nil {
-				oldFileResult <- searchResult{false, "", err}
+				oldFileResult <- searchResult{false, "", err, false}
 				return
 			}
 			if read_key == key {
-				oldFileResult <- searchResult{true, value, nil}
+				oldFileResult <- searchResult{true, value, nil, false}
 			} else {
-				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
+				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file"), false}
 			}
 		}()
 
 		// 并行搜索排序文件，这个排序文件在第一轮GC完就已经切换，所以下面的不用改
 		go func() {
-			value, err := kvs.getFromPartitions(key, kvs.lastPartitions)
+			value, hit, err := kvs.getFromPartitions(key, kvs.lastPartitions)
 			if err != nil {
-				lastSortedFileResult <- searchResult{false, "", err}
+				lastSortedFileResult <- searchResult{false, "", err, false}
 				return
 			}
-			lastSortedFileResult <- searchResult{true, value, nil}
+			lastSortedFileResult <- searchResult{true, value, nil, hit}
 		}()
 
 		// 按优先级逐路取结果：当前 valuelog 在前
@@ -541,11 +547,15 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 		result := <-oldFileResult
 		out.note("当前 valuelog", result.err)
 		if result.found {
+			// 这次读是 valuelog 答的，内联缓存本来就服务不了它（缓存只装已搬进分区的小值）。
+			// 计入 served_by_log，**不**计入 hit/miss，见 avpstats.go。
+			avpRecordServedByLog()
 			reply.Value = result.value
 			return reply
 		}
 		result = <-lastSortedFileResult
 		if result.err == nil {
+			avpRecordPartitionRead(result.cacheHit)
 			reply.Value = result.value
 			return reply
 		}
@@ -563,22 +573,22 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 		go func() {
 			positionBytes, err := kvs.oldPersister.Get_opt(key)
 			if err != nil {
-				oldFileResult <- searchResult{false, "", err}
+				oldFileResult <- searchResult{false, "", err, false}
 				return
 			}
 			if positionBytes == -1 {
-				oldFileResult <- searchResult{false, "", nil}
+				oldFileResult <- searchResult{false, "", nil, false}
 				return
 			}
 			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
 			if err != nil {
-				oldFileResult <- searchResult{false, "", err}
+				oldFileResult <- searchResult{false, "", err, false}
 				return
 			}
 			if read_key == key {
-				oldFileResult <- searchResult{true, value, nil}
+				oldFileResult <- searchResult{true, value, nil, false}
 			} else {
-				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
+				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file"), false}
 			}
 		}()
 
@@ -586,33 +596,33 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 		go func() {
 			positionBytes, err := kvs.persister.Get_opt(key)
 			if err != nil {
-				newFileResult <- searchResult{false, "", err}
+				newFileResult <- searchResult{false, "", err, false}
 				return
 			}
 			if positionBytes == -1 {
-				newFileResult <- searchResult{false, "", nil}
+				newFileResult <- searchResult{false, "", nil, false}
 				return
 			}
 			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
 			if err != nil {
-				newFileResult <- searchResult{false, "", err}
+				newFileResult <- searchResult{false, "", err, false}
 				return
 			}
 			if read_key == key {
-				newFileResult <- searchResult{true, value, nil}
+				newFileResult <- searchResult{true, value, nil, false}
 			} else {
-				newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
+				newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file"), false}
 			}
 		}()
 
 		// 并行搜索排序文件
 		go func() {
-			value, err := kvs.getFromPartitions(key, kvs.lastPartitions)
+			value, hit, err := kvs.getFromPartitions(key, kvs.lastPartitions)
 			if err != nil {
-				lastSortedFileResult <- searchResult{false, "", err}
+				lastSortedFileResult <- searchResult{false, "", err, false}
 				return
 			}
-			lastSortedFileResult <- searchResult{true, value, nil}
+			lastSortedFileResult <- searchResult{true, value, nil, hit}
 		}()
 
 		// 按优先级逐路取结果：新文件、旧文件、上一轮分区
@@ -620,17 +630,20 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 		result := <-newFileResult
 		out.note("新 valuelog", result.err)
 		if result.found {
+			avpRecordServedByLog()
 			reply.Value = result.value
 			return reply
 		}
 		result = <-oldFileResult
 		out.note("旧 valuelog", result.err)
 		if result.found {
+			avpRecordServedByLog()
 			reply.Value = result.value
 			return reply
 		}
 		result = <-lastSortedFileResult
 		if result.err == nil {
+			avpRecordPartitionRead(result.cacheHit)
 			reply.Value = result.value
 			return reply
 		}
@@ -646,33 +659,33 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 	go func() {
 		positionBytes, err := kvs.persister.Get_opt(key)
 		if err != nil {
-			newFileResult <- searchResult{false, "", err}
+			newFileResult <- searchResult{false, "", err, false}
 			return
 		}
 		if positionBytes == -1 {
-			newFileResult <- searchResult{false, "", nil}
+			newFileResult <- searchResult{false, "", nil, false}
 			return
 		}
 		read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
 		if err != nil {
-			newFileResult <- searchResult{false, "", err}
+			newFileResult <- searchResult{false, "", err, false}
 			return
 		}
 		if read_key == key {
-			newFileResult <- searchResult{true, value, nil}
+			newFileResult <- searchResult{true, value, nil, false}
 		} else {
-			newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file")}
+			newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file"), false}
 		}
 	}()
 
 	// 并行搜索排序文件
 	go func() {
-		value, err := kvs.getFromPartitions(key, kvs.anotherPartitions)
+		value, hit, err := kvs.getFromPartitions(key, kvs.anotherPartitions)
 		if err != nil {
-			anotherSortedFileResult <- searchResult{false, "", err}
+			anotherSortedFileResult <- searchResult{false, "", err, false}
 			return
 		}
-		anotherSortedFileResult <- searchResult{true, value, nil}
+		anotherSortedFileResult <- searchResult{true, value, nil, hit}
 	}()
 
 	// 按优先级逐路取结果：当前 valuelog 在前，本轮分区在后
@@ -680,11 +693,13 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 	result := <-newFileResult
 	out.note("当前 valuelog", result.err)
 	if result.found {
+		avpRecordServedByLog()
 		reply.Value = result.value
 		return reply
 	}
 	result = <-anotherSortedFileResult
 	if result.err == nil {
+		avpRecordPartitionRead(result.cacheHit)
 		reply.Value = result.value
 		return reply
 	}
@@ -760,17 +775,17 @@ func (o *readOutcome) finish(reply *kvrpc.GetInRaftResponse, key string) *kvrpc.
 // 客户端据此认定数据没了。用哨兵把两者分开，调用方才有得判。
 var ErrKeyAbsent = errors.New(raft.ErrNoKey)
 
-func (kvs *KVServer) getFromPartitions(key string, ps *PartitionSet) (string, error) {
+func (kvs *KVServer) getFromPartitions(key string, ps *PartitionSet) (_ string, cacheHit bool, _ error) {
 	if ps == nil {
-		return "", errors.New("invalid partition set: set is nil")
+		return "", false, errors.New("invalid partition set: set is nil")
 	}
 	part := ps.find(key)
 	if part == nil {
 		// key 比所有分区都小，或落在两个分区之间的空隙里——都等价于这组分区里没有它。
 		// 内联缓存不必在这里查：缓存只由写进某个分区的 entry 填充，被缓存的 key 必然落在
-		// 某个分区的区间内，走不到这个分支。计一次 miss 以保持与改造前一致的命中率口径。
-		avpRecordMiss()
-		return "", ErrKeyAbsent
+		// 某个分区的区间内，走不到这个分支。
+		// 也**不计 miss**：这一路没有答案，最终是不是"键不存在"由汇合点判（avpRecordNotFound）。
+		return "", false, ErrKeyAbsent
 	}
 	return kvs.getFromSortedFile(key, part)
 }
@@ -805,7 +820,7 @@ func (kvs *KVServer) scanFromPartitions(startKey, endKey string, ps *PartitionSe
 }
 
 // getFromSortedFile looks a key up in a sorted file: inline cache first, then the sparse index and a block scan.
-func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (string, error) {
+func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (_ string, cacheHit bool, _ error) {
 	// 先检查LRU缓存
 	// if value, ok := kvs.sortedFileCache.Get(key); ok {
 	// 	// 缓存命中，直接返回缓存的value
@@ -813,15 +828,16 @@ func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (stri
 	// }
 	// 增加参数检查
 	if index == nil {
-		return "", errors.New("invalid index: index is nil")
+		return "", false, errors.New("invalid index: index is nil")
 	}
 
-	// 先查内联缓存，命中则免去文件 I/O
+	// 先查内联缓存，命中则免去文件 I/O。
+	// **命中与否不在这里计数**：这一次查找的结果可能压根没被采用（GET 是多路并发查找，
+	// 当前 valuelog 优先），而"没被采用的那次查找"不该算进内联缓存的命中率。
+	// 计数放在汇合点（anotherGCGet 的三个分支），由那里决定是哪条路答的。
 	if value, ok := index.InlineValues.Get(key); ok {
-		avpRecordHit()
-		return string(value), nil
+		return string(value), true, nil
 	}
-	avpRecordMiss()
 
 	// 未命中：经稀疏索引二分定位到块，块内顺序扫描
 	entry, err := kvs.lookupInSortedFile(index, key)
@@ -830,7 +846,7 @@ func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (stri
 		// 一次读会并发查这几处，"这个分片里没有"是常态而非键缺失——照此计数会把
 		// 分片未命中当成键不存在（实测虚高到 37%）。真正的判定在 GetInRaft，
 		// 那里是所有查找路径唯一的汇合点。
-		return "", err
+		return "", false, err
 	}
 
 	// 小值回填内联缓存，供后续读命中（Zipf 热点下命中率很高）
@@ -838,7 +854,7 @@ func (kvs *KVServer) getFromSortedFile(key string, index *SortedFileIndex) (stri
 		index.InlineValues.Add(key, entry.Value)
 	}
 
-	return entry.Value, nil
+	return entry.Value, false, nil
 }
 
 // ReadEntryFromMMap 从内存映射中读取条目

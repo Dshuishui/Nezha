@@ -18,14 +18,30 @@ import (
 var avpStats struct {
 	inlineHits     atomic.Uint64 // 内联缓存命中：直接返回 value，零文件 I/O
 	inlineMisses   atomic.Uint64 // 未命中：需要走 sortedFile
-	notFound       atomic.Uint64 // 其中 key 根本不存在的部分
+	notFound       atomic.Uint64 // 哪里都没找到这个 key（在 GetInRaft 那个唯一汇合点计）
+	servedByLog    atomic.Uint64 // 由 valuelog 答复的读：内联缓存服务不了它，不进 hit/miss
 	blockScans     atomic.Uint64 // 块扫描次数（每次未命中一次）
 	entriesScanned atomic.Uint64 // 块内顺序解析的 entry 总条数
 	bytesRead      atomic.Uint64 // 从 sortedFile 实际读取的字节数
 }
 
-func avpRecordHit()  { avpStats.inlineHits.Add(1) }
-func avpRecordMiss() { avpStats.inlineMisses.Add(1) }
+// avpRecordPartitionRead 记一次**由分区文件答复**的读：内联缓存有机会服务它。
+// hit 表示这一次是缓存接住的（省掉一次文件 seek）。
+//
+// 必须在汇合点调用，不能在 getFromSortedFile 里面：GET 是多路并发查找，那次查找的结果
+// 可能压根没被采用（当前 valuelog 优先），而没被采用的查找不该算进命中率。
+func avpRecordPartitionRead(hit bool) {
+	if hit {
+		avpStats.inlineHits.Add(1)
+		return
+	}
+	avpStats.inlineMisses.Add(1)
+}
+
+// avpRecordServedByLog 记一次**由 valuelog 答复**的读（刚写过、还没被 GC 搬走的 key）。
+// 它不进 hit/miss：内联缓存只装已经搬进分区的小值，对这种读本来就无能为力，
+// 把它算成未命中等于用负载的新鲜度去压低 AVP 的收益。
+func avpRecordServedByLog() { avpStats.servedByLog.Add(1) }
 
 // avpRecordNotFound 标记一次读最终没有找到这个 key。
 //
@@ -47,50 +63,45 @@ func avpRecordScan(entries int, bytes int64) {
 // 命中率和"平均每次未命中解析多少条 entry"是两个核心指标：
 // 前者说明 AVP 覆盖了多少读，后者量化它每次省下的解析工作量。
 //
-// reads 到底数的是什么，用之前要清楚，否则命中率会被读成比实际更低的数。
+// **hit_rate 的分母是"内联缓存有机会服务的读"，不是全部 GET。**
 //
-// GET 是**多路并发**查找：当前 valuelog 与分区文件同时查，结果按优先级取
-// （read.go 的 anotherGCGet）。两个 goroutine 无论如何都会跑完，所以每次 GET
-// 恰好产生一次分区查找、也就是恰好一次 hit 或 miss——分母是对的，等于 GET 次数。
+// GET 是多路并发查找：当前 valuelog 与分区文件同时查，结果按优先级取
+// （read.go 的 anotherGCGet）。两个 goroutine 无论如何都会跑完，所以此前每次 GET 都会
+// 产生一次 hit 或 miss——包括那些**答案来自 valuelog** 的读（刚写过的 key）。
+// 而内联缓存只装已经搬进分区的小值，对那种读本来就无能为力，把它算成未命中等于
+// 用负载的新鲜度去压低 AVP 的收益，覆盖写比例越高压得越多。
 //
-// 但分子不是。一次"答案来自当前 valuelog"的 GET（刚写过的 key）同样会记一次
-// **miss**，而内联缓存对这种读本来就无能为力：它只缓存已经搬进分区的小值。
-// 于是 hit_rate 把"缓存没能服务的读"和"缓存本可服务却没命中的读"算在了一起，
-// 系统性地压低 AVP 的收益。这与 not_found 被单独剥出来是同一类问题
-// （见 avpRecordNotFound 的说明），只是还没有剥。
+// 现在计数搬到了汇合点，按"是哪条路答的"分流：
 //
-// 要剥需要在汇合点知道"这一次是哪条路答的"，而那会改变一个已经用来出过数的指标，
-// 所以没有顺手改。**写进论文前必须先决定**：要么剥出来重测，要么明确说明
-// hit_rate 的分母是全部 GET、而非"内联缓存有机会服务的那些 GET"。
-// 写满覆盖（overwrite）比例越高，这个差距越大。
+//	hits + misses  由**分区文件**答复的读 —— 缓存有机会服务，这才是命中率的分母
+//	served_by_log  由 valuelog 答复的读   —— 缓存服务不了，单独记
+//	not_found      哪里都没找到           —— 注定 miss，本来就该剔除
+//
+// **2026-09-17 改的口径。此前用旧口径（分母 = 全部 GET）出过的 hit_rate 与现在不可比**，
+// 需要重测；旧口径下的数字系统性偏低。
 func AVPStatsLine() string {
 	h := avpStats.inlineHits.Load()
 	m := avpStats.inlineMisses.Load()
 	scans := avpStats.blockScans.Load()
 	ents := avpStats.entriesScanned.Load()
 	bytes := avpStats.bytesRead.Load()
-
 	nf := avpStats.notFound.Load()
+	sbl := avpStats.servedByLog.Load()
 
-	total := h + m
+	served := h + m // 由分区答复的读
 	var hitRate float64
-	if total > 0 {
-		hitRate = float64(h) / float64(total) * 100
-	}
-	// 有效命中率：只在"确实存在的 key"上算。这才是 AVP 的真实度量，
-	// 原始命中率会随键空间与写入量的比例漂移。
-	effective := total - nf
-	var effRate float64
-	if effective > 0 {
-		effRate = float64(h) / float64(effective) * 100
+	if served > 0 {
+		hitRate = float64(h) / float64(served) * 100
 	}
 	var entsPerScan float64
 	if scans > 0 {
 		entsPerScan = float64(ents) / float64(scans)
 	}
 	return fmt.Sprintf(
-		"[AVP-STATS] reads=%d hits=%d misses=%d not_found=%d hit_rate=%.2f%% eff_hit_rate=%.2f%% block_scans=%d entries_scanned=%d entries_per_scan=%.1f bytes_read=%d",
-		total, h, m, nf, hitRate, effRate, scans, ents, entsPerScan, bytes)
+		"[AVP-STATS] partition_reads=%d hits=%d misses=%d hit_rate=%.2f%% "+
+			"served_by_log=%d not_found=%d block_scans=%d entries_scanned=%d "+
+			"entries_per_scan=%.1f bytes_read=%d",
+		served, h, m, hitRate, sbl, nf, scans, ents, entsPerScan, bytes)
 }
 
 // StartAVPStatsReporter 周期性把指标打进节点日志。
@@ -101,7 +112,11 @@ func StartAVPStatsReporter(interval time.Duration) {
 	}
 	go func() {
 		for range time.Tick(interval) {
-			if avpStats.inlineHits.Load()+avpStats.inlineMisses.Load() > 0 {
+			// 判据要含 servedByLog：一轮实验里若所有读都由 valuelog 答复
+			// （GC 还没跑过），hits+misses 恒为 0，这一行就永远不打——
+			// 而那恰好是最需要知道"缓存一次都没被用上"的时候。
+			if avpStats.inlineHits.Load()+avpStats.inlineMisses.Load()+
+				avpStats.servedByLog.Load() > 0 {
 				fmt.Println(AVPStatsLine())
 			}
 		}

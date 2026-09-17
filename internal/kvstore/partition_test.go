@@ -166,7 +166,7 @@ func TestPartitionWriterRollAndLookup(t *testing.T) {
 	// 每个 key 都要能通过路由找回来
 	for i := 0; i < n; i++ {
 		key := fmt.Sprintf("%010d", i) // 与写入侧同一种编码；存储层不再帮两边归一化
-		got, err := kvs.getFromPartitions(key, ps)
+		got, _, err := kvs.getFromPartitions(key, ps)
 		if err != nil {
 			t.Fatalf("getFromPartitions(%s): %v", key, err)
 		}
@@ -176,7 +176,7 @@ func TestPartitionWriterRollAndLookup(t *testing.T) {
 	}
 
 	// 不存在的 key 必须报 NOKEY 而不是命中别的分区
-	if _, err := kvs.getFromPartitions("999999", ps); err == nil {
+	if _, _, err := kvs.getFromPartitions("999999", ps); err == nil {
 		t.Error("查询不存在的 key 应当失败")
 	}
 }
@@ -196,7 +196,7 @@ func TestPartitionWriterEmpty(t *testing.T) {
 	if matches, _ := filepath.Glob(base + ".p*"); len(matches) != 0 {
 		t.Errorf("空输入不应留下文件，实际 %v", matches)
 	}
-	if _, err := kvs.getFromPartitions("1", ps); err == nil {
+	if _, _, err := kvs.getFromPartitions("1", ps); err == nil {
 		t.Error("空分区组的查询应当失败")
 	}
 	if m, err := kvs.scanFromPartitions("0", "999", ps); err != nil || len(m) != 0 {
@@ -258,7 +258,7 @@ func TestPartitionManifestRoundTrip(t *testing.T) {
 	}
 	for i := 0; i < n; i++ {
 		key := fmt.Sprintf("%010d", i) // 与写入侧同一种编码；存储层不再帮两边归一化
-		if _, err := kvs.getFromPartitions(key, reloaded); err != nil {
+		if _, _, err := kvs.getFromPartitions(key, reloaded); err != nil {
 			t.Fatalf("重建后查不到 key %s: %v", key, err)
 		}
 	}
@@ -331,7 +331,7 @@ func TestPartitionSetFollowsRelocatedDataDir(t *testing.T) {
 			t.Fatalf("装载后仍指向 %s，应当在 %s 下", p, dirB)
 		}
 	}
-	if _, err := kvs.getFromPartitions(fmt.Sprintf("%010d", 7), reloaded); err != nil {
+	if _, _, err := kvs.getFromPartitions(fmt.Sprintf("%010d", 7), reloaded); err != nil {
 		t.Fatalf("搬到新目录后读不到 key: %v", err)
 	}
 }
