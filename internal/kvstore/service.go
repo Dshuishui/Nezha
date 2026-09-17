@@ -246,6 +246,21 @@ func (kvs *KVServer) PutInRaft(ctx context.Context, in *kvrpc.PutInRaftRequest) 
 		fmt.Printf("[PUT] 拒绝 key: %v\n", err)
 		return &kvrpc.PutInRaftResponse{Err: raft.ErrInvalidKey}, nil
 	}
+	// op 类型也必须校验，理由与上面校验 key 完全相同：**一个应用不了的条目不该先被复制到
+	// 多数派、再在 apply 时出问题**。而这里的 op 是客户端直接给的（StartPut 里
+	// `OpType: args.Op`），此前一个字都没检查。
+	//
+	// 后果分两档，都不报错：
+	//   轻——applyOne 里只有 Put 和 TermLog 两个分支，别的 OpType 掉进 else，
+	//       value 一个字节都不会写进任何副本，而客户端拿到的是 NOKEY，看起来像"key 不存在"。
+	//   重——那个 else 分支里调 Get_opt，它对 TagInline 记录返回 ErrInlineValue 并且**panic**。
+	//       条目已经复制给了所有副本，于是**每个节点在 apply 同一条时一起崩**——
+	//       一个客户端请求打掉整个集群。
+	// 只接受这个 RPC 真正实现的那一种。
+	if !validPutOp(in.GetOp()) {
+		fmt.Printf("[PUT] 拒绝 op=%q：这个 RPC 只实现 %q\n", in.GetOp(), OP_TYPE_PUT)
+		return &kvrpc.PutInRaftResponse{Err: raft.ErrInvalidKey}, nil
+	}
 	// fmt.Println("走到了server端的put函数"
 	// startTime := time.Now() // 总开始时间
 	reply := kvs.StartPut(in)
@@ -372,3 +387,8 @@ func (kvs *KVServer) StartPut(args *kvrpc.PutInRaftRequest) *kvrpc.PutInRaftResp
 	}
 	return reply
 }
+
+// validPutOp 判定 PutInRaft 收到的 op 是不是它真正实现的那一种。
+// 单独一个函数是为了能两个方向都测：合法的那一个必须**不**被拒，而通过 PutInRaft 测
+// 合法路径会一直走到 raft.Start，那需要一个完整的 Raft 层。
+func validPutOp(op string) bool { return op == OP_TYPE_PUT }

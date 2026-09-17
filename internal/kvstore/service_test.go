@@ -81,3 +81,42 @@ func TestPutAcceptsOrdinaryKeys(t *testing.T) {
 		}
 	}
 }
+
+// op 类型必须在进 Raft 之前就被校验，理由与校验 key 相同：一个应用不了的条目不该先被
+// 复制到多数派、再在 apply 时出问题。而这里的 op 是客户端**直接给**的
+// （StartPut 里 `OpType: args.Op`），此前一个字都没检查。
+//
+// 后果分两档，都不报错：
+//
+//	轻——applyOne 只有 Put 和 TermLog 两个分支，别的 op 掉进 else，value 一个字节都不会
+//	    写进任何副本，而客户端拿到 NOKEY，看起来像"这个 key 不存在"。
+//	重——那个 else 分支里调 Get_opt，它对 TagInline 记录返回 ErrInlineValue 并且 panic。
+//	    条目已复制给所有副本，于是每个节点在 apply 同一条时一起崩：一个客户端请求打掉整个集群。
+func TestPutRejectsUnknownOpType(t *testing.T) {
+	kvs := newKeyTestKV(t)
+	ctx := context.Background()
+
+	for _, op := range []string{"", "Get", "get", "PUT", "Delete", "TermLog", "随便"} {
+		reply, err := kvs.PutInRaft(ctx, &kvrpc.PutInRaftRequest{
+			Key: "k", Value: "v", Op: op, ClientId: 1, SeqId: 1,
+		})
+		if err != nil {
+			t.Fatalf("op=%q: %v", op, err)
+		}
+		if reply.GetErr() == raft.OK {
+			t.Errorf("op=%q 被接受了——它会被复制出去，然后在 apply 时掉进 else 分支", op)
+		}
+	}
+
+	// 两个方向都要测。合法路径不能走 PutInRaft——它会一直走到 raft.Start，
+	// 而这个夹具没有 Raft 层（nil 指针）。所以直接测判据本身：
+	// 只测"非法的被拒"是灵敏而不特异，那样一个恒为假的判据也能通过。
+	if !validPutOp(OP_TYPE_PUT) {
+		t.Errorf("validPutOp(%q) = false——校验把唯一实现的那种也挡住了", OP_TYPE_PUT)
+	}
+	for _, op := range []string{"", "Get", "PUT", "Delete", "TermLog"} {
+		if validPutOp(op) {
+			t.Errorf("validPutOp(%q) = true", op)
+		}
+	}
+}

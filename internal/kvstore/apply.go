@@ -8,6 +8,7 @@ import (
 
 	"gitee.com/dong-shuishui/FlexSync/api/raftrpc"
 	"gitee.com/dong-shuishui/FlexSync/internal/raft"
+	"gitee.com/dong-shuishui/FlexSync/internal/util"
 )
 
 // 等待Raft提交期间的Op上下文, 用于唤醒阻塞的RPC
@@ -140,30 +141,19 @@ func (kvs *KVServer) applyCommand(msg raft.ApplyMsg) {
 			// kvs.oldPersister.Put(op.Key, op.Value)		//  original
 		}
 		recordApplyStore(time.Since(tRocks))
-	} else { // OP_TYPE_GET
-		if existOp { // 如果是GET请求，只要没超时，都可以进行幂等处理
-			// opCtx.value, opCtx.keyExist = kvs.kvStore[op.Key]	// --------------------------------------------
-			// value := kvs.persister.Get(op.Key)		leveldb拿取value
-
-			// 从 LevelDB 中获取键对应的值，并解码为整数
-			positionBytes, err := kvs.persister.Get_opt(op.Key)
-			if err != nil {
-				fmt.Println("拿取value有问题")
-				panic(err)
-			}
-			// positionBytes := kvs.persister.Get(op.Key)
-			// position, _ := binary.Varint(positionBytes) // 将字节流解码为整数，拿到key对应的index
-			if positionBytes == -1 { //  说明leveldb中没有该key
-				opCtx.keyExist = false
-				opCtx.value = raft.NoKey
-			} else {
-				_, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
-				if err != nil {
-					fmt.Println("拿取value有问题")
-					panic(err)
-				}
-				opCtx.value = value
-			}
+	} else {
+		// 走到这里说明日志里有一条 applyOne 不认识的 op。
+		//
+		// **不能 panic。** 这条条目已经被复制给了所有副本，于是每个节点都会在同一条上崩——
+		// 一个请求打掉整个集群。原先这里是 OP_TYPE_GET 的处理分支（读经由 Raft 日志的老
+		// 写法），里面两处 `panic(err)`；而读早就不走日志了（service.go 的 StartGet 直接
+		// 应答），那段代码是死的，却因为写成 else 而接住了**一切**非 Put / 非 TermLog 的 op。
+		// 入口现在会拒绝这种 op（见 PutInRaft），这里是第二道：日志里万一已经有了，
+		// 要响亮地跳过而不是把节点带走。
+		util.EPrintf("applyOne: 日志 index=%d 的 op 类型是 %q，本节点不认识，跳过（不写状态机）", index, op.OpType)
+		if existOp {
+			opCtx.keyExist = false
+			opCtx.value = raft.NoKey
 		}
 	}
 
