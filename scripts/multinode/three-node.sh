@@ -242,6 +242,12 @@ sample)
   #                            条目，所以同一时刻活动日志的字节长度应当大致齐平；某一台明显
   #                            偏小就是它在掉队。base_index 是压缩点，它不动而别人在动，
   #                            说明这台的压缩被自己按住了。
+  #                            活动日志的**路径从 kv_state.json 的 current_log 读**，不猜文件名：
+  #                            初始叫 RaftState，第 1 轮 GC 之后是 newRaftState_1，第 2 轮
+  #                            newRaftState_1_2……而装过快照的节点又是 RaftState_snap<N>.log。
+  #                            第一版按 `RaftState*.log` 去 glob，于是 GC 之后一路采到 0
+  #                            （2026-09-18 冒烟时实测，三个节点全是 0）——一个恒为 0 的列
+  #                            读起来正像"日志没在涨"。
   #   pinned/truncates/stuck   leader 侧的权威信号：这三行会指名是**哪个 peer**、复制到了
   #                            哪个位点。log_bytes 只能说"有人慢"，这三个能说"慢的是谁"。
   #   snap_*                   落后到压缩点之前就只能靠快照补，所以发/做/装快照的次数是
@@ -262,7 +268,8 @@ sample)
       rss=$(awk "/^VmRSS:/{print \$2}" "/proc/$pid/status" 2>/dev/null); rss=${rss:-0}
       thr=$(awk "/^Threads:/{print \$2}" "/proc/$pid/status" 2>/dev/null); thr=${thr:-0}
       fds=$(ls "/proc/$pid/fd" 2>/dev/null | wc -l); fds=${fds:-0}
-      logb=$(stat -c %s "$D"/data/valuelog/RaftState*.log 2>/dev/null | awk "{s+=\$1} END{print s+0}")
+      cl=$(sed -n "s/.*\"current_log\": *\"\([^\"]*\)\".*/\1/p" "$D/data/kv_state.json" 2>/dev/null | head -1)
+      logb=$(stat -c %s "$cl" 2>/dev/null); logb=${logb:-0}
       datab=$(du -sb "$D/data" 2>/dev/null | awk "{print \$1+0}")
       base=$(sed -n "s/.*\"base_index\":\([0-9]*\).*/\1/p" "$D/data/raft_state.json" 2>/dev/null); base=${base:-0}
       trm=$(sed -n "s/.*\"current_term\":\([0-9]*\).*/\1/p" "$D/data/raft_state.json" 2>/dev/null); trm=${trm:-0}

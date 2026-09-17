@@ -18,6 +18,11 @@ import (
 )
 
 func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, error) {
+	// 读锁要盖住"读出下面那几个字段"到"迭代结束"的整段，理由见 KVServer.storeRetireMu。
+	// 子 goroutine 不再各取一次：读锁由父 goroutine 持有、wg.Wait 之前不释放，
+	// 子 goroutine 都在这个窗口内跑完。
+	kvs.storeRetireMu.RLock()
+	defer kvs.storeRetireMu.RUnlock()
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -178,6 +183,9 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 }
 
 func (kvs *KVServer) firstGCScan(startKey, endKey string) (map[string]string, error) {
+	// 同 anotherGCScan，理由见 KVServer.storeRetireMu。
+	kvs.storeRetireMu.RLock()
+	defer kvs.storeRetireMu.RUnlock()
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -257,22 +265,17 @@ func (kvs *KVServer) firstGCScan(startKey, endKey string) (map[string]string, er
 
 // scanNewFile 在存储引擎上做一次范围迭代，逐条还原 value。
 //
-// **已知问题，没有盲改：整段迭代都握着 kvs.mu，而 apply 路径用的是同一把锁**
-// （apply.go 的 applyOne）。一次全范围扫描因此会把 applyLoop 按住整个扫描时长，
-// 已提交的条目应用不下去、客户端的写跟着等；GC 的 waitOldVersionApplied 也等在
-// lastAppliedIndex 上。2026-09-17 复核时确认：本函数只用到 kvs.decodeScanValue，
-// 它读的 kvs.kvSeparation 是启动后不变的配置——这把锁**没有保护任何可变状态**。
+// **这里不取任何锁。** 曾经整段迭代都持 kvs.mu，而 applyLoop 用的是同一把锁，
+// 于是一次扫描把写入路径按住整段扫描时长（实测数字见 KVServer.storeRetireMu）。
+// 那把锁真正在做的事只有一件：让 GC 关掉被取代的存储引擎排到扫描之后。现在这件事
+// 由 storeRetireMu 单独做——扫描入口持它的读锁、removeSupersededStore 持写锁，
+// 而 apply 一概不碰它。
 //
-// 那为什么没直接去掉：它顺带把扫描与 GC 换库串行化了（GC 也取 kvs.mu），而
-// removeSupersededStore 的 Close 发生在 kvs.mu **之外**（finishFirstGC /
-// finishAnotherGC 都是先 Unlock 再 Close），所以这把锁其实也没真正挡住
-// "迭代器用着的库被关掉"。要正确处理需要给存储引擎定一个明确的生命周期
-// （引用计数或 epoch），那是一处独立改动，不该混在别的提交里顺手做。
-// 现在先把锁内的工作量降下来：整段扫描只开一次 valuelog（见下面的 logReader），
-// 而不是每个 key 开关一次文件。
+// 本函数自己不需要任何互斥：persister 与 logLocation 都是参数传进来的，
+// kvs.decodeScanValue 只读 kvs.kvSeparation（启动后不变的配置）。
+//
+// 整段扫描只开一次 valuelog（见下面的 logReader），而不是每个 key 开关一次文件。
 func (kvs *KVServer) scanNewFile(startKey, endKey string, persister *raft.Persister, logLocation string) (map[string]string, error) {
-	kvs.mu.Lock()
-	defer kvs.mu.Unlock()
 	ro := grocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 

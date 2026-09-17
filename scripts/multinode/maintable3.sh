@@ -418,7 +418,24 @@ run_cell() { # $1=phase $2=total_mb $3=vsize
             [ "$g2" -gt "$gcafter" ] && gcafter=$g2
         done
         say "[${cell}] 混合期间 GC 轮数 ${gcbefore} -> ${gcafter}"
-        [ "$gcafter" = "$gcbefore" ] && warn "[${cell}] 混合期间 GC 一轮都没推进——扫描按住 kvs.mu 的迹象"
+        # **只在"写入量足够触发一轮"时才提这件事。**
+        #
+        # 第一版无条件地写"GC 一轮都没推进——扫描按住 kvs.mu 的迹象"。2026-09-18 实测：
+        # 64B 档确实是 1 -> 1，而真实原因是混合阶段只覆盖写了 n/20 条 × 94B ≈ 21MB，
+        # 离 GCGB=0.3GB 差着一个数量级——阈值压根没被跨过。同一轮里 256B 档推进了
+        # 1 -> 2，因为同样条数的字节数是 4 倍。
+        # 于是那条警告把**观察**与**归因**绑在一起，而归因指向被测系统。这正是本项目
+        # 反复踩的形态，所以判据改成：先看写入量够不够，够了才谈"为什么没推进"。
+        local mixbytes need
+        mixbytes=$(awk -v n="$mput" -v r="$rec" 'BEGIN{printf "%.0f", n*r}')
+        need=$(awk -v g="$GCGB" 'BEGIN{printf "%.0f", g*1073741824}')
+        if [ "$gcafter" = "$gcbefore" ]; then
+            if awk -v a="$mixbytes" -v b="$need" 'BEGIN{exit !(a >= b)}'; then
+                warn "[${cell}] 混合期间写了 $((mixbytes/1048576))MB（阈值 $((need/1048576))MB）却一轮 GC 都没推进——值得查"
+            else
+                say "[${cell}] 混合期间 GC 未推进属正常：只写了 $((mixbytes/1048576))MB，阈值 $((need/1048576))MB"
+            fi
+        fi
     fi
 
     # ---- 采样峰值与收尾 ----

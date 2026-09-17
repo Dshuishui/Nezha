@@ -99,6 +99,28 @@ type KVServer struct {
 	// 一起换掉。只用 kvs.mu 护住各自的赋值，读路径仍可能取到新的 persister 配旧的
 	// currentLog——那读出来是别的记录的 value，而且不报错。
 	stateMu sync.RWMutex
+	// storeRetireMu 把"一次范围扫描正在迭代某个存储引擎"与"GC 关掉被它取代的那个引擎"
+	// 隔开，而**不**把 apply 一起挡住。
+	//
+	// 此前这件事是靠 kvs.mu 顺带做到的：scanNewFile 整段迭代都持 kvs.mu，而
+	// finishFirstGC / finishAnotherGC 也要先取 kvs.mu 才走到 removeSupersededStore，
+	// 于是 Close 排在扫描之后。**代价是 applyLoop 用的是同一把 kvs.mu**，所以一次扫描
+	// 会把写入路径按住整段扫描时长。
+	//
+	// 2026-09-18 在三节点 400MB 上量出来了：单跑 PUT 的 max 是 42ms，而扫描同时跑时
+	// （客户端数还从 100 降到 20、p50 从 1.72ms 降到 0.71ms）PUT 的 max 是 **2430ms**，
+	// 正落在一次扫描 3114ms 之内。GET 不受影响，因为租约读直接从状态机返回、不等 apply。
+	// 4GB 规模下单次扫描约 31s，按同样的机理一次 PUT 最坏要等约 30 秒。
+	//
+	// 换成独立的一把 RWMutex：扫描持读锁，removeSupersededStore 的 Close 持写锁，
+	// apply 一概不碰它。读锁在**两个扫描入口**（anotherGCScan / firstGCScan）上取，
+	// 覆盖"读出 kvs.persister / kvs.currentLog"到"迭代结束"的整段——只在 scanNewFile
+	// 里取是不够的，因为那两个字段是在进 scanNewFile **之前**读的，中间那个缝隙里
+	// GC 可以完成并关库。
+	//
+	// **不要在 scanNewFile 里再取一次。** Go 的 RWMutex 读锁不可递归：持着读锁再取一次
+	// 读锁，若此时有写者在排队就死锁（写者等第一个读锁，第二个读锁等写者）。
+	storeRetireMu sync.RWMutex
 	// gcActive 与 installing 让 GC 与装快照互斥，两者都在 kvs.mu 下读写。
 	// 不用 stateMu 让它们互相等：GC 一轮要数秒到数分钟，装快照等在写锁上会把读也一起
 	// 挡住（Go 的 RWMutex 在有写者等待时不再放新读者进来）。所以改成"看见对方在跑就

@@ -183,7 +183,16 @@ func (kvs *KVServer) removeSupersededStore() {
 	if kvs.oldPersister == nil || kvs.oldDBPath == "" || kvs.oldDBPath == kvs.currentDBPath {
 		return
 	}
+	// Close 必须与"正在迭代这个库的扫描"互斥，否则迭代器会用在一个已经关掉的
+	// RocksDB 上（C++ 层的 use-after-free，不是一个 Go panic）。此前这件事是靠
+	// 调用方先取 kvs.mu、而扫描也持 kvs.mu 顺带做到的，代价是扫描把 apply 按住；
+	// 现在用一把只给这件事的锁，理由与实测数字见 KVServer.storeRetireMu。
+	//
+	// RemoveAll 放在锁外：库一旦关掉就没有读者能再用它，删文件不需要挡住新的扫描，
+	// 而 RemoveAll 一个几十 MB 的目录不算快，握着写锁做会让排在后面的扫描一起等。
+	kvs.storeRetireMu.Lock()
 	kvs.oldPersister.Close()
+	kvs.storeRetireMu.Unlock()
 	if err := os.RemoveAll(kvs.oldDBPath); err != nil {
 		fmt.Printf("删除旧存储引擎 %s 失败: %v\n", kvs.oldDBPath, err)
 	}
