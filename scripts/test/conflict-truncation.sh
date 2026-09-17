@@ -267,7 +267,11 @@ fi
 # 判据取 readonly：它只读不写，判据是 "GET 校验: 正确 N, 错误 M" 里的 M 和
 # "SCAN 校验" 里的错误数，以及末行的 FAILOVER_VERIFY_OK。
 info "判据 c：通过集群逐条校验（期望值按 vsize ${NEW_VSIZE}B 派生）"
-/tmp/conflict-readonly -servers "$(servers_str)" -leader "$NEW_LEADER" \
+# readonly 只有 -servers，**没有 -leader**（那是 scanverify 独有的）。Go 的 flag
+# 遇到未声明的参数会打 usage 然后退出，回执是空的，判据于是报"集群校验未通过"，
+# 而集群是好的——2026-09-17 第一轮就这么误判了一次。
+# 它走 GetFrom、本来就不做重定向，所以直接给新 leader 的那一个地址才是对的。
+/tmp/conflict-readonly -servers "127.0.0.1:${PORTS[$NEW_LEADER]}" \
     -dnums "$BASE_N" -vsize "$NEW_VSIZE" -check 2000 \
     > "$DATA_BASE/verify-cluster.log" 2>&1 || true
 if grep -q 'FAILOVER_VERIFY_OK' "$DATA_BASE/verify-cluster.log"; then

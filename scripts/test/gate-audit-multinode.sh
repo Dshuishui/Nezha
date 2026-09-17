@@ -643,6 +643,50 @@ for p in $DRIVERS; do
     fi
 done
 
+info "=== 二十四、脚本里用的 bench 工具参数必须真的存在 ==="
+# 工具的参数表与脚本各改各的，而 Go 的 flag 包遇到未声明的参数会**打一段 usage 然后退出**。
+# 脚本拿到的是空回执，判据于是报"系统没通过"，而真因是自己写了一个不存在的参数。
+# 2026-09-17 连撞两次：给 scanverify 写了 -mode / -kstart（它两个都没有，写入与读取
+# 分不开、key 段也没法指定），给 readonly 写了 -leader（只有 scanverify 有）。
+# 后者是在真跑完一轮之后才发现的——判据 c 报"集群校验未通过"，而集群是好的。
+#
+# 判据：对每个 cmd/bench/<工具>，扫出它声明的全部 flag，再把脚本里**调用**它那一行的
+# 参数逐个对照。三处容易误报的地方都处理了：
+#   词界     —— scan 是 scanverify / scan_pro 的前缀，不整词匹配就会拿错参数表
+#   管道之后 —— `... | grep -oE` 里的 -oE 是 grep 的
+#   go build —— `go build -o /tmp/scanverify ...` 里的 -o 是 go 的
+FLAGBAD=0
+for d in "$PROJECT_DIR"/cmd/bench/*/; do
+    t=$(basename "$d")
+    # flag.Float64 这类带数字的类型名：正则必须是 [A-Za-z0-9]+ 而不是 [A-Za-z]+，
+    # 否则 randwrite_goroutine 的 -rangeFrac 扫不出来，对它的误用就查不到。
+    declared=" $(grep -ohE 'flag\.[A-Za-z0-9]+\("[A-Za-z0-9_]+"' "$d"*.go 2>/dev/null | grep -oE '"[A-Za-z0-9_]+"' | tr -d '"' | sort -u | tr '\n' ' ')"
+    [ "$declared" = " " ] && continue
+    while IFS= read -r hit; do
+        f=${hit%%:*}; rest=${hit#*:}; ln=${rest%%:*}; line=${rest#*:}
+        case "$line" in *"go build"*) continue;; esac
+        # 整行注释要排除，判据与第十二、十七节一致：行首第一个非空白字符是 #。
+        # 本节自己的成因说明里就写着 -mode / -kstart / -leader，不排除就会审到自己。
+        printf '%s' "$line" | grep -qE '^[[:space:]]*#' && continue
+        args=$(printf '%s' "$line" | grep -oE "[-A-Za-z0-9_./]*${t}[[:space:]\"].*" | head -1)
+        [ -n "$args" ] || continue
+        args=${args#*"$t"}
+        args=${args%%|*}; args=${args%%>*}
+        for fl in $(printf '%s' "$args" | grep -oE '[[:space:]]-[A-Za-z0-9_]+' | tr -d ' -'); do
+            case "$declared" in
+                *" $fl "*) ;;
+                *) echo "       ${f#"$PROJECT_DIR"/}:${ln}  $t 没有 -$fl"
+                   FLAGBAD=$((FLAGBAD+1));;
+            esac
+        done
+    done < <(grep -rnE -- "$t" "$PROJECT_DIR"/scripts/ --include='*.sh' 2>/dev/null)
+done
+if [ "$FLAGBAD" -eq 0 ]; then
+    good "脚本里用到的 bench 工具参数都真的存在"
+else
+    bad "上列 $FLAGBAD 处用了工具没有的参数——Go 的 flag 会打 usage 然后退出，回执是空的"
+fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"

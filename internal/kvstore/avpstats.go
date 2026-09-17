@@ -46,6 +46,23 @@ func avpRecordScan(entries int, bytes int64) {
 // AVPStatsLine 汇总成一行，供从节点日志里抓取。
 // 命中率和"平均每次未命中解析多少条 entry"是两个核心指标：
 // 前者说明 AVP 覆盖了多少读，后者量化它每次省下的解析工作量。
+//
+// reads 到底数的是什么，用之前要清楚，否则命中率会被读成比实际更低的数。
+//
+// GET 是**多路并发**查找：当前 valuelog 与分区文件同时查，结果按优先级取
+// （read.go 的 anotherGCGet）。两个 goroutine 无论如何都会跑完，所以每次 GET
+// 恰好产生一次分区查找、也就是恰好一次 hit 或 miss——分母是对的，等于 GET 次数。
+//
+// 但分子不是。一次"答案来自当前 valuelog"的 GET（刚写过的 key）同样会记一次
+// **miss**，而内联缓存对这种读本来就无能为力：它只缓存已经搬进分区的小值。
+// 于是 hit_rate 把"缓存没能服务的读"和"缓存本可服务却没命中的读"算在了一起，
+// 系统性地压低 AVP 的收益。这与 not_found 被单独剥出来是同一类问题
+// （见 avpRecordNotFound 的说明），只是还没有剥。
+//
+// 要剥需要在汇合点知道"这一次是哪条路答的"，而那会改变一个已经用来出过数的指标，
+// 所以没有顺手改。**写进论文前必须先决定**：要么剥出来重测，要么明确说明
+// hit_rate 的分母是全部 GET、而非"内联缓存有机会服务的那些 GET"。
+// 写满覆盖（overwrite）比例越高，这个差距越大。
 func AVPStatsLine() string {
 	h := avpStats.inlineHits.Load()
 	m := avpStats.inlineMisses.Load()
