@@ -570,6 +570,12 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 	// 正好落在压缩点之前，快照路径随即接手。
 	if args.PrevLogIndex > int32(rf.lastIndex()) { // prevLogIndex位置没有日志的情况
 		reply.ConflictIndex = int32(rf.lastIndex() + 1)
+		// 拒绝是罕见事件，无条件打出来。leader 的回退是一个**序列**，光看"有没有冲突"
+		// 看不出它探到了哪；而"探针从没进到重叠区"与"进了但没判出冲突"是两种完全不同的
+		// 故障，靠推理分不开（2026-09-17 为此耗了两轮）。
+		fmt.Printf("[LOG-REJECT] 本节点只到 %d，leader 的 PrevLogIndex=%d（term=%d，本节点 term=%d）"+
+			"，要求从 %d 重发\n",
+			rf.lastIndex(), args.PrevLogIndex, args.PrevLogTerm, rf.currentTerm, reply.ConflictIndex)
 		return reply, nil
 	}
 	if args.PrevLogIndex != 0 {
@@ -586,6 +592,10 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 					break
 				}
 			}
+			fmt.Printf("[LOG-REJECT] PrevLogIndex=%d 处 term 不符：本节点 %d、leader %d，"+
+				"回退到 %d（本节点日志 (%d, %d]）\n",
+				args.PrevLogIndex, prevTerm, args.PrevLogTerm, reply.ConflictIndex,
+				rf.lastIncludedIndex, rf.lastIndex())
 			return reply, nil
 		}
 	}
@@ -646,13 +656,27 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				rf.truncateLogFrom(logPos) // 删除当前以及后续所有log
 				rf.appendLog(logEntry)     // 把新log加入进来
 
+				// Offsets 只装**未应用**的条目，不变式是 Offsets[0] 恒对应下标 shotOffset+1。
+				// 冲突点一定是未应用的（已提交的条目在各副本上相同，Log Matching 保证；
+				// 所以 term 不同的下标必然 > commitIndex >= lastApplied == shotOffset），
+				// 于是下面这个下标必然非负。
+				// 显式检查一次并给出不变式本身：越界时 Go 的 index out of range 什么也说明不了，
+				// 而这条不变式一旦被破坏（例如 commitIndex 被推过了确认前缀——
+				// 那正是 advanceCommitLocked 修掉的 bug），现场必须一眼能读懂。
+				pos := index - rf.shotOffset - 1
+				if pos < 0 || pos > len(rf.Offsets) {
+					panic(fmt.Sprintf("RaftNode[%d] 冲突点 index=%d 落在偏移队列之外："+
+						"shotOffset=%d len(Offsets)=%d lastApplied=%d commitIndex=%d。"+
+						"不变式是 Offsets[0] 对应 shotOffset+1，且冲突点必然未应用",
+						rf.me, index, rf.shotOffset, len(rf.Offsets), rf.lastApplied, rf.commitIndex))
+				}
 				// offset := rf.Offsets[index]      // 截取后面错误的offset
-				offset := rf.Offsets[index-rf.shotOffset-1] // 这个要减一
+				offset := rf.Offsets[pos]
 				// offset := rf.Offsets[index-rf.shotOffset] // 将上面的改为加一了
 				// rf.Offsets = rf.Offsets[:logPos] // 删除当前错误的offset，以及后续的所有
-				rf.Offsets = rf.Offsets[:index-rf.shotOffset-1] // logPos 现在是相对基址的，改用绝对 index 推导
-				if n := index - rf.shotOffset - 1; n <= len(rf.offsetVersions) {
-					rf.offsetVersions = rf.offsetVersions[:n] // 与 Offsets 同步截断，否则两者错位
+				rf.Offsets = rf.Offsets[:pos] // logPos 现在是相对基址的，改用绝对 index 推导
+				if pos <= len(rf.offsetVersions) {
+					rf.offsetVersions = rf.offsetVersions[:pos] // 与 Offsets 同步截断，否则两者错位
 				}
 				arrEntry := []*Entry{&entry} // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
 				// offsets2, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)

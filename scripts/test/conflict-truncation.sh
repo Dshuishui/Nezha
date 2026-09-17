@@ -261,6 +261,18 @@ if [ "$CONFLICT" = 1 ]; then
   grep '\[LOG-CONFLICT\]' "${LOGS[$OLD_LEADER]}" | head -3
 else
   fail "判据 b：60 秒内没有 [LOG-CONFLICT]——这一轮没构造出冲突，后面的判据都没有意义"
+  # 没构造出冲突有好几种走法，光说"没看到"下次还得从头查。把能区分它们的现场一起打出来：
+  #   恢复出的日志区间   —— 未提交的尾巴到底在不在盘上
+  #   有没有 [SNAPSHOT]  —— 是不是被快照整体替换掉了（那条路不经过冲突分支）
+  #   有没有 compactLog  —— 分叉点是不是先被压缩掉了
+  #   有没有"底层执行了Put请求" —— 本节点是不是把自己那段未提交的尾巴应用了
+  #     （那是 commitIndex 被推过确认前缀的症状，见 advanceCommitLocked）
+  echo "  --- 现场 ---"
+  grep -E 'recovery complete|\[SNAPSHOT\]|compactLog|底层执行了Put请求' "${LOGS[$OLD_LEADER]}" \
+      | head -6 | sed 's/^/  /'
+  echo "  新 leader 侧："
+  grep -E '\[LOG-TRUNCATE\]|\[LOG-STUCK\]|\[SNAPSHOT\]' "${LOGS[$NEW_LEADER]}" \
+      | head -4 | sed 's/^/  /'
 fi
 
 # ---------- 判据 c：集群逐条校验 ----------
