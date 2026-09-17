@@ -8,8 +8,19 @@
 #   three-race-node.sh mem    IDX                    RSS 与最近一次压缩后的内存日志条数
 #   three-race-node.sh snaplog IDX [N]               最近 N 行快照/截断相关日志
 #   three-race-node.sh report IDX                    GC 轮数 / DATA RACE / 错误行
+#   three-race-node.sh sample IDX [间隔秒] [空间下限GB]  后台采 RSS/fd/GC/磁盘，写 $D/sample.csv
+#   three-race-node.sh samplestop IDX                停掉采样器
 # 环境变量：BIN=race|normal；SYSTEM=nezha|original|lsm-raft|...（默认 nezha）；
 #           EXTRA="-sstSpanMB 4" 之类追加给节点的参数；GC_PAUSE_MS 见 GC.go。
+#
+# SYNC_WAL（默认 1）与 GCGB（默认按 N/VS 派生）是为**性能规模**的跑法加的：
+#   SYNC_WAL=1 是正确性验证的默认——每条一次 fsync，崩溃语义最严，但写入慢约 50 倍。
+#              4GB 规模下那是几十小时，所以出性能数字时必须 SYNC_WAL=0。
+#              **这个默认值不能翻过来**：所有已有的正确性脚本（recover/failover/
+#              slow-follower/snapshot-vs-gc）都不传这个变量，翻默认等于静默地把它们
+#              的崩溃语义放松了，而它们一行都不会报错。
+#   GCGB       派生式是"总量的 1/3"，只保证至少触发一轮。要测多轮 GC（4GB 想跑十几轮）
+#              就得显式给一个小值，派生式给不出来。
 set -u
 source ~/env.sh
 cd ~/work/Nezha
@@ -84,8 +95,17 @@ start)
     else go build -o "$EXE" ./cmd/nezha/ || { echo BUILD_FAIL; exit 1; }; fi
   fi
   rm -rf "$D"; mkdir -p "$D"
-  GB=$(awk -v n="$N" -v v="$VS" -v k="$(key_width)" 'BEGIN{printf "%.6f", n*(20+k+v)/1073741824/3}')
-  echo "$PORT $IPORT $GB $SYSTEM $EXTRA" > "$D/args"   # restart 时原样复用
+  # 显式 GCGB 优先；没给就按"总量的 1/3"派生（只保证至少触发一轮，见文件开头）。
+  GB=${GCGB:-$(awk -v n="$N" -v v="$VS" -v k="$(key_width)" 'BEGIN{printf "%.6f", n*(20+k+v)/1073741824/3}')}
+  # SYNC_WAL 也要落盘：restart 不重新派生参数，它从 args 里原样读。
+  # 不落盘的话，一个 SYNC_WAL=0 起来的节点会带着 -syncWAL 重启，于是"重启后"与"重启前"
+  # 跑的是两种持久化语义，而日志里没有任何迹象。
+  SW=${SYNC_WAL:-1}
+  # 空串 / "-syncWAL" 两种取值，直接拼进命令行。不能写成 `-syncWAL=$SW`：
+  # Go 的 flag 对 bool 认 `-syncWAL=false`，但历史上所有脚本传的都是裸 `-syncWAL`，
+  # 改成带值的写法会让"传了就是开"的读法失效，而它遍布各驱动脚本。
+  SWFLAG=""; [ "$SW" = 1 ] && SWFLAG="-syncWAL"
+  echo "$PORT $IPORT $GB $SYSTEM $SW $EXTRA" > "$D/args"   # restart 时原样复用
   echo "$PEERS" > "$D/peers"                          # 同上，理由见文件开头 PEERS 那段
   # shellcheck disable=SC2086
   if [ "${TS:-0}" = 1 ]; then
@@ -97,11 +117,11 @@ start)
     nohup perl -MTime::HiRes=time -ne 'BEGIN{$|=1} my $n=time; my @t=localtime($n); printf "%02d:%02d:%02d.%03d %s",$t[2],$t[1],$t[0],($n-int($n))*1000,$_' \
         < "$D/pipe" > "$D/n.log" 2>/dev/null &
     nohup env ${GC_PAUSE_MS:+NEZHA_GC_PAUSE_MS=$GC_PAUSE_MS} "$EXE" -address "$SELF_IP:$PORT" -internalAddress "$SELF_IP:$IPORT" -peers "$PEERS" \
-        -data "$D" -gap 1000000 -system "$SYSTEM" -syncWAL -gcThresholdGB "$GB" -commitTimeoutS 60 $EXTRA \
+        -data "$D" -gap 1000000 -system "$SYSTEM" $SWFLAG -gcThresholdGB "$GB" -commitTimeoutS 60 $EXTRA \
         < /dev/null > "$D/pipe" 2>&1 &
   else
     nohup env ${GC_PAUSE_MS:+NEZHA_GC_PAUSE_MS=$GC_PAUSE_MS} "$EXE" -address "$SELF_IP:$PORT" -internalAddress "$SELF_IP:$IPORT" -peers "$PEERS" \
-        -data "$D" -gap 1000000 -system "$SYSTEM" -syncWAL -gcThresholdGB "$GB" -commitTimeoutS 60 $EXTRA \
+        -data "$D" -gap 1000000 -system "$SYSTEM" $SWFLAG -gcThresholdGB "$GB" -commitTimeoutS 60 $EXTRA \
         > "$D/n.log" 2>&1 &
   fi
   NEWPID=$!; sleep 1
@@ -119,7 +139,17 @@ start)
 restart)
   # 不清目录、不重建：同一份数据目录原地重启，走崩溃恢复路径。日志另起一个文件便于区分。
   [ -f "$D/args" ] || { echo "RESTART_FAIL node$IDX: no args"; exit 1; }
-  read -r PORT IPORT GB SYSTEM EXTRA < "$D/args"; SYSTEM=${SYSTEM:-nezha}; EXTRA=${EXTRA:-}
+  read -r PORT IPORT GB SYSTEM SW EXTRA < "$D/args"; SYSTEM=${SYSTEM:-nezha}; EXTRA=${EXTRA:-}
+  # 兼容旧格式（没有 SW 这一列）：那时第五个 token 是 EXTRA 的第一个词。
+  # 判据是"取值只能是 0 或 1"，别的一律当成 EXTRA 的一部分并回落到 SYNC_WAL=1（旧默认）。
+  # 不加这一步的后果是**静默**的：一个 `-partitionTargetMB` 会被当成 SW，
+  # 于是 SWFLAG 为空（fsync 被关掉）而且那个参数从 EXTRA 里消失。
+  case "${SW:-}" in
+    0|1) ;;
+    "") SW=1 ;;
+    *)  EXTRA="$SW${EXTRA:+ $EXTRA}"; SW=1 ;;
+  esac
+  SWFLAG=""; [ "$SW" = 1 ] && SWFLAG="-syncWAL"
   # peers 必须从盘上读，读不到就拒绝重启：静默回落到默认拓扑会让节点加入另一个集群。
   if [ -s "$D/peers" ]; then PEERS=$(cat "$D/peers")
   else echo "RESTART_FAIL node$IDX: 没有 $D/peers，拒绝用默认拓扑重启"; exit 1; fi
@@ -128,7 +158,7 @@ restart)
   LOGF="$D/n$n.log"
   # shellcheck disable=SC2086
   nohup "$EXE" -address "$SELF_IP:$PORT" -internalAddress "$SELF_IP:$IPORT" -peers "$PEERS" \
-      -data "$D" -gap 1000000 -system "$SYSTEM" -syncWAL -gcThresholdGB "$GB" -commitTimeoutS 60 $EXTRA \
+      -data "$D" -gap 1000000 -system "$SYSTEM" $SWFLAG -gcThresholdGB "$GB" -commitTimeoutS 60 $EXTRA \
       > "$LOGF" 2>&1 &
   NEWPID=$!; sleep 2
   # 与 start 同理：失败时不覆盖 pid 文件，理由见那里。
@@ -198,6 +228,92 @@ report)
   replay=$(cat "$D"/n*.log | grep -c 'LSM-Raft\].*replaying') || replay=0
   echo "REPORT node$IDX alive=$alive gc_done=$gc races=$races err_lines=$err silent_leader_msgs=$cand silent=$silent elections=$elect won=$won lock_stalls=$stalls slow_appends=$slow term=$term lsm_cut=$cut lsm_lastcut=$lastcut lsm_ingested=$ing lsm_lastingested=$lasting lsm_replays=$replay"
   errlines | grep -v "DATA RACE" | head -3 | cut -c1-160
+  ;;
+sample)
+  # 本机采样器。**跑在节点自己的机器上**，不是驱动机：一次 10 小时的跑法若让驱动每 10 秒
+  # ssh 三台去取一次，就是上万次 ssh，而 2026-09-16 已经实测过"ssh 被饿住但连接不断、
+  # 回执静默变空"这种失效。写本地文件、结束时整份取回来，与驱动机的状况无关。
+  #
+  # 采的东西分三组，每一组都对着一个已知的失效形态：
+  #   rss/fds/threads          "内存随 key 数量而非数据量增长"那一类。fd 数还盯着
+  #                            "被取代的分区组的描述符池从不 Close"（CLAUDE.md 已知未修那条，
+  #                            实测靠 finalizer 回收、在 36~68 震荡；这里要看 4GB 下还成不成立）。
+  #   log_bytes/base_index     **跨节点比这两个数就是"谁落后了"**。三个节点复制的是同一串
+  #                            条目，所以同一时刻活动日志的字节长度应当大致齐平；某一台明显
+  #                            偏小就是它在掉队。base_index 是压缩点，它不动而别人在动，
+  #                            说明这台的压缩被自己按住了。
+  #   pinned/truncates/stuck   leader 侧的权威信号：这三行会指名是**哪个 peer**、复制到了
+  #                            哪个位点。log_bytes 只能说"有人慢"，这三个能说"慢的是谁"。
+  #   snap_*                   落后到压缩点之前就只能靠快照补，所以发/做/装快照的次数是
+  #                            "落后已经严重到走另一条路"的标志。
+  #
+  # 磁盘水位按**剩余字节**判，不按百分比：node55 常态就在 93%（别人的数据占着 1.4T），
+  # 按百分比判会开跑前就触发，按剩余判才对得上"我们还能写多少"。
+  IV=${3:-15}; FLOOR_GB=${4:-0}
+  CSV="$D/sample.csv"
+  [ -f "$CSV" ] || echo "ts,rss_kb,fds,threads,gc,base_index,term,log_bytes,data_bytes,disk_avail_kb,pinned,truncates,budget,stuck,snap_sent,snap_made,snap_installed,elections,won,slow_appends,lock_stalls" > "$CSV"
+  rm -f "$D/DISK_LOW"
+  # 采样循环自己持有 pid，samplestop 按它来停。用 $D/sampler.pid 而不是 pgrep：
+  # pgrep 在这台机器上会匹配到别人恰好提到同名路径的进程。
+  nohup bash -c '
+    D=$1; IV=$2; FLOOR_GB=$3; CSV=$D/sample.csv
+    while [ -f "$D/sampler.pid" ]; do
+      pid=$(cat "$D/pid" 2>/dev/null)
+      rss=$(awk "/^VmRSS:/{print \$2}" "/proc/$pid/status" 2>/dev/null); rss=${rss:-0}
+      thr=$(awk "/^Threads:/{print \$2}" "/proc/$pid/status" 2>/dev/null); thr=${thr:-0}
+      fds=$(ls "/proc/$pid/fd" 2>/dev/null | wc -l); fds=${fds:-0}
+      logb=$(stat -c %s "$D"/data/valuelog/RaftState*.log 2>/dev/null | awk "{s+=\$1} END{print s+0}")
+      datab=$(du -sb "$D/data" 2>/dev/null | awk "{print \$1+0}")
+      base=$(sed -n "s/.*\"base_index\":\([0-9]*\).*/\1/p" "$D/data/raft_state.json" 2>/dev/null); base=${base:-0}
+      trm=$(sed -n "s/.*\"current_term\":\([0-9]*\).*/\1/p" "$D/data/raft_state.json" 2>/dev/null); trm=${trm:-0}
+      avail=$(df -kP "$D" 2>/dev/null | awk "NR==2{print \$4+0}")
+      gc=$(cat "$D"/n*.log 2>/dev/null | grep -c "轮垃圾回收完成"); gc=${gc:-0}
+      pin=$(cat "$D"/n*.log 2>/dev/null | grep -c "LOG-PINNED"); pin=${pin:-0}
+      trc=$(cat "$D"/n*.log 2>/dev/null | grep -c "LOG-TRUNCATE"); trc=${trc:-0}
+      bdg=$(cat "$D"/n*.log 2>/dev/null | grep -c "LOG-BUDGET"); bdg=${bdg:-0}
+      stk=$(cat "$D"/n*.log 2>/dev/null | grep -c "LOG-STUCK"); stk=${stk:-0}
+      ss=$(cat "$D"/n*.log 2>/dev/null | grep -c "开始给它发快照"); ss=${ss:-0}
+      sm=$(cat "$D"/n*.log 2>/dev/null | grep -c "SNAPSHOT\] 做好一份"); sm=${sm:-0}
+      si=$(cat "$D"/n*.log 2>/dev/null | grep -c "SNAPSHOT\] 装好一份"); si=${si:-0}
+      el=$(cat "$D"/n*.log 2>/dev/null | grep -c "Follower -> Candidate"); el=${el:-0}
+      wn=$(cat "$D"/n*.log 2>/dev/null | grep -c "Candidate -> Leader"); wn=${wn:-0}
+      sa=$(cat "$D"/n*.log 2>/dev/null | grep -c "SLOW-APPEND"); sa=${sa:-0}
+      ls_=$(cat "$D"/n*.log 2>/dev/null | grep -c "LOCK-STALL"); ls_=${ls_:-0}
+      echo "$(date +%s),$rss,$fds,$thr,$gc,$base,$trm,${logb:-0},${datab:-0},${avail:-0},$pin,$trc,$bdg,$stk,$ss,$sm,$si,$el,$wn,$sa,$ls_" >> "$CSV"
+      if [ "$FLOOR_GB" != 0 ] && [ -n "$avail" ]; then
+        need=$(awk -v g="$FLOOR_GB" "BEGIN{printf \"%d\", g*1048576}")
+        [ "$avail" -lt "$need" ] && echo "avail_kb=$avail floor_kb=$need" > "$D/DISK_LOW"
+      fi
+      sleep "$IV"
+    done' _ "$D" "$IV" "$FLOOR_GB" < /dev/null > "$D/sampler.log" 2>&1 &
+  echo $! > "$D/sampler.pid"
+  echo "SAMPLING node$IDX every ${IV}s floor=${FLOOR_GB}GB -> $CSV"
+  ;;
+samplestop)
+  # 先删标志文件让循环自己退出，再兜底杀。顺手把最后一行回显出来，好让驱动在日志里
+  # 留下一个"停的时候是什么水位"的快照。
+  sp=$(cat "$D/sampler.pid" 2>/dev/null); rm -f "$D/sampler.pid"
+  [ -n "$sp" ] && kill "$sp" 2>/dev/null
+  echo "SAMPLESTOP node$IDX $(tail -1 "$D/sample.csv" 2>/dev/null)"
+  ;;
+samplepeak)
+  # 各列的峰值/末值，供驱动直接写进 CSV。只报关心的几列，整份 sample.csv 由驱动取回归档。
+  awk -F, 'NR>1{
+      if($2>rss)rss=$2; if($3>fd)fd=$3; if($4>th)th=$4
+      gc=$5; base=$6; logb=$8; datab=$9
+      if(av==0||$10<av)av=$10
+      pin=$11; trc=$12; bdg=$13; stk=$14; ss=$15; sm=$16; si=$17; el=$18; wn=$19; sa=$20
+      n++
+    } END{
+      if(n==0){print "PEAK node samples=0"; exit}
+      printf "PEAK samples=%d rss_kb=%d fds=%d threads=%d gc=%s base_index=%s log_bytes=%s data_bytes=%s min_avail_kb=%s pinned=%s truncates=%s budget=%s stuck=%s snap_sent=%s snap_made=%s snap_installed=%s elections=%s won=%s slow_appends=%s\n", n,rss,fd,th,gc,base,logb,datab,av,pin,trc,bdg,stk,ss,sm,si,el,wn,sa
+    }' "$D/sample.csv" 2>/dev/null || echo "PEAK samples=0"
+  ;;
+lagsay)
+  # leader 侧那几行的**原文**，带 peer 编号与位点。计数只说"发生过"，原文才说"慢的是谁、
+  # 落后多少"——用户 2026-09-18 特别要盯的就是这个。
+  cat "$D"/n*.log 2>/dev/null | grep -E '\[LOG-PINNED\]|\[LOG-TRUNCATE\]|\[LOG-STUCK\]|\[LOG-BUDGET\]|开始给它发快照' \
+    | tail -"${3:-12}" | sed "s/^/node$IDX /" | cut -c1-200
   ;;
 timeline)
   # GC start/end, heartbeat silence, and every role change, in log order. Needs TS=1 at

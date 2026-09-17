@@ -655,6 +655,13 @@ info "=== 二十四、脚本里用的 bench 工具参数必须真的存在 ==="
 #   词界     —— scan 是 scanverify / scan_pro 的前缀，不整词匹配就会拿错参数表
 #   管道之后 —— `... | grep -oE` 里的 -oE 是 grep 的
 #   go build —— `go build -o /tmp/scanverify ...` 里的 -o 是 go 的
+#   变量名   —— **第四类，2026-09-18 补的。** 前缀类 `[-A-Za-z0-9_./]*` 允许字母，
+#              于是 t=scan 时 `$mscan -tests 1` 里的 `mscan ` 也算命中（`m` 被前缀吃掉），
+#              审计于本仓库自己的新脚本上报了 5 处不存在的误用。名字里带工具名的
+#              shell 变量很常见（mscan / put_scan_n），所以这是个会反复出现的误报。
+#              办法是要求工具名前面那个字符是路径分隔符、连字符、空白或引号之一——
+#              `/tmp/mt3-scan_pro` 里 scan_pro 前面是 `-`（命中，对），
+#              而 `$mscan` 里 scan 前面是 `m`（不命中，对）。
 FLAGBAD=0
 for d in "$PROJECT_DIR"/cmd/bench/*/; do
     t=$(basename "$d")
@@ -668,7 +675,7 @@ for d in "$PROJECT_DIR"/cmd/bench/*/; do
         # 整行注释要排除，判据与第十二、十七节一致：行首第一个非空白字符是 #。
         # 本节自己的成因说明里就写着 -mode / -kstart / -leader，不排除就会审到自己。
         printf '%s' "$line" | grep -qE '^[[:space:]]*#' && continue
-        args=$(printf '%s' "$line" | grep -oE "[-A-Za-z0-9_./]*${t}[[:space:]\"].*" | head -1)
+        args=$(printf '%s' "$line" | grep -oE "(^|[[:space:]\"'/-])${t}[[:space:]\"].*" | head -1)
         [ -n "$args" ] || continue
         args=${args#*"$t"}
         args=${args%%|*}; args=${args%%>*}
