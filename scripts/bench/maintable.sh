@@ -233,7 +233,18 @@ for sys in $SYSTEMS; do
       [ "$sys" = nezha-avp ] && INLINE_TH="${INLINE_THRESHOLD:-512}"
       LOST=$(python3 "$SCRIPT_DIR/lost-keys.py" "$DATA" "$N" "$vs" "$INLINE_TH" 2>/dev/null | grep -o '丢失 [0-9]*' | grep -o '[0-9]*')
       LOST="${LOST:-NA}"
-      if [ "$LOST" != NA ] && [ "$LOST" -gt 0 ]; then
+      # **取不到值时不许当成通过。** 原来写的是 `[ "$LOST" != NA ] && [ "$LOST" -gt 0 ]`，
+      # 于是 NA 直接短路掉整条判定、一声不响地往下跑。而 NA 的来历都是真问题：
+      # lost-keys.py 失败、python3 不在、数据目录布局变了、或者（三节点驱动上实测过的）
+      # 4570 万个 key 把调用超时掐断。
+      # GC 搬丢记录不报任何错，只会在某次 GET 上变成一个 NOKEY，而命中率看不出来——
+      # 这个检查是唯一能发现它的地方，所以它"没做"必须和"发现丢了"一样响。
+      if [ "$LOST" = NA ]; then
+        if [ "$LOST_KEYS" = fail ]; then
+          die "丢 key 检查没有结果（$sys/$vs/${round}）——拿不到判据不等于判据通过"
+        fi
+        warn "丢 key 检查没有结果（$sys/$vs/${round}）：这一格**没有**做过丢 key 检查"
+      elif [ "$LOST" -gt 0 ]; then
         if [ "$LOST_KEYS" = fail ]; then
           die "GC 搬丢了 $LOST 条记录（$sys/$vs/${round}）——先修再测"
         fi

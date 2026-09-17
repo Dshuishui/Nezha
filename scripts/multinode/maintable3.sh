@@ -346,14 +346,29 @@ run_cell() { # $1=phase $2=total_mb $3=vsize
     if [ "$LOST_KEYS" != off ]; then
         local INLINE_TH=0
         [ "$SYSTEM" = nezha-avp ] && INLINE_TH="${INLINE_THRESHOLD:-512}"
-        lost=$(r "$(host_of 0)" "cd ~/work/Nezha && python3 scripts/bench/lost-keys.py ~/work/three-0 $n $vs $INLINE_TH" \
+        # **超时要给够。** 这个脚本把盘上出现过的 key 全收进一个 Python 集合再做差集，
+        # 4570 万个 key 要跑十几分钟，而 r() 默认 SSH_TIMEOUT=600s 是按"写 2 万条"那个
+        # 量级定的。2026-09-18 实测：4GB 那一格因此被 with_timeout 掐断、回执为空。
+        lost=$(SSH_TIMEOUT=${LOST_TIMEOUT:-7200} r "$(host_of 0)" \
+               "cd ~/work/Nezha && python3 scripts/bench/lost-keys.py ~/work/three-0 $n $vs $INLINE_TH" \
                | grep -o '丢失 [0-9]*' | grep -o '[0-9]*')
         lost="${lost:-NA}"
-        if [ "$lost" != NA ] && [ "$lost" -gt 0 ]; then
-            say "[$cell] node0 盘上丢了 $lost 条记录"
+        # **NA 在 LOST_KEYS=fail 下必须判失败。**
+        #
+        # 第一版的 else 分支把 NA 和 0 一起打成"盘上丢失 NA 条"就往下走了。于是 4GB
+        # 那一格在超时之后**照常跑完 GET 与 SCAN**，而唯一能发现"GC 搬丢了记录"的检查
+        # 一条都没做——GC 搬丢记录不报任何错，只会在某次 GET 上变成一个 NOKEY，
+        # 而命中率看不出来（CLAUDE.md 记着这一条）。
+        # "拿不到判据不等于判据通过"是 gate.sh 里反复写的规则，这里却违反了它。
+        if [ "$lost" = NA ]; then
+            say "[$cell] 丢 key 检查没有回执（超时或脚本失败）——拿不到判据不等于通过"
+            [ "$LOST_KEYS" = fail ] && { fail=1; return 1; }
+            warn "[$cell] LOST_KEYS=warn，继续，但这一格**没有**做过丢 key 检查"
+        elif [ "$lost" -gt 0 ]; then
+            say "[$cell] node0 盘上丢了 ${lost} 条记录"
             [ "$LOST_KEYS" = fail ] && { fail=1; return 1; }
         else
-            say "[$cell] node0 盘上丢失 ${lost} 条"
+            say "[$cell] node0 盘上丢失 0 条"
         fi
     fi
 

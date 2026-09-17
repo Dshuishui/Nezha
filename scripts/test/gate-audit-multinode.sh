@@ -734,6 +734,37 @@ else
     bad "上列 $BYTEBAD 处把字节数送进了 awk 的数值路径——node55 上会变成科学计数法或被截断成 2^31-1"
 fi
 
+info "=== 二十六、丢 key 检查取不到值时不许当成通过 ==="
+# 2026-09-18 实测：4GB 那一格的 lost-keys.py 被 SSH 超时掐断，回执为空 -> NA，
+# 而判定写的是
+#     [ "$LOST" != NA ] && [ "$LOST" -gt 0 ]
+# NA 把整条判定短路掉，那一格**照常跑完 GET 与 SCAN**，日志上只留下
+# "盘上丢失 NA 条"一行。而 GC 搬丢记录不报任何错，只会在某次 GET 上变成一个 NOKEY，
+# 命中率也看不出来——这个检查是唯一能发现它的地方。
+# 同样的写法在 maintable.sh（单节点主表驱动）里也有一份，所以这是一类，不是一处。
+#
+# 判据：调用 lost-keys.py 的脚本里，不许出现 `!= NA` 与 `-gt 0` 写在**同一条** if 上
+# 的形式——那个形式的语义就是"取不到值就跳过"。正确写法是把 NA 单独判一支。
+# 本文件要排除：上面这段解释里就写着那个模式。
+NABAD=0
+while IFS= read -r p; do
+    case "$(basename "$p")" in gate-audit-multinode.sh) continue;; esac
+    grep -q 'lost-keys.py' "$p" || continue
+    while IFS= read -r hit; do
+        ln=${hit%%:*}; line=${hit#*:}
+        printf '%s' "$line" | grep -qE '^[[:space:]]*#' && continue
+        echo "       ${p#"$PROJECT_DIR"/}:${ln}  $(printf '%s' "$line" | cut -c1-110)"
+        NABAD=$((NABAD+1))
+    done < <(grep -nE '!=[[:space:]]*"?NA"?[[:space:]]*\]([[:space:]]*&&)' "$p" | grep -E '\-gt|\-ge|\-ne' || true)
+done < <(find "$PROJECT_DIR/scripts" -name '*.sh' | sort)
+if [ "$NABAD" -eq 0 ]; then
+    good '丢 key 检查没有把「取不到值」当成通过'
+else
+    # 消息里不能用反引号：bash 在双引号里会把它当成命令替换，第一版因此打出
+    # "!=: command not found"，而消息本身变成空的——判据抓到了，却说不出抓到了什么。
+    bad "上列 $NABAD 处用 '!= NA' 短路掉了丢 key 判定——检查没做会被读成通过"
+fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"
