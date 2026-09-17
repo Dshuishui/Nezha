@@ -38,7 +38,7 @@ func (rf *Raft) openLogFile(filename string) error {
 		rf.logFile.Close()
 	}
 	// 不能用 O_APPEND：POSIX 规定该模式下每次写入前偏移量强制设为文件末尾，
-	// Seek 对写入位置完全无效。冲突覆盖（startPos != 0）依赖 Seek 回退，在
+	// Seek 对写入位置完全无效。冲突覆盖（OverwriteLogFileFrom）依赖 Seek 回退，在
 	// O_APPEND 下会静默变成追加——文件末尾多出一条记录，而 rf.Offsets 里记的
 	// 是 startPos，照这个偏移读出来的是本该被覆盖掉的旧数据，且不报任何错。
 	// 写入位置由 rf.logOffset 自行维护，本就不需要 O_APPEND。
@@ -125,7 +125,7 @@ func (rf *Raft) SetCurrentLog(currentLog string) {
 // SetCurrentPersister is called by GC at a file switch. The swap happens under logMu
 // because that is the lock the log-writing path holds; the pointer access itself needs
 // synchronising even though no reader now derives anything from the persister's identity.
-// (WriteEntryToFile used to call rf.persister.PadKey here, which is what originally made
+// (writeEntries used to call rf.persister.PadKey here, which is what originally made
 // the race visible. Keys are stored verbatim now, but the lock discipline still stands.)
 func (rf *Raft) SetCurrentPersister(persister *Persister) {
 	rf.logMu.Lock()
@@ -133,17 +133,43 @@ func (rf *Raft) SetCurrentPersister(persister *Persister) {
 	rf.persister = persister
 }
 
-// WriteEntryToFile 将条目追加到当前日志文件。
+// AppendToLogFile 把条目接在当前日志文件的末尾。调用方需持有 rf.mu（本函数改写 rf.Offsets）。
+func (rf *Raft) AppendToLogFile(e []*Entry) {
+	rf.writeEntries(e, 0, false)
+}
+
+// OverwriteLogFileFrom 回退到 startPos 覆盖写，并把 startPos 之后的字节全部截掉。
+// follower 发现与 leader 冲突时走这里：冲突点及其之后的条目已经不属于日志了。
+// 调用方需持有 rf.mu。
+func (rf *Raft) OverwriteLogFileFrom(e []*Entry, startPos int64) {
+	if startPos < 0 {
+		log.Fatalf("覆盖写的起始位置不能为负：%d", startPos)
+	}
+	rf.writeEntries(e, startPos, true)
+}
+
+// writeEntries 是两者共同的实现。
 //
 // 不接受文件名参数：目标文件由 rf.currentLog 决定，而它归 logMu 管。让调用方
 // 传 rf.currentLog 意味着在锁外读这个字段——GC 正好会在自己的 goroutine 里改它，
 // 那是一个 -race 能抓到的真实数据竞争（调用方读，SetCurrentLog 写，两把不同的锁）。
 //
-// 调用方需持有 rf.mu：本函数改写 rf.Offsets。
-func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
+// 「追加」还是「覆盖」由 overwrite 这个参数决定，**不能**从 startPos 的取值去猜。
+// 原先是一个方法两用：startPos == 0 当作追加，非 0 当作覆盖。可 0 本身就是一个
+// 合法的覆盖位置——日志文件的第一条记录正好在偏移 0。于是"follower 在文件第一条
+// 记录处发现冲突"这一情形被当成了追加：新记录接在旧记录后面，覆盖点之后的陈旧字节
+// 一个都没截掉。活着的时候读是对的（rf.Offsets 指向新写的那一份），但重启时
+// RecoverLog 顺序回放会先撞上旧记录，索引不连续，节点直接起不来：
+//
+//	RaftState.log: log not contiguous at offset 76: got index 1, want 4
+//
+// 而这个偏移在两种寻常情况下就是 0：全新节点收到的第一条，以及 GC 换文件之后写进
+// 新文件的第一条（SetCurrentLog 把 logOffset 归零）。都不是边角情形。
+func (rf *Raft) writeEntries(e []*Entry, startPos int64, overwrite bool) {
 	// 与 SetCurrentLog 互斥：GC 换文件时会关掉当前句柄。
 	rf.logMu.Lock()
 	defer rf.logMu.Unlock()
+	recordLogWrite(len(e))
 	// 句柄常驻，不再每条 OpenFile/Close。首次调用时打开。
 	if rf.logWriter == nil {
 		if err := rf.openLogFile(rf.currentLog); err != nil {
@@ -157,7 +183,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 	// 预分配足够大的偏移量切片，避免了在循环中动态扩容偏移量切片的操作
 	offsets := make([]int64, len(e))
 
-	if startPos == 0 { // 0 是直接追加：位置自行维护，省掉一次 Seek
+	if !overwrite { // 追加：位置自行维护，省掉一次 Seek
 		offset = rf.logOffset
 	} else {
 		// 同步日志时需覆盖与 leader 冲突的部分。缓冲区里可能还压着尚未落盘的
@@ -238,7 +264,7 @@ func (rf *Raft) WriteEntryToFile(e []*Entry, startPos int64) {
 			}
 		}
 	}
-	if startPos != 0 {
+	if overwrite {
 		// Overwrite: everything past the overwritten region is no longer part of the log
 		// (the matching rf.log entries were just truncated), so the file is truncated to the
 		// end of the new content. The old code moved the write position back to the previous
@@ -372,4 +398,25 @@ func (rf *Raft) CutLog() (LogCut, error) {
 	cut.BaseIndex, cut.BaseTerm = rf.fileBaseIndex, rf.fileBaseTerm
 	rf.mu.Unlock()
 	return cut, nil
+}
+
+// flushBatchLog 把一次 AppendEntries 攒下的条目一次写进日志文件。调用方须持有 rf.mu。
+//
+// 之前这批条目是**逐条**落盘的，而代码写的是"批量存储"。判据是：
+//
+//	rf.batchLog = append(rf.batchLog, &entry)
+//	if index == rf.lastIndex() { ...写盘并清空... }
+//
+// 紧挨上一行的 rf.appendLog 刚把这条追进内存日志，于是 rf.lastIndex() 必然就等于
+// index——这个条件恒为真，攒批从来没发生过，每条都走一次 Flush + fsync。
+// leader 那边是按**编码字节数**打包的（doAppendEntries 里 totalSize >= threshold 才截断），
+// 所以一次 AppendEntries 常常带几十上百条，follower 却为此做了同样多次 fsync。
+// 改成循环结束后统一刷一次，与 leader 侧 groupcommit 的口径一致；
+// 应答前落盘这条 Raft 要求不变，因为刷盘仍在 reply.Success = true 之前。
+func (rf *Raft) flushBatchLog() {
+	if len(rf.batchLog) == 0 {
+		return
+	}
+	rf.AppendToLogFile(rf.batchLog)
+	rf.batchLog = rf.batchLog[:0] // 复用底层数组
 }

@@ -56,7 +56,7 @@ func (rf *Raft) runFlusher() {
 			continue
 		}
 		rf.mu.Lock()
-		rf.WriteEntryToFile(b.entries, 0) // 一次写入 + 一次 fsync 覆盖整批
+		rf.AppendToLogFile(b.entries) // 一次写入 + 一次 fsync 覆盖整批
 
 		// 唤醒 apply。offset 是在上面这次写入里才追加进 rf.Offsets 的，在此之前
 		// applyLogLoop 即使被 commitIndex 的推进叫醒，也会因为拿不到 offset 而

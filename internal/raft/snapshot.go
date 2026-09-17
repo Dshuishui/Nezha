@@ -21,7 +21,7 @@ import (
 // 送来的那段日志，已经放到最终位置；applied 是快照里存储引擎所对应的 applied index。
 //
 // 加锁顺序是 **rf.mu 外、logMu 内**。这不是随便选的：写路径本来就是这个顺序
-// （WriteEntryToFile 要求调用方持有 rf.mu，自己再取 logMu），反过来嵌套会与写路径
+// （writeEntries 要求调用方持有 rf.mu，自己再取 logMu），反过来嵌套会与写路径
 // 互相等待。CutLog 之所以能先取 logMu，是因为它取完就放、不嵌套。
 func (rf *Raft) InstallSnapshotState(base int, baseTerm int32, logFile LogFile, applied int) (int, error) {
 	rf.mu.Lock()

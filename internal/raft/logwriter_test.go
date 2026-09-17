@@ -48,7 +48,7 @@ func TestAppendOffsetsAreContiguous(t *testing.T) {
 		entryOf(2, "k2", "value-two"),
 		entryOf(3, "k3", ""),
 	}
-	rf.WriteEntryToFile(entries, 0)
+	rf.AppendToLogFile(entries)
 
 	if len(rf.Offsets) != 3 {
 		t.Fatalf("Offsets 长度 = %d, want 3", len(rf.Offsets))
@@ -80,11 +80,11 @@ func TestAppendOffsetsSurviveAcrossCalls(t *testing.T) {
 	rf := newTestRaft(t, dir)
 
 	first := entryOf(1, "a", "1111")
-	rf.WriteEntryToFile([]*Entry{first}, 0)
+	rf.AppendToLogFile([]*Entry{first})
 	after := recordLen(rf, first)
 
 	second := entryOf(2, "b", "22")
-	rf.WriteEntryToFile([]*Entry{second}, 0)
+	rf.AppendToLogFile([]*Entry{second})
 
 	if rf.Offsets[1] != after {
 		t.Fatalf("第二次调用的 offset = %d, want %d", rf.Offsets[1], after)
@@ -102,20 +102,20 @@ func TestOverwriteThenAppendResumesAtEnd(t *testing.T) {
 
 	e1 := entryOf(1, "a", "AAAA")
 	e2 := entryOf(2, "b", "BBBB")
-	rf.WriteEntryToFile([]*Entry{e1, e2}, 0)
+	rf.AppendToLogFile([]*Entry{e1, e2})
 	sizeAfterTwo := recordLen(rf, e1) + recordLen(rf, e2)
 
 	// 覆盖第二条
 	rf.Offsets = rf.Offsets[:1]
 	e2b := entryOf(2, "b", "CCCC")
-	rf.WriteEntryToFile([]*Entry{e2b}, recordLen(rf, e1))
+	rf.OverwriteLogFileFrom([]*Entry{e2b}, recordLen(rf, e1))
 
 	if rf.logOffset != sizeAfterTwo {
 		t.Fatalf("覆盖后 logOffset = %d, want %d（文件末尾）", rf.logOffset, sizeAfterTwo)
 	}
 
 	e3 := entryOf(3, "c", "DDDD")
-	rf.WriteEntryToFile([]*Entry{e3}, 0)
+	rf.AppendToLogFile([]*Entry{e3})
 	if got := rf.Offsets[len(rf.Offsets)-1]; got != sizeAfterTwo {
 		t.Fatalf("覆盖后追加的 offset = %d, want %d", got, sizeAfterTwo)
 	}
@@ -127,7 +127,7 @@ func TestRecordAtOffsetDecodes(t *testing.T) {
 	rf := newTestRaft(t, dir)
 
 	entries := []*Entry{entryOf(1, "k1", "hello"), entryOf(2, "k2", "world!!")}
-	rf.WriteEntryToFile(entries, 0)
+	rf.AppendToLogFile(entries)
 
 	raw, err := os.ReadFile(rf.currentLog)
 	if err != nil {
@@ -149,7 +149,7 @@ func TestSwitchFileResetsOffset(t *testing.T) {
 	dir := t.TempDir()
 	rf := newTestRaft(t, dir)
 
-	rf.WriteEntryToFile([]*Entry{entryOf(1, "a", "xxxx")}, 0)
+	rf.AppendToLogFile([]*Entry{entryOf(1, "a", "xxxx")})
 
 	newLog := filepath.Join(dir, "raft2.log")
 	rf.SetCurrentLog(newLog)
@@ -158,7 +158,7 @@ func TestSwitchFileResetsOffset(t *testing.T) {
 	}
 
 	before := len(rf.Offsets)
-	rf.WriteEntryToFile([]*Entry{entryOf(2, "b", "yy")}, 0)
+	rf.AppendToLogFile([]*Entry{entryOf(2, "b", "yy")})
 	if rf.Offsets[before] != 0 {
 		t.Fatalf("新文件第一条 offset = %d, want 0", rf.Offsets[before])
 	}
@@ -183,7 +183,7 @@ func TestConcurrentWriteAndLogSwitch(t *testing.T) {
 				return
 			default:
 			}
-			rf.WriteEntryToFile([]*Entry{entryOf(uint32(i+1), "k", "vvvv")}, 0)
+			rf.AppendToLogFile([]*Entry{entryOf(uint32(i+1), "k", "vvvv")})
 		}
 	}()
 
@@ -199,9 +199,9 @@ func TestOverwriteTruncatesStaleTail(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "RaftState.log")
 	w := newLogWriter(t, logPath, 0)
-	w.WriteEntryToFile([]*Entry{putEntry(1, 1, "a", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")}, 0)
-	w.WriteEntryToFile([]*Entry{putEntry(2, 1, "b", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")}, 0)
-	w.WriteEntryToFile([]*Entry{putEntry(3, 1, "c", "cccccccccccccccccccccccccccccccccccccccccc")}, 0)
+	w.AppendToLogFile([]*Entry{putEntry(1, 1, "a", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")})
+	w.AppendToLogFile([]*Entry{putEntry(2, 1, "b", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")})
+	w.AppendToLogFile([]*Entry{putEntry(3, 1, "c", "cccccccccccccccccccccccccccccccccccccccccc")})
 	// follower conflict: overwrite from index 2 with a shorter record; index 3 must disappear
 	w.Offsets = w.Offsets[:1]
 	w.offsetVersions = w.offsetVersions[:1]
@@ -209,7 +209,7 @@ func TestOverwriteTruncatesStaleTail(t *testing.T) {
 	// 所以宽度就是 key 自己的长度——不要写死任何常数（这里曾写死 10，存储层把宽度改成 24
 	// 之后偏移落在记录中间，恢复把尾部读成损坏的 header，测试以 index out of range 崩掉）。
 	firstRecordEnd := w.Offsets[0] + int64(recordHeader) + int64(len("a")) + int64(len("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
-	w.WriteEntryToFile([]*Entry{putEntry(2, 2, "b", "short")}, firstRecordEnd)
+	w.OverwriteLogFileFrom([]*Entry{putEntry(2, 2, "b", "short")}, firstRecordEnd)
 	w.CloseLogFile()
 
 	rf := &Raft{persister: &Persister{}}
@@ -239,7 +239,7 @@ func TestCutLogIsRecordAligned(t *testing.T) {
 		want += recordLen(rf, e)
 	}
 	rf.mu.Lock()
-	rf.WriteEntryToFile(entries, 0)
+	rf.AppendToLogFile(entries)
 	rf.mu.Unlock()
 
 	cut, err := rf.CutLog()
@@ -279,7 +279,7 @@ func TestCutLogAfterOverwrite(t *testing.T) {
 		long = append(long, entryOf(uint32(i), fmt.Sprintf("k%02d", i), "aaaaaaaaaa"))
 	}
 	rf.mu.Lock()
-	rf.WriteEntryToFile(long, 0)
+	rf.AppendToLogFile(long)
 	rf.mu.Unlock()
 	full, err := rf.CutLog()
 	if err != nil {
@@ -295,7 +295,7 @@ func TestCutLogAfterOverwrite(t *testing.T) {
 		entryOf(11, "k11", "bb"), entryOf(12, "k12", "bb"), entryOf(13, "k13", "bb"),
 	}
 	rf.mu.Lock()
-	rf.WriteEntryToFile(replacement, startPos)
+	rf.OverwriteLogFileFrom(replacement, startPos)
 	rf.mu.Unlock()
 
 	cut, err := rf.CutLog()
@@ -315,5 +315,79 @@ func TestCutLogAfterOverwrite(t *testing.T) {
 	}
 	if cut.LastIndex != 13 {
 		t.Errorf("覆盖之后最后一条 index = %d; want 13", cut.LastIndex)
+	}
+}
+
+// 冲突点正好落在文件的第一条记录（偏移 0）时，也必须按覆盖写处理。
+//
+// 这是"追加/覆盖不能从 startPos 的取值去猜"那条的用例化：旧实现把 startPos == 0
+// 当作追加，于是这一情形下新记录接在旧记录后面、陈旧字节一条没截，重启时
+// RecoverLog 顺序回放撞上旧记录，索引不连续，节点起不来。
+//
+// 偏移 0 在两种寻常情况下就会出现：全新节点收到的第一条，以及 GC 换文件之后写进
+// 新文件的第一条（SetCurrentLog 把 logOffset 归零）。
+func TestOverwriteAtOffsetZeroTruncatesStaleTail(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "RaftState.log")
+	w := newLogWriter(t, logPath, 0)
+	// term 1 的 leader 写了三条就被隔离，这三条都没提交
+	w.AppendToLogFile([]*Entry{putEntry(1, 1, "a", "aaaaaaaaaaaaaaaa")})
+	w.AppendToLogFile([]*Entry{putEntry(2, 1, "b", "bbbbbbbbbbbbbbbb")})
+	w.AppendToLogFile([]*Entry{putEntry(3, 1, "c", "cccccccccccccccc")})
+	if w.Offsets[0] != 0 {
+		t.Fatalf("第一条的偏移 = %d, want 0——这个用例的前提就是它在 0", w.Offsets[0])
+	}
+
+	// term 2 的新 leader 从 index 1 起就与本节点分叉：冲突点 = 偏移 0
+	w.Offsets = w.Offsets[:0]
+	w.offsetVersions = w.offsetVersions[:0]
+	w.OverwriteLogFileFrom([]*Entry{putEntry(1, 2, "z", "zz")}, 0)
+	w.CloseLogFile()
+
+	wantSize := int64(recordHeader + len("z") + len("zz"))
+	if info, err := os.Stat(logPath); err != nil {
+		t.Fatal(err)
+	} else if info.Size() != wantSize {
+		t.Fatalf("覆盖后文件 %d 字节, want %d——被截断的三条字节还留在文件里", info.Size(), wantSize)
+	}
+	if len(w.Offsets) != 1 || w.Offsets[0] != 0 {
+		t.Fatalf("覆盖后 Offsets = %v, want [0]", w.Offsets)
+	}
+
+	rf := &Raft{persister: &Persister{}}
+	last, err := rf.RecoverLog([]LogFile{{Path: logPath}}, 0)
+	if err != nil {
+		t.Fatalf("RecoverLog: %v", err) // 旧实现在这里报 log not contiguous
+	}
+	if last != 1 || len(rf.log) != 1 {
+		t.Fatalf("恢复出 last=%d、%d 条日志, want 1 / 1", last, len(rf.log))
+	}
+	if rf.log[0].Term != 2 || rf.log[0].Command.Value != "zz" {
+		t.Fatalf("恢复出的第一条 term=%d value=%q, want 2 / \"zz\"", rf.log[0].Term, rf.log[0].Command.Value)
+	}
+}
+
+// 覆盖写不带任何条目，等于"把冲突点之后全部丢掉"。日志文件必须就此截到冲突点。
+func TestOverwriteWithNoEntriesTruncates(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "RaftState.log")
+	w := newLogWriter(t, logPath, 0)
+	first := putEntry(1, 1, "a", "aaaa")
+	w.AppendToLogFile([]*Entry{first})
+	w.AppendToLogFile([]*Entry{putEntry(2, 1, "b", "bbbb")})
+	cut := int64(recordHeader + len(first.Key) + len(first.Value))
+
+	w.Offsets = w.Offsets[:1]
+	w.offsetVersions = w.offsetVersions[:1]
+	w.OverwriteLogFileFrom(nil, cut)
+	w.CloseLogFile()
+
+	if info, err := os.Stat(logPath); err != nil {
+		t.Fatal(err)
+	} else if info.Size() != cut {
+		t.Fatalf("文件 %d 字节, want %d", info.Size(), cut)
+	}
+	if w.logOffset != cut {
+		t.Fatalf("logOffset = %d, want %d（下一条应接在冲突点上）", w.logOffset, cut)
 	}
 }

@@ -146,7 +146,7 @@ type Raft struct {
 	Gap            int
 	Offsets        []int64
 	// offsetVersions 与 Offsets 一一对应，记下每个偏移属于哪一轮 GC 的文件。
-	// 两者在 WriteEntryToFile 里同一把 logMu 下一起追加、在 applyLogLoop 里
+	// 两者在 writeEntries 里同一把 logMu 下一起追加、在 applyLogLoop 里
 	// 一起消费，因此不会像"命令自带的 FileVersion"那样与实际写入的文件错开。
 	offsetVersions []int32
 	shotOffset     int
@@ -629,18 +629,16 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 			rf.appendLog(logEntry)
 			// No-ops are written as well (keySize==0 markers), matching the leader, so the
 			// on-disk log is complete and replayable.
-			rf.batchLog = append(rf.batchLog, &entry) // 将要写入磁盘文件的结构体暂存，批量存储。
-
-			if index == rf.lastIndex() { // 已经将日志补足后，开始批量写入
-				// offsets1, err := rf.WriteEntryToFile(tempLogs, "./raft/RaftState.log", 0)
-				// rf.mu.Unlock()
-				rf.WriteEntryToFile(rf.batchLog, 0)
-				rf.batchLog = rf.batchLog[:0] // 清空暂存日志的数组
-			}
+			rf.batchLog = append(rf.batchLog, &entry) // 攒够一批再落盘，见 flushBatchLog
 			// util.DPrintf("追加RaftNode[%d] applyLog, currentTerm[%d] lastApplied[%d] Index[%d] Offsets[%d]", rf.me, rf.currentTerm, rf.lastApplied, index, rf.Offsets)
 		} else { // 重叠部分
 			if rf.log[logPos].Term != logEntry.Term {
 				util.DPrintf("RaftNode[%d] conflicting entry at index %d: local term %d, leader term %d; truncating from here", rf.me, index, rf.log[logPos].Term, logEntry.Term)
+				// 覆盖写会回退写入位置并截掉之后的字节。缓冲里若还压着本轮攒下的追加条目，
+				// 它们正落在截断点之后——必须先落盘，否则连同 rf.Offsets 一起对不上。
+				// （冲突一定出现在追加之前，所以实际上这里永远是空的；显式刷一次是把
+				// 这个次序变成代码里的约束，而不是一句需要读者自己推的论证。）
+				rf.flushBatchLog()
 				rf.truncateLogFrom(logPos) // 删除当前以及后续所有log
 				rf.appendLog(logEntry)     // 把新log加入进来
 
@@ -655,10 +653,13 @@ func (rf *Raft) AppendEntriesInRaft(ctx context.Context, args *raftrpc.AppendEnt
 				arrEntry := []*Entry{&entry} // 这里由于发生的情况较少，所以每次只写入一个日志到磁盘文件
 				// offsets2, err := rf.WriteEntryToFile(arrEntry, "./raft/RaftState.log", offset)
 				// rf.mu.Unlock()
-				rf.WriteEntryToFile(arrEntry, offset)
+				rf.OverwriteLogFileFrom(arrEntry, offset)
 			} // term一样啥也不用做，继续向后比对Log
-		} // 每追加一个日志就持久化，并将offset和index绑定，存储到内存中。后续可以考虑这里实现批量持久化
+		}
 	}
+	// 本轮攒下的条目在这里一次写完：一次 Flush + 一次 fsync 覆盖整批。
+	// 必须在 reply.Success = true 之前，Raft 要求应答前日志已落盘。
+	rf.flushBatchLog()
 	// rf.raftStateForPersist("./raft/RaftState.log", rf.currentTerm, rf.votedFor, rf.log)
 
 	// 更新提交下标
@@ -762,7 +763,7 @@ func (rf *Raft) Start(command interface{}) (int32, int32, bool) {
 			myBatch, needSignal = rf.enqueueForFlush(entry)
 		} else {
 			tw := time.Now()
-			rf.WriteEntryToFile([]*Entry{entry}, 0)
+			rf.AppendToLogFile([]*Entry{entry})
 			tWriteFile = time.Since(tw)
 		}
 	}

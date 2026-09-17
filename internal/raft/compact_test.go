@@ -335,7 +335,7 @@ func TestBudgetCapsRetentionWindowWithNoLaggingPeer(t *testing.T) {
 			d.point, int64(500)*per, int64(500)*per/(per*20))
 	}
 	if !d.budgetCapsWindow {
-		t.Errorf("budgetCapsWindow = false; want true——这一步必须能被日志和测试看见，"+
+		t.Errorf("budgetCapsWindow = false; want true——这一步必须能被日志和测试看见，" +
 			"否则「为什么慢副本这么快就要快照」没有线索")
 	}
 	if d.cappedBy != -1 {

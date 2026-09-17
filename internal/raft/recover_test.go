@@ -25,12 +25,12 @@ func noopEntry(index, term int) *Entry {
 // A representative log: a no-op on taking office, some writes, a no-op for a new term, more writes.
 func writeSampleLog(t *testing.T, rf *Raft) {
 	t.Helper()
-	rf.WriteEntryToFile([]*Entry{noopEntry(1, 1)}, 0)
+	rf.AppendToLogFile([]*Entry{noopEntry(1, 1)})
 	for i := 2; i <= 6; i++ {
-		rf.WriteEntryToFile([]*Entry{putEntry(i, 1, "k"+string(rune('0'+i)), "value-"+string(rune('0'+i)))}, 0)
+		rf.AppendToLogFile([]*Entry{putEntry(i, 1, "k"+string(rune('0'+i)), "value-"+string(rune('0'+i)))})
 	}
-	rf.WriteEntryToFile([]*Entry{noopEntry(7, 2)}, 0)
-	rf.WriteEntryToFile([]*Entry{putEntry(8, 2, "8", "v8"), putEntry(9, 2, "9", "v9")}, 0)
+	rf.AppendToLogFile([]*Entry{noopEntry(7, 2)})
+	rf.AppendToLogFile([]*Entry{putEntry(8, 2, "8", "v8"), putEntry(9, 2, "9", "v9")})
 }
 
 func TestRecoverLogRebuildsEntriesAndPendingOffsets(t *testing.T) {
@@ -136,13 +136,13 @@ func TestRecoverLogAcrossGCFiles(t *testing.T) {
 	logA := filepath.Join(dir, "RaftState.log")
 	logB := filepath.Join(dir, "newRaftState_1")
 	w := newLogWriter(t, logA, 0)
-	w.WriteEntryToFile([]*Entry{noopEntry(1, 1)}, 0)
+	w.AppendToLogFile([]*Entry{noopEntry(1, 1)})
 	for i := 2; i <= 5; i++ {
-		w.WriteEntryToFile([]*Entry{putEntry(i, 1, "a", "x")}, 0)
+		w.AppendToLogFile([]*Entry{putEntry(i, 1, "a", "x")})
 	}
 	w.SetCurrentLogVersioned(logB, 1) // GC file switch
 	for i := 6; i <= 9; i++ {
-		w.WriteEntryToFile([]*Entry{putEntry(i, 1, "b", "y")}, 0)
+		w.AppendToLogFile([]*Entry{putEntry(i, 1, "b", "y")})
 	}
 	w.CloseLogFile()
 	if w.pendingBaseIndex != 5 || w.pendingBaseTerm != 1 {
@@ -173,9 +173,9 @@ func TestRecoverLogRejectsGap(t *testing.T) {
 	logA := filepath.Join(dir, "a.log")
 	logB := filepath.Join(dir, "b.log")
 	w := newLogWriter(t, logA, 0)
-	w.WriteEntryToFile([]*Entry{putEntry(1, 1, "a", "x"), putEntry(2, 1, "b", "y")}, 0)
+	w.AppendToLogFile([]*Entry{putEntry(1, 1, "a", "x"), putEntry(2, 1, "b", "y")})
 	w.SetCurrentLogVersioned(logB, 1)
-	w.WriteEntryToFile([]*Entry{putEntry(4, 1, "d", "z")}, 0) // index 3 is missing
+	w.AppendToLogFile([]*Entry{putEntry(4, 1, "d", "z")}) // index 3 is missing
 	w.CloseLogFile()
 
 	rf := &Raft{persister: &Persister{}}
@@ -188,7 +188,7 @@ func TestRecoverLogRejectsBaseMismatchWithState(t *testing.T) {
 	dir := t.TempDir()
 	logA := filepath.Join(dir, "a.log")
 	w := newLogWriter(t, logA, 0)
-	w.WriteEntryToFile([]*Entry{putEntry(6, 1, "a", "x")}, 0) // the file starts at 6, so the base must be 5
+	w.AppendToLogFile([]*Entry{putEntry(6, 1, "a", "x")}) // the file starts at 6, so the base must be 5
 	w.CloseLogFile()
 
 	rf := &Raft{persister: &Persister{}, stateLoaded: true, lastIncludedIndex: 3}
