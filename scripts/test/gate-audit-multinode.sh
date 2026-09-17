@@ -765,6 +765,48 @@ else
     bad "上列 $NABAD 处用 '!= NA' 短路掉了丢 key 判定——检查没做会被读成通过"
 fi
 
+info '=== 二十七、内嵌在 bash -c 里的脚本也要过语法检查 ==='  # 标题不用反引号：双引号里会被命令替换
+# 2026-09-18：给采样循环加了一句 `case "$datab" in ''|*[!0-9]*) ...`，而那整段在
+# `bash -c '...'` 的**单引号**里——那对单引号被外层吃掉，只剩 `in |*[!0-9]*)`。
+# 结果：采样循环起来就语法错误、**一条数据都不写**，而 `bash -n` 对外层文件完全通过
+# （错误在字符串里面，外层看不见）。整个 C 阶段零采样，是从 sampler.log 里才发现的。
+#
+# 所以把那些内嵌脚本抽出来单独查。用 python 找 `bash -c '` 到配对单引号之间的那一段
+# （内嵌脚本里出现单引号就会提前截断，这种情况会被下面的 bash -n 报出来，
+# 属于宁可误报也不漏报的一侧）。
+EMBED=0
+while IFS= read -r p; do
+    # 排除本文件：上面那段成因说明里就写着被检查的那种构造，理由同第二十五、二十六节。
+    case "$(basename "$p")" in gate-audit-multinode.sh) continue;; esac
+    n=0
+    while IFS= read -r body; do
+        n=$((n+1))
+        [ -z "$body" ] && continue
+        printf '%s' "$body" | base64 -d 2>/dev/null | bash -n 2>"$FAKE/embed.err" && continue
+        echo "       ${p#"$PROJECT_DIR"/}  第 ${n} 段内嵌脚本语法错误："
+        sed 's/^/           /' "$FAKE/embed.err" | head -3
+        EMBED=$((EMBED+1))
+    done < <(python3 - "$p" <<'PYEOF'
+import base64, re, sys
+src = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+# 只认 `bash -c '` 这一种写法（本仓库唯一用到的），到下一个单引号为止。
+for m in re.finditer(r"bash -c '", src):
+    start = m.end()
+    end = src.find("'", start)
+    if end == -1:
+        continue
+    body = src[start:end]
+    if body.strip():
+        print(base64.b64encode(body.encode()).decode())
+PYEOF
+)
+done < <(find "$PROJECT_DIR/scripts" -name '*.sh' | sort)
+if [ "$EMBED" -eq 0 ]; then
+    good "内嵌在 bash -c 里的脚本都过语法检查"
+else
+    bad "上列 $EMBED 段内嵌脚本有语法错误——外层的 bash -n 查不出来，跑起来才炸"
+fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"
