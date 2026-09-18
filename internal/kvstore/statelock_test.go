@@ -163,3 +163,80 @@ func TestCaptureStateTakesEverythingAtOnce(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// TestSpawnedReaderKeepsStoreAlive 钉的是"派生的读者也算读者"。
+//
+// 要防的失效见 storeLease 的注释：GC 的多路查找把三路并行发出去，第一路答出 value
+// 就 return，而 `defer RUnlock()` 跟着这次返回执行——剩下那几个 goroutine 就跑到锁
+// 外面去了。接着回收路径拿到写锁、Close() 掉 RocksDB，孤儿 goroutine 再去 Get_opt，
+// 拿到的是一个 nil 句柄：
+//
+//	grocksdb.(*DB).Get(0x0, ...)
+//
+// 2026-09-18 在 nezha-avp 256B 那一格实测到，node0 panic 退出并触发重新选举。
+//
+// 这条与 TestLongReaderBlocksStoreRetire 是一对：那条测"调用方还在读时挡住回收"，
+// 这条测"调用方已经返回、但派生 goroutine 还在读时**也**挡住回收"。
+// 只有前者的话，把 spawn 换回裸 go func 仍然会过。
+func TestSpawnedReaderKeepsStoreAlive(t *testing.T) {
+	kvs := &KVServer{}
+
+	st := kvs.beginRead()
+
+	// 一个还没结束的派生读者。
+	running := make(chan struct{})
+	finish := make(chan struct{})
+	st.spawn(func() {
+		close(running)
+		<-finish
+	})
+	<-running
+
+	// 调用方在这里就返回了——这正是 GET 的行为：第一路答出来就走。
+	st.endRead()
+
+	retired := make(chan struct{})
+	go func() {
+		kvs.storeRetireMu.Lock()
+		close(retired)
+		kvs.storeRetireMu.Unlock()
+	}()
+
+	select {
+	case <-retired:
+		close(finish)
+		t.Fatal("调用方返回后回收就拿到了写锁——派生的读者还在库里，Close() 会让它解引用 nil")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// 派生读者结束，锁这才该放开。
+	close(finish)
+	select {
+	case <-retired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("派生读者结束之后回收仍拿不到写锁——读锁没有被最后那个读者放掉")
+	}
+}
+
+// TestLeaseReleasesExactlyOnce 防的是配平：多放一次会让下一次 Lock() 直接穿过去
+// （读锁计数变负），少放一次会让回收永远等下去。这里连着做两轮，第二轮能取到写锁
+// 才说明第一轮恰好放了一次。
+func TestLeaseReleasesExactlyOnce(t *testing.T) {
+	kvs := &KVServer{}
+	for round := 0; round < 2; round++ {
+		st := kvs.beginRead()
+		var wg sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			st.spawn(func() { wg.Done() })
+		}
+		st.endRead()
+		wg.Wait()
+
+		got := grabTime(kvs.storeRetireMu.Lock)
+		kvs.storeRetireMu.Unlock()
+		if got > 200*time.Millisecond {
+			t.Fatalf("第 %d 轮：所有读者都结束了，取写锁却花了 %v——租约少放了一次", round, got)
+		}
+	}
+}

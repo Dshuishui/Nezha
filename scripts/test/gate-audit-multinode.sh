@@ -885,6 +885,68 @@ else
 fi
 
 echo
+info "=== 三十、GC 的 GET 路径里不许有裸 go func ==="
+# 2026-09-18 实测：nezha-avp 256B 那一格 node0 panic 退出（随后触发了一次重新选举）：
+#     grocksdb.(*DB).Get(0x0, ...)                     ← DB 句柄是 nil
+#       raft.(*Persister).Get_opt(0xc029fadf20, ...)    ← Persister 本身还在
+#         kvstore.(*KVServer).anotherGCGet.func3()      read.go:677
+#
+# 成因：GC 的多路查找把三路并行发出去，按优先级收结果，**第一路答出 value 就 return**。
+# `defer kvs.storeRetireMu.RUnlock()` 跟着这次返回执行，剩下的 goroutine 就跑到锁外面
+# 还在读；回收路径随后拿到写锁、Close() 掉 RocksDB，孤儿 goroutine 解引用到 nil。
+# 这与 storeRetireMu / stateMu 当初修的"长读者钉住锁"正好是相反的一面，所以那两把锁
+# 都挡不住——读锁取得对、放得也对，只是没活够久。
+#
+# 单测（TestSpawnedReaderKeepsStoreAlive）钉的是**租约机制本身**对不对；
+# 它管不到"read.go 有没有在用这个机制"——把 st.spawn 改回 go func，单测照样全过。
+# 那是一个静态性质，所以在这里查。
+#
+# 判据：firstGCGet / anotherGCGet 两个函数体内不许出现 `go func(`。
+# 扫描路径不在判据内：那几处每个派生点都配了 wg.Wait()，调用方不会先返回。
+GOBAD=0
+RG="$PROJECT_DIR/internal/kvstore/read.go"
+if [ ! -f "$RG" ]; then
+    warn "找不到 internal/kvstore/read.go，这一节无从检查"
+else
+    for fn in firstGCGet anotherGCGet; do
+        # 函数体 = 从 `func (kvs *KVServer) <fn>(` 那行到下一个顶层 `func ` 之前。
+        body=$(awk -v f="func (kvs \*KVServer) $fn(" '
+            index($0, f)==1 {inb=1; next}
+            inb && /^func /{exit}
+            inb {print NR": "$0}' "$RG")
+        if [ -z "$body" ]; then
+            warn "read.go 里找不到 ${fn}，判据可能已经过时"
+            continue
+        fi
+        while IFS= read -r hit; do
+            [ -z "$hit" ] && continue
+            echo "       internal/kvstore/read.go:${hit%%:*}  $fn 里有裸 go func——它会跑到读锁外面"
+            GOBAD=$((GOBAD+1))
+        done < <(printf '%s\n' "$body" | grep 'go func(' || true)
+    done
+    # 租约那一侧也要还在：spawn 没了，上面每一处 st.spawn 都会编译不过，
+    # 但 beginRead/endRead 被换回裸 RLock 则是静默的。
+    # **必须用 -F（定串）。** 这几个签名里带圆括号，而 ERE 把 `(...)` 读成分组：
+    # `func (kvs \*KVServer) beginRead()` 在 -E 下匹配的是"func kvs *KVServer beginRead"
+    # （括号被当成分组吃掉了），文件里当然没有这个，于是干净的仓库也被报三条——
+    # 第一版就是这样，判据自己把好代码判死了。
+    for sym in 'func (kvs *KVServer) beginRead()' 'func (st stateSnapshot) spawn(' 'func (st stateSnapshot) endRead()'; do
+        grep -qF "$sym" "$PROJECT_DIR/internal/kvstore/storelease.go" 2>/dev/null && continue
+        echo "       internal/kvstore/storelease.go 里没有 ${sym}——租约机制被拆了"
+        GOBAD=$((GOBAD+1))
+    done
+    if grep -qE 'kvs\.storeRetireMu\.RLock\(\)' "$PROJECT_DIR/internal/kvstore/service.go" 2>/dev/null; then
+        echo "       internal/kvstore/service.go 又直接取 storeRetireMu.RLock() 了——读锁会随调用返回一起放掉"
+        GOBAD=$((GOBAD+1))
+    fi
+fi
+if [ "$GOBAD" -eq 0 ]; then
+    good "GC 的 GET 路径全部走 st.spawn，读锁活到最后一个读者结束"
+else
+    bad "上列 $GOBAD 处会让读者跑到读锁外面——回收路径会在它读到一半时 Close() 掉库"
+fi
+
+echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"
 else

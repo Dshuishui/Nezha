@@ -26,12 +26,13 @@ import (
 // 扫描的时长**。4GB 规模下一次扫描是 33 秒。
 //
 // 改法是把"一致地看到同一份状态"和"这份状态在读完之前不被删"拆成两件事：
-//   一致性：进来时在 stateMu 的读锁下**一次性**把下面这些字段取完，然后就释放。
-//           必须一次取完——只用 kvs.mu 分别护住各自的赋值，读路径会取到新的 persister
-//           配旧的 currentLog，那读出来是别的记录的 value，而且不报错。
-//           （这正是 stateMu 当初被引入的原因，见 KVServer.stateMu。）
-//   生命周期：整段读持 storeRetireMu 的**读锁**。删掉被取代的库与日志的那几处取它的
-//           写锁，而 apply **一概不碰它**——所以等读者的是回收路径，不是写入路径。
+//
+//	一致性：进来时在 stateMu 的读锁下**一次性**把下面这些字段取完，然后就释放。
+//	        必须一次取完——只用 kvs.mu 分别护住各自的赋值，读路径会取到新的 persister
+//	        配旧的 currentLog，那读出来是别的记录的 value，而且不报错。
+//	        （这正是 stateMu 当初被引入的原因，见 KVServer.stateMu。）
+//	生命周期：整段读持 storeRetireMu 的**读锁**。删掉被取代的库与日志的那几处取它的
+//	        写锁，而 apply **一概不碰它**——所以等读者的是回收路径，不是写入路径。
 //
 // 于是装快照的写锁只需等"正在进行的一次 apply 与几次字段捕获"，都是纳秒到微秒级。
 type stateSnapshot struct {
@@ -45,6 +46,9 @@ type stateSnapshot struct {
 	startGC      bool
 	anotherStart bool
 	anotherEnd   bool
+	// lease 把读锁的生命周期与"这份快照上所有读者"绑在一起。由 beginRead 填上；
+	// 派生 goroutine 一律走 st.spawn，理由见 storeLease 的注释。
+	lease *storeLease
 }
 
 // captureState 在 stateMu 的读锁下一次性取下这一份视图。**调用方必须已经持有
@@ -532,7 +536,7 @@ func (kvs *KVServer) firstGCGet(st stateSnapshot, key string, reply *kvrpc.GetIn
 		oldFileResult := make(chan searchResult, 1)
 
 		// 并行搜索新文件
-		go func() {
+		st.spawn(func() {
 			positionBytes, err := st.persister.Get_opt(key)
 			if err != nil {
 				newFileResult <- searchResult{false, "", err, false}
@@ -552,10 +556,10 @@ func (kvs *KVServer) firstGCGet(st stateSnapshot, key string, reply *kvrpc.GetIn
 			} else {
 				newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file"), false}
 			}
-		}()
+		})
 
 		// 并行搜索旧文件
-		go func() {
+		st.spawn(func() {
 			positionBytes, err := st.oldPersister.Get_opt(key)
 			if err != nil {
 				oldFileResult <- searchResult{false, "", err, false}
@@ -575,7 +579,7 @@ func (kvs *KVServer) firstGCGet(st stateSnapshot, key string, reply *kvrpc.GetIn
 			} else {
 				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in old file"), false}
 			}
-		}()
+		})
 
 		// 按优先级逐路取结果：新文件在前，同一个 key 的较新写入在那里。
 		var out readOutcome
@@ -613,7 +617,7 @@ func (kvs *KVServer) anotherGCGet(st stateSnapshot, key string, reply *kvrpc.Get
 		lastSortedFileResult := make(chan searchResult, 1)
 
 		// 并行搜索旧文件（上一轮的新文件），这时候还没开始第二轮GC，文件还没切换
-		go func() {
+		st.spawn(func() {
 			positionBytes, err := st.persister.Get_opt(key)
 			if err != nil {
 				oldFileResult <- searchResult{false, "", err, false}
@@ -633,17 +637,17 @@ func (kvs *KVServer) anotherGCGet(st stateSnapshot, key string, reply *kvrpc.Get
 			} else {
 				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file"), false}
 			}
-		}()
+		})
 
 		// 并行搜索排序文件，这个排序文件在第一轮GC完就已经切换，所以下面的不用改
-		go func() {
+		st.spawn(func() {
 			value, hit, err := kvs.getFromPartitions(key, st.lastParts)
 			if err != nil {
 				lastSortedFileResult <- searchResult{false, "", err, false}
 				return
 			}
 			lastSortedFileResult <- searchResult{true, value, nil, hit}
-		}()
+		})
 
 		// 按优先级逐路取结果：当前 valuelog 在前
 		var out readOutcome
@@ -673,7 +677,7 @@ func (kvs *KVServer) anotherGCGet(st stateSnapshot, key string, reply *kvrpc.Get
 		lastSortedFileResult := make(chan searchResult, 1)
 
 		// 并行搜索旧文件（上一轮的新文件）
-		go func() {
+		st.spawn(func() {
 			positionBytes, err := st.oldPersister.Get_opt(key)
 			if err != nil {
 				oldFileResult <- searchResult{false, "", err, false}
@@ -693,10 +697,10 @@ func (kvs *KVServer) anotherGCGet(st stateSnapshot, key string, reply *kvrpc.Get
 			} else {
 				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file"), false}
 			}
-		}()
+		})
 
 		// 并行搜索新文件（本轮的新文件）
-		go func() {
+		st.spawn(func() {
 			positionBytes, err := st.persister.Get_opt(key)
 			if err != nil {
 				newFileResult <- searchResult{false, "", err, false}
@@ -716,17 +720,17 @@ func (kvs *KVServer) anotherGCGet(st stateSnapshot, key string, reply *kvrpc.Get
 			} else {
 				newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file"), false}
 			}
-		}()
+		})
 
 		// 并行搜索排序文件
-		go func() {
+		st.spawn(func() {
 			value, hit, err := kvs.getFromPartitions(key, st.lastParts)
 			if err != nil {
 				lastSortedFileResult <- searchResult{false, "", err, false}
 				return
 			}
 			lastSortedFileResult <- searchResult{true, value, nil, hit}
-		}()
+		})
 
 		// 按优先级逐路取结果：新文件、旧文件、上一轮分区
 		var out readOutcome
@@ -759,7 +763,7 @@ func (kvs *KVServer) anotherGCGet(st stateSnapshot, key string, reply *kvrpc.Get
 	anotherSortedFileResult := make(chan searchResult, 1)
 
 	// 并行搜索新文件（本轮的新文件）
-	go func() {
+	st.spawn(func() {
 		positionBytes, err := st.persister.Get_opt(key)
 		if err != nil {
 			newFileResult <- searchResult{false, "", err, false}
@@ -779,17 +783,17 @@ func (kvs *KVServer) anotherGCGet(st stateSnapshot, key string, reply *kvrpc.Get
 		} else {
 			newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file"), false}
 		}
-	}()
+	})
 
 	// 并行搜索排序文件
-	go func() {
+	st.spawn(func() {
 		value, hit, err := kvs.getFromPartitions(key, st.anotherParts)
 		if err != nil {
 			anotherSortedFileResult <- searchResult{false, "", err, false}
 			return
 		}
 		anotherSortedFileResult <- searchResult{true, value, nil, hit}
-	}()
+	})
 
 	// 按优先级逐路取结果：当前 valuelog 在前，本轮分区在后
 	var out readOutcome

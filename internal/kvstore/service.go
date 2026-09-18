@@ -94,9 +94,12 @@ func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeReq
 	//   一致性：captureState 在 stateMu 的读锁下**一次性**取下这一份视图就释放；
 	//   生命周期：整段读持 storeRetireMu 的读锁，回收路径取它的写锁，而 apply 不碰它。
 	// 详见 read.go 的 stateSnapshot。
-	kvs.storeRetireMu.RLock()
-	defer kvs.storeRetireMu.RUnlock()
-	st := kvs.captureState()
+	//
+	// 读锁通过 beginRead 取、由 endRead 交还，而**真正放锁的时机是这份快照上最后一个
+	// 读者结束时**，不是这个函数返回时——扫描路径每个派生 goroutine 都有 wg.Wait 兜着，
+	// 但这个保证不该依赖各路径自己记得 Wait，理由见 storeLease。
+	st := kvs.beginRead()
+	defer st.endRead()
 	reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
 
 	if code, leader, ok := kvs.requireLeader(); !ok {
@@ -226,12 +229,17 @@ func (kvs *KVServer) StartGet(st stateSnapshot, args *kvrpc.GetInRaftRequest) *k
 func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
 	// 同 ScanRangeInRaft：一致性靠 captureState 那一小段，生命周期靠 storeRetireMu。
 	// 点查很短，但"短"不等于"原子"——一次点查仍然可能在回收旧库时正在进行。
-	kvs.storeRetireMu.RLock()
-	defer kvs.storeRetireMu.RUnlock()
+	//
+	// **而这条路径上"这个函数返回"并不等于"读完了"**：GC 的多路查找把三路并行发出去，
+	// 第一路答出 value 就 return，剩下的还在跑。所以读锁必须活到最后一个读者结束，
+	// 由 beginRead / endRead 加 st.spawn 共同保证（2026-09-18 的 nil 解引用就出在这里，
+	// 见 storeLease 的注释）。
+	st := kvs.beginRead()
+	defer st.endRead()
 	if code, leader, ok := kvs.requireLeader(); !ok {
 		return &kvrpc.GetInRaftResponse{Err: code, LeaderId: leader}, nil
 	}
-	reply := kvs.StartGet(kvs.captureState(), in)
+	reply := kvs.StartGet(st, in)
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
 	} else if reply.Err == raft.ErrNoKey {
