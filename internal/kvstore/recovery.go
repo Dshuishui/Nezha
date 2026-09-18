@@ -194,21 +194,38 @@ func (kvs *KVServer) removeSupersededLog(path string) {
 }
 
 func (kvs *KVServer) removeSupersededStore() {
-	if kvs.oldPersister == nil || kvs.oldDBPath == "" || kvs.oldDBPath == kvs.currentDBPath {
+	// 三个字段要在同一把 kvs.mu 下一起读：captureState 现在也在这把锁下取它们，
+	// 分开读会让这里的判断与读者看到的不是同一份状态。
+	kvs.mu.Lock()
+	p, path, cur := kvs.oldPersister, kvs.oldDBPath, kvs.currentDBPath
+	kvs.mu.Unlock()
+	if p == nil || path == "" || path == cur {
 		return
 	}
 	// Close 必须与"正在迭代这个库的扫描"互斥，否则迭代器会用在一个已经关掉的
 	// RocksDB 上（C++ 层的 use-after-free，不是一个 Go panic）。此前这件事是靠
 	// 调用方先取 kvs.mu、而扫描也持 kvs.mu 顺带做到的，代价是扫描把 apply 按住；
 	// 现在用一把只给这件事的锁，理由与实测数字见 KVServer.storeRetireMu。
+	kvs.storeRetireMu.Lock()
+	p.Close()
+	// **关掉之后必须把指针从状态里摘掉。** 不摘的话 kvs.oldPersister 仍指向这个
+	// 已经 Close 的对象（Persister.Close 会把 p.db 置 nil），后面每一次 captureState
+	// 都会把它发出去；只要有任何一条读路径选中用到 oldPersister 的分支，就是
+	// grocksdb.(*DB).Get(0x0, ...)。锁序 storeRetireMu -> kvs.mu 与读路径一致。
 	//
+	// 只在指针没被换掉时才摘：新一轮 GC 的切换会把 oldPersister 指向另一个对象，
+	// 那一个还活着，摘掉它会把活库从状态里抹掉。
+	kvs.mu.Lock()
+	if kvs.oldPersister == p {
+		kvs.oldPersister = nil
+		kvs.oldDBPath = ""
+	}
+	kvs.mu.Unlock()
+	kvs.storeRetireMu.Unlock()
 	// RemoveAll 放在锁外：库一旦关掉就没有读者能再用它，删文件不需要挡住新的扫描，
 	// 而 RemoveAll 一个几十 MB 的目录不算快，握着写锁做会让排在后面的扫描一起等。
-	kvs.storeRetireMu.Lock()
-	kvs.oldPersister.Close()
-	kvs.storeRetireMu.Unlock()
-	if err := os.RemoveAll(kvs.oldDBPath); err != nil {
-		fmt.Printf("删除旧存储引擎 %s 失败: %v\n", kvs.oldDBPath, err)
+	if err := os.RemoveAll(path); err != nil {
+		fmt.Printf("删除旧存储引擎 %s 失败: %v\n", path, err)
 	}
 }
 

@@ -1,9 +1,12 @@
 package kvstore
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"gitee.com/dong-shuishui/FlexSync/internal/raft"
 )
 
 // 这一组用例钉的是**锁的拓扑**，不是某条读写路径的结果。
@@ -239,4 +242,95 @@ func TestLeaseReleasesExactlyOnce(t *testing.T) {
 			t.Fatalf("第 %d 轮：所有读者都结束了，取写锁却花了 %v——租约少放了一次", round, got)
 		}
 	}
+}
+
+// TestCaptureNeverStraddlesGCSwitch 复现的是 2026-09-18 那两次 nil 解引用的根因。
+//
+// AnotherSwitchToNewFiles 在 kvs.mu 下按这个顺序改字段：
+//
+//	anotherStartGC = true          ← 标志先立
+//	...
+//	oldPersister = persister       ← 几行之后才更新
+//	currentLog   = newLog
+//	persister    = newPersister
+//
+// 而 captureState 原先只持 stateMu 的读锁，与 kvs.mu 互不相干，所以可以在这中间捕获，
+// 拿到「标志说 GC 在途」配「**上一轮那个已经被 Close 的** oldPersister」：
+//
+//	grocksdb.(*DB).Get(0x0, ...)
+//
+// 同一个缝隙的另一半更糟——「新 persister 配旧 currentLog」是静默错值。
+//
+// 这里用一个模仿那个顺序的写入方来查：一次捕获若看到 anotherStart=true，
+// oldPersister / oldLog 就必须已经是这一轮的那一对，不能还是上一轮的。
+// 用 (persister, currentLog, oldPersister, oldLog) 四个字段的代号是否自洽来判定。
+//
+// 与 TestCaptureStateTakesEverythingAtOnce 的区别：那条的写入方**自己持 stateMu 的写锁**，
+// 所以它只证明"同一把锁下的成对更新捕获得到一致值"——写者换成 kvs.mu 它照样过，
+// 也正因此当初没照出这个 bug。这条的写入方刻意持 kvs.mu，与真实的 GC 切换一致。
+func TestCaptureNeverStraddlesGCSwitch(t *testing.T) {
+	kvs := &KVServer{}
+	// 第 0 轮的初始状态：不在 GC 中，两对字段都指向 "r0"。
+	p0 := &raft.Persister{}
+	kvs.persister, kvs.currentLog = p0, "log-r0"
+	kvs.oldPersister, kvs.oldLog = p0, "log-r0"
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for round := 1; ; round++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			cur := kvs.persister
+			curLog := kvs.currentLog
+			next := &raft.Persister{}
+			nextLog := fmt.Sprintf("log-r%d", round)
+
+			// 一轮切换：完全照抄 AnotherSwitchToNewFiles 的顺序与锁。
+			kvs.mu.Lock()
+			kvs.anotherStartGC = true
+			kvs.oldPersister = cur
+			kvs.oldLog = curLog
+			kvs.currentLog = nextLog
+			kvs.persister = next
+			kvs.mu.Unlock()
+
+			// 一轮结束：照抄 finishAnotherGC 的顺序。
+			kvs.mu.Lock()
+			kvs.anotherStartGC, kvs.anotherEndGC = false, false
+			kvs.mu.Unlock()
+		}
+	}()
+
+	for i := 0; i < 50000; i++ {
+		st := kvs.captureState()
+		// 捕获必须自洽：oldLog 与 oldPersister 来自同一轮，currentLog 与 persister
+		// 来自同一轮，而且 old 那一对不能与 current 那一对是同一轮的错配组合。
+		if st.anotherStart {
+			if st.oldPersister == st.persister {
+				close(stop)
+				wg.Wait()
+				t.Fatalf("第 %d 次捕获：GC 在途，却拿到 oldPersister == persister——"+
+					"捕获落在 oldPersister 与 persister 两次赋值之间", i)
+			}
+			if st.oldLog == st.currentLog {
+				close(stop)
+				wg.Wait()
+				t.Fatalf("第 %d 次捕获：GC 在途，却拿到 oldLog == currentLog（%q）——"+
+					"捕获跨越了一次 GC 切换", i, st.oldLog)
+			}
+		}
+		if st.currentLog == "" || st.persister == nil {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("第 %d 次捕获取到了空的当前状态：log=%q persister=%v", i, st.currentLog, st.persister)
+		}
+	}
+	close(stop)
+	wg.Wait()
 }

@@ -51,11 +51,40 @@ type stateSnapshot struct {
 	lease *storeLease
 }
 
-// captureState 在 stateMu 的读锁下一次性取下这一份视图。**调用方必须已经持有
-// storeRetireMu 的读锁**，否则取到的库与日志可能在读的过程中被回收掉。
+// errRetiredStore 是"这一路要用的旧库已经被回收了"。做成一个具名错误而不是静默当成
+// "没找到"：没找到与查不了是两件事，混起来会把一次真的数据丢失读成一次正常的 miss。
+var errRetiredStore = errors.New("被取代的旧库已回收，这一路查不了")
+
+// captureState 一次性取下这一份视图。**调用方必须已经持有 storeRetireMu 的读锁**，
+// 否则取到的库与日志可能在读的过程中被回收掉。
+//
+// **两把锁都要取，因为写这些字段的有两拨人，各用一把锁。**
+//
+//	装快照   整体替换状态机，持 stateMu 的写锁（snapshot.go）
+//	GC 切换  也是整体替换（persister / currentLog / oldPersister / oldLog / 各标志
+//	         一起换），但持的是 kvs.mu（gc_merge.go 的 AnotherSwitchToNewFiles、
+//	         gc_first.go 的切换、gc_absorb.go、finishFirstGC / finishAnotherGC）
+//
+// 原先这里只取 stateMu，于是它只与装快照互斥，**对 GC 切换毫无作用**——而 stateMu 的
+// 说明里"为什么 kvs.mu 不够"那段理由对 GC 切换一字不差地适用，当初只是没把写者搬过来。
+// 2026-09-18 因此在 nezha-avp 上崩了两次：
+//
+//	AnotherSwitchToNewFiles 先置 anotherStartGC = true，几行之后才更新 oldPersister。
+//	读者在这两行之间捕获，就拿到「标志说 GC 在途」配「**上一轮那个已经被 Close 的**
+//	oldPersister」，走进 during-GC 分支去读它 —— grocksdb.(*DB).Get(0x0, ...)。
+//
+// 比 panic 更糟的是它的另一半：同一个缝隙也会给出「新 persister 配旧 currentLog」，
+// 那读出来是别的记录的 value，**而且不报错**。
+//
+// 锁序是 storeRetireMu -> stateMu -> kvs.mu，与 installSnapshot（stateMu 再 kvs.mu）
+// 一致；没有任何路径反过来先取 kvs.mu 再取 stateMu，所以不会 ABBA。
+// 这里持 kvs.mu 的时长是十来次指针拷贝，与 13 号 bug（扫描整段迭代都持 kvs.mu，
+// 实测把 PUT 的 max 顶到 2430ms）不是一个量级。
 func (kvs *KVServer) captureState() stateSnapshot {
 	kvs.stateMu.RLock()
 	defer kvs.stateMu.RUnlock()
+	kvs.mu.Lock()
+	defer kvs.mu.Unlock()
 	return stateSnapshot{
 		persister:    kvs.persister,
 		currentLog:   kvs.currentLog,
@@ -560,6 +589,14 @@ func (kvs *KVServer) firstGCGet(st stateSnapshot, key string, reply *kvrpc.GetIn
 
 		// 并行搜索旧文件
 		st.spawn(func() {
+			// 旧库可能已被上一轮 GC 回收：removeSupersededStore 关掉它之后会把
+			// kvs.oldPersister 摘成 nil。捕获与摘除现在同在 kvs.mu 下，所以一份快照
+			// 不会是"标志说 GC 在途、旧库却已回收"；这一层是兜底，让万一出现时变成
+			// **一条可见的错误**（out.note 会记下来），而不是一个 nil 解引用。
+			if st.oldPersister == nil {
+				oldFileResult <- searchResult{false, "", errRetiredStore, false}
+				return
+			}
 			positionBytes, err := st.oldPersister.Get_opt(key)
 			if err != nil {
 				oldFileResult <- searchResult{false, "", err, false}
@@ -678,6 +715,14 @@ func (kvs *KVServer) anotherGCGet(st stateSnapshot, key string, reply *kvrpc.Get
 
 		// 并行搜索旧文件（上一轮的新文件）
 		st.spawn(func() {
+			// 旧库可能已被上一轮 GC 回收：removeSupersededStore 关掉它之后会把
+			// kvs.oldPersister 摘成 nil。捕获与摘除现在同在 kvs.mu 下，所以一份快照
+			// 不会是"标志说 GC 在途、旧库却已回收"；这一层是兜底，让万一出现时变成
+			// **一条可见的错误**（out.note 会记下来），而不是一个 nil 解引用。
+			if st.oldPersister == nil {
+				oldFileResult <- searchResult{false, "", errRetiredStore, false}
+				return
+			}
 			positionBytes, err := st.oldPersister.Get_opt(key)
 			if err != nil {
 				oldFileResult <- searchResult{false, "", err, false}

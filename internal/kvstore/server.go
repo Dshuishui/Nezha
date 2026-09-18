@@ -92,11 +92,24 @@ type KVServer struct {
 	// retiredPartitions 是已被取代、但引用还没归零的分区组。快照传输会钉住它读到的那一组，
 	// 期间 GC 不能删它的文件。见 partition.go 的"生命周期"一节。
 	retiredPartitions []*PartitionSet
-	// stateMu 保护"状态机被整体换掉"这一件事，只有装快照会做。
+	// stateMu 保护"状态机被**装快照**整体换掉"这一件事。
 	//
 	// 为什么 kvs.mu 不够：一次读要同时用到 persister、currentLog 和 lastPartitions
 	// 三样，而装快照把三样一起换掉。只用 kvs.mu 护住各自的赋值，读路径仍可能取到新的
 	// persister 配旧的 currentLog——那读出来是别的记录的 value，而且不报错。
+	//
+	// **但"整体换掉"不只有装快照一家。** GC 切换（gc_merge.go 的
+	// AnotherSwitchToNewFiles、gc_first.go 的切换、gc_absorb.go、finishFirstGC /
+	// finishAnotherGC）同样是一起换 persister / currentLog / oldPersister / oldLog
+	// 与那几个标志，而它们持的是 **kvs.mu**，不是这把锁。上面那段"为什么 kvs.mu 不够"
+	// 对 GC 切换一字不差地适用，当初却只把读者搬到了 stateMu，写者留在了 kvs.mu。
+	// 于是 captureState 只与装快照互斥，对 GC 切换毫无作用：
+	// 2026-09-18 在 nezha-avp 上因此崩了两次（读到上一轮已被 Close 的 oldPersister），
+	// 而同一个缝隙的另一半是"新 persister 配旧 currentLog"——静默错值，比崩更糟。
+	// 现在 captureState 在这把锁的读锁**之内**再取一次 kvs.mu，两拨写者就都挡住了；
+	// 锁序固定为 storeRetireMu -> stateMu -> kvs.mu，与 installSnapshot 一致。
+	// 要么把全部 GC 写者搬到 stateMu、要么让读者兼取 kvs.mu，选了后者：
+	// 前者要在十来处改锁，每一处都有 ABBA 的机会，而后者只有一处、且持锁只是指针拷贝。
 	//
 	// **持有时长的分工（2026-09-18 改）**：
 	//   读路径  只在 captureState 那一小段持读锁，取下一份 stateSnapshot 就释放。
