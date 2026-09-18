@@ -808,6 +808,43 @@ else
 fi
 
 echo
+info "=== 二十八、mktemp 不许用 -t（BSD 与 GNU 语义不同）==="
+# 2026-09-18 实测：deploy.sh 第 49 行写的是
+#     CONNERR=$(mktemp -t deploy-ssh).err
+# 在 mac（BSD mktemp）上，`-t 前缀` 是合法的，自己补随机后缀；
+# **GNU mktemp 的 -t 却要求模板里自带至少三个 X**，给裸前缀直接报
+#     mktemp: too few X's in template 'deploy-ssh'
+# 于是脚本在 set -eu 下当场退出，整个部署只留这一行，看着像环境坏了。
+# 这个洞藏了很久，因为部署一直只从 mac 发起；那天改成从 WSL（Linux）发起，第一次跑就撞上。
+#
+# 现在实验机那条链路要求"长命令一律在 Linux 侧发起"，于是**每个脚本都可能在 GNU 上跑**，
+# 这就从一处笔误变成了一类问题。
+#
+# 判据干脆定成"**不许用 -t**"，而不是"用了 -t 就检查模板里有没有 X"：
+# 后者判不干净——`mktemp -t foo.XXXXXX` 两边都不报错，但 BSD 把整个 foo.XXXXXX 当前缀、
+# 再往后接自己的随机段，GNU 则替换那六个 X，**同一行在两个平台上给出不同形状的名字**。
+# 这种"不报错但语义不同"的写法比直接报错更难查，所以一并禁掉，
+# 统一要求写成 `mktemp "${TMPDIR:-/tmp}/名字.XXXXXX"`（`mktemp -d` 不带 -t，不受影响）。
+# 顺带禁掉 `$(mktemp ...).后缀` 这个写法：mktemp 建的是 X，真正用的是 X.后缀，
+# 后者没经过 mktemp——既没有原子性，X 本身也没人删。
+# 本文件要排除：上面这段解释里就写着被查的那两种构造。
+MKBAD=0
+while IFS= read -r p; do
+    case "$(basename "$p")" in gate-audit-multinode.sh) continue;; esac
+    while IFS= read -r hit; do
+        ln=${hit%%:*}; line=${hit#*:}
+        printf '%s' "$line" | grep -qE '^[[:space:]]*#' && continue
+        echo "       ${p#"$PROJECT_DIR"/}:${ln}  $(printf '%s' "$line" | cut -c1-110)"
+        MKBAD=$((MKBAD+1))
+    done < <(grep -nE 'mktemp([[:space:]]+-[a-su-z]+)*[[:space:]]+-[a-z]*t([[:space:]]|$)|\$\(mktemp[^)]*\)\.' "$p" || true)
+done < <(find "$PROJECT_DIR/scripts" -name '*.sh' | sort)
+if [ "$MKBAD" -eq 0 ]; then
+    good "mktemp 都写了完整模板，没有用两个平台语义不同的 -t"
+else
+    bad "上列 $MKBAD 处 mktemp 用了 -t 或给结果又拼了后缀——写成 mktemp \"\${TMPDIR:-/tmp}/名字.XXXXXX\""
+fi
+
+echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"
 else

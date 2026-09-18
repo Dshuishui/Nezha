@@ -46,7 +46,13 @@ FORCE=${FORCE:-0}   # FORCE=1 to deploy anyway while something is running
 #
 # rc 要先存下来再用：写在 `if ! ssh ...; then` 的分支里取 $? 拿到的是**被 ! 取反后的 0**，
 # 打出来是 "rc=0"，等于这行诊断在说假话（第一版就是这么写的）。
-CONNERR=$(mktemp -t deploy-ssh).err
+# 临时文件一律写全模板。`mktemp -t 前缀` 只有 BSD（macOS）认；**GNU 的 -t 要求模板
+# 自带至少三个 X**，给了裸前缀就直接 `mktemp: too few X's in template`，脚本第 49 行就死。
+# 本脚本一直只在 Mac 上跑，所以这个洞藏到 2026-09-18 才暴露——那天因为 Mac 到实验机的
+# ssh 撑不过几秒，改成在 WSL（Linux）里发起部署，第一次跑就是这条报错。
+# 顺带修掉 `$(mktemp ...).err` 这个写法：它让 mktemp 建的是 X，真正用的却是 X.err
+# ——后者没经过 mktemp，既丢了原子性，X 本身也没人删。
+CONNERR=$(mktemp "${TMPDIR:-/tmp}/deploy-ssh.XXXXXX")
 trap 'rm -f "$CONNERR"' EXIT
 for h in $HOSTS; do
   # **必须写成 `|| rc=$?`。** `cmd; rc=$?` 在 set -e 下是两条简单命令，第一条失败就
@@ -136,7 +142,7 @@ for h in $HOSTS; do
     echo "$h already at ${WANT:0:7}"
   else
     git cat-file -e "$have^{commit}" 2>/dev/null || { echo "DEPLOY_FAIL $h: remote HEAD $have unknown locally"; exit 1; }
-    b=$(mktemp -t nezha-bundle).bundle
+    b=$(mktemp "${TMPDIR:-/tmp}/nezha-bundle.XXXXXX")   # 同上：裸前缀在 GNU mktemp 上不合法
     git bundle create "$b" "$have..$BRANCH" >/dev/null
     scp -q "$b" "$h:~/deploy.bundle"
     rm -f "$b"
