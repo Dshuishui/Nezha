@@ -50,7 +50,12 @@ func TestServerKeepsAwkwardKeysDistinct(t *testing.T) {
 		kvs.persister.Put(k, v)
 	}
 	for k, want := range cases {
-		reply := kvs.StartGet(&kvrpc.GetInRaftRequest{Key: k})
+		// captureState 要求调用方持着 storeRetireMu 的读锁（见 read.go 的 stateSnapshot）。
+		// 这个用例是单 goroutine、没有 GC 也没有装快照，取一次就够。
+		kvs.storeRetireMu.RLock()
+		st := kvs.captureState()
+		kvs.storeRetireMu.RUnlock()
+		reply := kvs.StartGet(st, &kvrpc.GetInRaftRequest{Key: k})
 		if reply.Err != raft.OK {
 			t.Errorf("key %q: Err=%s，期望读得到", k, reply.Err)
 			continue

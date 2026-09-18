@@ -94,10 +94,19 @@ type KVServer struct {
 	retiredPartitions []*PartitionSet
 	// stateMu 保护"状态机被整体换掉"这一件事，只有装快照会做。
 	//
-	// 读路径与 apply 路径按**读锁**持有它，装快照按**写锁**。为什么 kvs.mu 不够：
-	// 一次读要同时用到 persister、currentLog 和 lastPartitions 三样，而装快照把三样
-	// 一起换掉。只用 kvs.mu 护住各自的赋值，读路径仍可能取到新的 persister 配旧的
-	// currentLog——那读出来是别的记录的 value，而且不报错。
+	// 为什么 kvs.mu 不够：一次读要同时用到 persister、currentLog 和 lastPartitions
+	// 三样，而装快照把三样一起换掉。只用 kvs.mu 护住各自的赋值，读路径仍可能取到新的
+	// persister 配旧的 currentLog——那读出来是别的记录的 value，而且不报错。
+	//
+	// **持有时长的分工（2026-09-18 改）**：
+	//   读路径  只在 captureState 那一小段持读锁，取下一份 stateSnapshot 就释放。
+	//           以前是整段读都持着，而 Go 的 RWMutex 在有写者等待时不再放新读者进来，
+	//           于是一次 33 秒的扫描会让装快照排在它后面、apply 再排在装快照后面：
+	//           **apply 停一次扫描的时长**。
+	//   apply   每条一次读锁，不长期持有。它需要的是与**整个安装窗口**互斥，
+	//           理由见 applyCommand 里的注释（不是那条注释原来写的理由）。
+	//   装快照  写锁，覆盖整个安装窗口。现在它只等 apply 与几次字段捕获。
+	// 捕获下来的库与日志的**生命周期**由 storeRetireMu 管，见下。
 	stateMu sync.RWMutex
 	// storeRetireMu 把"一次范围扫描正在迭代某个存储引擎"与"GC 关掉被它取代的那个引擎"
 	// 隔开，而**不**把 apply 一起挡住。

@@ -125,9 +125,7 @@ func (kvs *KVServer) finishFirstGC(startTime time.Time) {
 	kvs.persister.SetApplied(kvs.lastAppliedIndex)
 	kvs.saveKVState()
 	kvs.mu.Unlock()
-	if err := os.Remove(kvs.oldLog); err != nil {
-		fmt.Println("第 1 轮删除旧文件出现了错误: ", err)
-	}
+	kvs.removeSupersededLog(kvs.oldLog)
 	// 最初那个库（dbfile/keyIndex）在这里之后就没人引用了，必须删。
 	// finishAnotherGC 早就删被取代的库了，第一轮却漏了——于是它永久留在盘上：
 	// 实测 gc-rounds 跑完 8 轮，目录 163MB 里有 **75MB 是这个死库**（当前库同样 75MB，
@@ -164,9 +162,7 @@ func (kvs *KVServer) finishAnotherGC(startTime time.Time) {
 	if removed := kvs.reapPartitions(); removed > 0 {
 		fmt.Printf("[GC-ABSORB] 删除已废弃分区文件 %d 个\n", removed)
 	}
-	if err := os.Remove(kvs.oldLog); err != nil {
-		fmt.Printf("第 %v 轮垃圾回收删除旧文件出现了错误: %v\n", kvs.numGC, err)
-	}
+	kvs.removeSupersededLog(kvs.oldLog)
 	kvs.removeSupersededStore()
 	fmt.Printf("第 %v 轮垃圾回收完成，等待下一轮垃圾回收，且已删除 oldLog 指向的文件\n", kvs.numGC)
 }
@@ -179,6 +175,24 @@ func (kvs *KVServer) finishAnotherGC(startTime time.Time) {
 // 漏了，于是最初那个库永久留在盘上（163MB 的目录里 75MB 是它）。
 //
 // 先 Close 再删：目录还被打开着就 RemoveAll，RocksDB 会在后台写到已删除的 inode 上。
+// removeSupersededLog 删掉被取代的那个日志文件，等在途的读者放手之后再删。
+//
+// 这一处原先是裸的 os.Remove(kvs.oldLog)，没有任何互斥。而 GC 中的一次读会把
+// oldLog 一起捕获下来（read.go 的 stateSnapshot），扫描是**惰性**打开那个文件的
+// （logReader），所以文件先被删掉的话那次扫描会失败并回 "error in scan" ——
+// 不是静默错值，但是一次本不该发生的失败。与关旧库用同一把锁。
+func (kvs *KVServer) removeSupersededLog(path string) {
+	if path == "" {
+		return
+	}
+	kvs.storeRetireMu.Lock()
+	err := os.Remove(path)
+	kvs.storeRetireMu.Unlock()
+	if err != nil && !os.IsNotExist(err) {
+		fmt.Printf("删除被取代的日志 %s 失败: %v\n", path, err)
+	}
+}
+
 func (kvs *KVServer) removeSupersededStore() {
 	if kvs.oldPersister == nil || kvs.oldDBPath == "" || kvs.oldDBPath == kvs.currentDBPath {
 		return

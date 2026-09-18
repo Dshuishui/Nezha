@@ -51,8 +51,17 @@ func (kvs *KVServer) applyLoop() {
 // applyCommand applies one committed entry to the store and wakes the client waiting on
 // it. Caller holds kvs.mu.
 func (kvs *KVServer) applyCommand(msg raft.ApplyMsg) {
-	// 与装快照互斥：一条 apply 要往 persister 里写一行、并按当前日志的偏移记账，
-	// 中途被换掉状态机就是把这一行写进新库、偏移却指着旧日志。装快照持写锁。
+	// 与装快照互斥。**理由不是这条注释原来写的那个**：原先写的是"一条 apply 中途被换掉
+	// 状态机就会把这一行写进新库、偏移却指着旧日志"，而那件事已经由 kvs.mu 挡住了——
+	// applyCommand 的两个调用点都在 kvs.mu 之下（applyLoop 与 lsmReplayHeld），
+	// 而装快照换指针的那一步也取 kvs.mu，所以换指针不可能插进一次 applyCommand 中间。
+	//
+	// 真正需要这把锁的是**整个安装窗口**：装快照很早就查过
+	// `lastAppliedIndex >= sm.LastIndex`，然后要花几秒做落位 / ingest / 装分区组。
+	// 这段窗口里若 apply 还能推进，安装最后把 lastAppliedIndex 重设成 sm.AppliedIndex
+	// 就是**往回退**，而那几条已应用的数据在旧库里、随后会被删掉。
+	// 所以这把读锁要保留；它很便宜（每条一次，不长期持有），装快照的写锁因此只等
+	// "正在进行的一次 apply"。读路径已经不再整段持 stateMu 了，见 read.go 的 stateSnapshot。
 	kvs.stateMu.RLock()
 	defer kvs.stateMu.RUnlock()
 	cmd := msg.Command

@@ -17,12 +17,56 @@ import (
 	"github.com/linxGnu/grocksdb"
 )
 
-func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, error) {
-	// 读锁要盖住"读出下面那几个字段"到"迭代结束"的整段，理由见 KVServer.storeRetireMu。
-	// 子 goroutine 不再各取一次：读锁由父 goroutine 持有、wg.Wait 之前不释放，
-	// 子 goroutine 都在这个窗口内跑完。
-	kvs.storeRetireMu.RLock()
-	defer kvs.storeRetireMu.RUnlock()
+// stateSnapshot 是**一次**读所看到的那一份状态机：库、日志、分区组，以及决定走哪条
+// 查找路径的几个 GC 标志。
+//
+// 为什么要有它：读路径原先是整段读都持着 kvs.stateMu 的读锁，而装快照要取它的写锁。
+// Go 的 RWMutex 在有写者等待时不再放新读者进来，而 applyCommand 也按读锁持有 stateMu
+// ——于是一次长扫描会让装快照排在它后面，再让 apply 排在装快照后面：**apply 停一次
+// 扫描的时长**。4GB 规模下一次扫描是 33 秒。
+//
+// 改法是把"一致地看到同一份状态"和"这份状态在读完之前不被删"拆成两件事：
+//   一致性：进来时在 stateMu 的读锁下**一次性**把下面这些字段取完，然后就释放。
+//           必须一次取完——只用 kvs.mu 分别护住各自的赋值，读路径会取到新的 persister
+//           配旧的 currentLog，那读出来是别的记录的 value，而且不报错。
+//           （这正是 stateMu 当初被引入的原因，见 KVServer.stateMu。）
+//   生命周期：整段读持 storeRetireMu 的**读锁**。删掉被取代的库与日志的那几处取它的
+//           写锁，而 apply **一概不碰它**——所以等读者的是回收路径，不是写入路径。
+//
+// 于是装快照的写锁只需等"正在进行的一次 apply 与几次字段捕获"，都是纳秒到微秒级。
+type stateSnapshot struct {
+	persister    *raft.Persister
+	currentLog   string
+	oldPersister *raft.Persister
+	oldLog       string
+	lastParts    *PartitionSet
+	anotherParts *PartitionSet
+	firstGC      bool
+	startGC      bool
+	anotherStart bool
+	anotherEnd   bool
+}
+
+// captureState 在 stateMu 的读锁下一次性取下这一份视图。**调用方必须已经持有
+// storeRetireMu 的读锁**，否则取到的库与日志可能在读的过程中被回收掉。
+func (kvs *KVServer) captureState() stateSnapshot {
+	kvs.stateMu.RLock()
+	defer kvs.stateMu.RUnlock()
+	return stateSnapshot{
+		persister:    kvs.persister,
+		currentLog:   kvs.currentLog,
+		oldPersister: kvs.oldPersister,
+		oldLog:       kvs.oldLog,
+		lastParts:    kvs.lastPartitions,
+		anotherParts: kvs.anotherPartitions,
+		firstGC:      kvs.FirstGC,
+		startGC:      kvs.startGC,
+		anotherStart: kvs.anotherStartGC,
+		anotherEnd:   kvs.anotherEndGC,
+	}
+}
+
+func (kvs *KVServer) anotherGCScan(st stateSnapshot, startKey, endKey string) (map[string]string, error) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -30,11 +74,11 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 	sortedChan := make(chan scanResult, 1)
 	newChan := make(chan scanResult, 1)
 
-	if !kvs.anotherStartGC {
+	if !st.anotherStart {
 		// GC前：并行查询上一轮新文件，上一轮排序文件
 		go func() {
 			defer wg.Done()
-			result, err := kvs.scanFromPartitions(startKey, endKey, kvs.lastPartitions)
+			result, err := kvs.scanFromPartitions(startKey, endKey, st.lastParts)
 			sortedChan <- scanResult{data: result, err: err}
 		}()
 
@@ -44,7 +88,7 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{
 				StartKey: startKey,
 				EndKey:   endKey,
-			}, kvs.persister, kvs.currentLog)
+			}, st.persister, st.currentLog)
 			oldChan <- scanResultOf(result)
 		}()
 
@@ -71,7 +115,7 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 			result[k] = v
 		}
 		return result, nil
-	} else if kvs.anotherStartGC && !kvs.anotherEndGC {
+	} else if st.anotherStart && !st.anotherEnd {
 		// GC中：并行查询上一轮新文件、上一轮排序文件和本轮new文件
 		wg.Add(1) // 增加一个等待，因为要查询三个文件
 
@@ -81,14 +125,14 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{
 				StartKey: startKey,
 				EndKey:   endKey,
-			}, kvs.oldPersister, kvs.oldLog)
+			}, st.oldPersister, st.oldLog)
 			oldChan <- scanResultOf(result)
 		}()
 
 		// 查询已排序文件
 		go func() {
 			defer wg.Done()
-			result, err := kvs.scanFromPartitions(startKey, endKey, kvs.lastPartitions)
+			result, err := kvs.scanFromPartitions(startKey, endKey, st.lastParts)
 			sortedChan <- scanResult{data: result, err: err}
 		}()
 
@@ -98,7 +142,7 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{
 				StartKey: startKey,
 				EndKey:   endKey,
-			}, kvs.persister, kvs.currentLog)
+			}, st.persister, st.currentLog)
 			newChan <- scanResultOf(result)
 		}()
 
@@ -142,7 +186,7 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 		// 查询已排序文件
 		go func() {
 			defer wg.Done()
-			result, err := kvs.scanFromPartitions(startKey, endKey, kvs.anotherPartitions)
+			result, err := kvs.scanFromPartitions(startKey, endKey, st.anotherParts)
 			sortedChan <- scanResult{data: result, err: err}
 		}()
 
@@ -152,7 +196,7 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{
 				StartKey: startKey,
 				EndKey:   endKey,
-			}, kvs.persister, kvs.currentLog)
+			}, st.persister, st.currentLog)
 			newChan <- scanResultOf(result)
 		}()
 
@@ -182,28 +226,25 @@ func (kvs *KVServer) anotherGCScan(startKey, endKey string) (map[string]string, 
 	}
 }
 
-func (kvs *KVServer) firstGCScan(startKey, endKey string) (map[string]string, error) {
-	// 同 anotherGCScan，理由见 KVServer.storeRetireMu。
-	kvs.storeRetireMu.RLock()
-	defer kvs.storeRetireMu.RUnlock()
+func (kvs *KVServer) firstGCScan(st stateSnapshot, startKey, endKey string) (map[string]string, error) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	sortedChan := make(chan scanResult, 1)
 	newChan := make(chan scanResult, 1)
 
-	if kvs.startGC {
+	if st.startGC {
 		// 并发查询旧文件
 		go func() {
 			defer wg.Done()
-			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.oldPersister, kvs.oldLog)
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, st.oldPersister, st.oldLog)
 			sortedChan <- scanResultOf(result)
 		}()
 
 		// 并发查询新文件
 		go func() {
 			defer wg.Done()
-			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister, kvs.currentLog)
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, st.persister, st.currentLog)
 			// if err != nil {
 			//     newChan <- scanResult{data: nil, err: err}
 			//     return
@@ -211,11 +252,11 @@ func (kvs *KVServer) firstGCScan(startKey, endKey string) (map[string]string, er
 			newChan <- scanResultOf(result)
 		}()
 	}
-	if !kvs.startGC {
+	if !st.startGC {
 		// 只查询旧文件
 		go func() {
 			defer wg.Done()
-			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, kvs.persister, kvs.currentLog)
+			result := kvs.StartScan_opt(&kvrpc.ScanRangeRequest{StartKey: startKey, EndKey: endKey}, st.persister, st.currentLog)
 			sortedChan <- scanResultOf(result)
 		}()
 		wg.Done()
@@ -449,10 +490,10 @@ func ReadEntry(reader *bufio.Reader, currentOffset int64) (*raft.Entry, int64, e
 
 // ==================================================
 
-func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvrpc.GetInRaftResponse {
-	if !kvs.startGC { // 还未开始 GC，只有一路可查：当前 rocksdb 的偏移 + 当前 valuelog
+func (kvs *KVServer) firstGCGet(st stateSnapshot, key string, reply *kvrpc.GetInRaftResponse) *kvrpc.GetInRaftResponse {
+	if !st.startGC { // 还未开始 GC，只有一路可查：当前 rocksdb 的偏移 + 当前 valuelog
 		var out readOutcome
-		positionBytes, err := kvs.persister.Get_opt(key)
+		positionBytes, err := st.persister.Get_opt(key)
 		if err != nil {
 			out.note("当前 rocksdb 取偏移", err)
 			return out.finish(reply, key)
@@ -460,7 +501,7 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 		if positionBytes == -1 {
 			return out.finish(reply, key) // 没有记录：键不存在
 		}
-		readKey, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
+		readKey, value, err := kvs.raft.ReadValueFromFile(st.currentLog, positionBytes)
 		if err != nil {
 			out.note("当前 valuelog 按偏移读", err)
 			return out.finish(reply, key)
@@ -485,14 +526,14 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 		cacheHit bool
 	}
 
-	if kvs.startGC {
+	if st.startGC {
 		// 创建用于接收结果的通道
 		newFileResult := make(chan searchResult, 1)
 		oldFileResult := make(chan searchResult, 1)
 
 		// 并行搜索新文件
 		go func() {
-			positionBytes, err := kvs.persister.Get_opt(key)
+			positionBytes, err := st.persister.Get_opt(key)
 			if err != nil {
 				newFileResult <- searchResult{false, "", err, false}
 				return
@@ -501,7 +542,7 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 				newFileResult <- searchResult{false, "", nil, false}
 				return
 			}
-			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
+			read_key, value, err := kvs.raft.ReadValueFromFile(st.currentLog, positionBytes)
 			if err != nil {
 				newFileResult <- searchResult{false, "", err, false}
 				return
@@ -515,7 +556,7 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 
 		// 并行搜索旧文件
 		go func() {
-			positionBytes, err := kvs.oldPersister.Get_opt(key)
+			positionBytes, err := st.oldPersister.Get_opt(key)
 			if err != nil {
 				oldFileResult <- searchResult{false, "", err, false}
 				return
@@ -524,7 +565,7 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 				oldFileResult <- searchResult{false, "", nil, false}
 				return
 			}
-			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
+			read_key, value, err := kvs.raft.ReadValueFromFile(st.oldLog, positionBytes)
 			if err != nil {
 				oldFileResult <- searchResult{false, "", err, false}
 				return
@@ -556,7 +597,7 @@ func (kvs *KVServer) firstGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvr
 	return reply
 }
 
-func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *kvrpc.GetInRaftResponse {
+func (kvs *KVServer) anotherGCGet(st stateSnapshot, key string, reply *kvrpc.GetInRaftResponse) *kvrpc.GetInRaftResponse {
 	// before-GC
 	type searchResult struct {
 		found bool
@@ -566,14 +607,14 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 		// 计数留到汇合点，因为"这一路的结果有没有被采用"只有那里知道。
 		cacheHit bool
 	}
-	if !kvs.anotherStartGC {
+	if !st.anotherStart {
 		// 创建用于接收结果的通道
 		oldFileResult := make(chan searchResult, 1)
 		lastSortedFileResult := make(chan searchResult, 1)
 
 		// 并行搜索旧文件（上一轮的新文件），这时候还没开始第二轮GC，文件还没切换
 		go func() {
-			positionBytes, err := kvs.persister.Get_opt(key)
+			positionBytes, err := st.persister.Get_opt(key)
 			if err != nil {
 				oldFileResult <- searchResult{false, "", err, false}
 				return
@@ -582,7 +623,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 				oldFileResult <- searchResult{false, "", nil, false}
 				return
 			}
-			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
+			read_key, value, err := kvs.raft.ReadValueFromFile(st.currentLog, positionBytes)
 			if err != nil {
 				oldFileResult <- searchResult{false, "", err, false}
 				return
@@ -596,7 +637,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 
 		// 并行搜索排序文件，这个排序文件在第一轮GC完就已经切换，所以下面的不用改
 		go func() {
-			value, hit, err := kvs.getFromPartitions(key, kvs.lastPartitions)
+			value, hit, err := kvs.getFromPartitions(key, st.lastParts)
 			if err != nil {
 				lastSortedFileResult <- searchResult{false, "", err, false}
 				return
@@ -625,7 +666,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 		return out.finish(reply, key)
 	}
 	// during-GC
-	if !kvs.anotherEndGC {
+	if !st.anotherEnd {
 		// 创建用于接收结果的通道
 		newFileResult := make(chan searchResult, 1)
 		oldFileResult := make(chan searchResult, 1)
@@ -633,7 +674,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 
 		// 并行搜索旧文件（上一轮的新文件）
 		go func() {
-			positionBytes, err := kvs.oldPersister.Get_opt(key)
+			positionBytes, err := st.oldPersister.Get_opt(key)
 			if err != nil {
 				oldFileResult <- searchResult{false, "", err, false}
 				return
@@ -642,7 +683,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 				oldFileResult <- searchResult{false, "", nil, false}
 				return
 			}
-			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.oldLog, positionBytes)
+			read_key, value, err := kvs.raft.ReadValueFromFile(st.oldLog, positionBytes)
 			if err != nil {
 				oldFileResult <- searchResult{false, "", err, false}
 				return
@@ -656,7 +697,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 
 		// 并行搜索新文件（本轮的新文件）
 		go func() {
-			positionBytes, err := kvs.persister.Get_opt(key)
+			positionBytes, err := st.persister.Get_opt(key)
 			if err != nil {
 				newFileResult <- searchResult{false, "", err, false}
 				return
@@ -665,7 +706,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 				newFileResult <- searchResult{false, "", nil, false}
 				return
 			}
-			read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
+			read_key, value, err := kvs.raft.ReadValueFromFile(st.currentLog, positionBytes)
 			if err != nil {
 				newFileResult <- searchResult{false, "", err, false}
 				return
@@ -679,7 +720,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 
 		// 并行搜索排序文件
 		go func() {
-			value, hit, err := kvs.getFromPartitions(key, kvs.lastPartitions)
+			value, hit, err := kvs.getFromPartitions(key, st.lastParts)
 			if err != nil {
 				lastSortedFileResult <- searchResult{false, "", err, false}
 				return
@@ -719,7 +760,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 
 	// 并行搜索新文件（本轮的新文件）
 	go func() {
-		positionBytes, err := kvs.persister.Get_opt(key)
+		positionBytes, err := st.persister.Get_opt(key)
 		if err != nil {
 			newFileResult <- searchResult{false, "", err, false}
 			return
@@ -728,7 +769,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 			newFileResult <- searchResult{false, "", nil, false}
 			return
 		}
-		read_key, value, err := kvs.raft.ReadValueFromFile(kvs.currentLog, positionBytes)
+		read_key, value, err := kvs.raft.ReadValueFromFile(st.currentLog, positionBytes)
 		if err != nil {
 			newFileResult <- searchResult{false, "", err, false}
 			return
@@ -742,7 +783,7 @@ func (kvs *KVServer) anotherGCGet(key string, reply *kvrpc.GetInRaftResponse) *k
 
 	// 并行搜索排序文件
 	go func() {
-		value, hit, err := kvs.getFromPartitions(key, kvs.anotherPartitions)
+		value, hit, err := kvs.getFromPartitions(key, st.anotherParts)
 		if err != nil {
 			anotherSortedFileResult <- searchResult{false, "", err, false}
 			return

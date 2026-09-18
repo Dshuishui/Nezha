@@ -88,10 +88,15 @@ const readIndexApplyWait = 2 * time.Second
 
 func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeRequest) (*kvrpc.ScanRangeResponse, error) {
 	// 一次读要同时用到 persister、当前日志和分区组三样，而装快照会把三样一起换掉。
-	// 读锁保证这一次读全程看到的是**同一份**状态机；装快照持写锁，所以它要么在这次读
-	// 之前完成，要么等它结束。见 KVServer.stateMu。
-	kvs.stateMu.RLock()
-	defer kvs.stateMu.RUnlock()
+	// **这里不再整段持 stateMu 的读锁**：那样会让装快照排在一次长扫描后面，而
+	// applyCommand 也按读锁持有 stateMu，于是 apply 跟着停一次扫描的时长
+	// （4GB 规模下 33 秒）。改成两件事分开——
+	//   一致性：captureState 在 stateMu 的读锁下**一次性**取下这一份视图就释放；
+	//   生命周期：整段读持 storeRetireMu 的读锁，回收路径取它的写锁，而 apply 不碰它。
+	// 详见 read.go 的 stateSnapshot。
+	kvs.storeRetireMu.RLock()
+	defer kvs.storeRetireMu.RUnlock()
+	st := kvs.captureState()
 	reply := &kvrpc.ScanRangeResponse{Err: raft.OK}
 
 	if code, leader, ok := kvs.requireLeader(); !ok {
@@ -100,8 +105,8 @@ func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeReq
 		return reply, nil
 	}
 
-	if kvs.FirstGC {
-		result, err := kvs.firstGCScan(in.StartKey, in.EndKey)
+	if st.firstGC {
+		result, err := kvs.firstGCScan(st, in.StartKey, in.EndKey)
 		if err != nil {
 			reply.Err = "error in scan"
 			return reply, nil
@@ -109,7 +114,7 @@ func (kvs *KVServer) ScanRangeInRaft(ctx context.Context, in *kvrpc.ScanRangeReq
 		reply.KeyValuePairs = result
 		return reply, nil
 	}
-	result, err := kvs.anotherGCScan(in.StartKey, in.EndKey)
+	result, err := kvs.anotherGCScan(st, in.StartKey, in.EndKey)
 	if err != nil {
 		reply.Err = "error in scan"
 		return reply, nil
@@ -177,13 +182,13 @@ func (kvs *KVServer) StartScan_opt(args *kvrpc.ScanRangeRequest, persister *raft
 	return reply
 }
 
-func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResponse {
+func (kvs *KVServer) StartGet(st stateSnapshot, args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResponse {
 	reply := &kvrpc.GetInRaftResponse{Err: raft.OK}
 	key := args.GetKey()
 	if !kvs.kvSeparation {
 		// 基线：value 就在 RocksDB 里，一次点查即可，既不查偏移也不读日志文件。
 		// GC 那套多路查找在这条路径上没有意义——基线没有 valuelog 需要回收。
-		value, err := kvs.persister.Get(key)
+		value, err := st.persister.Get(key)
 		if err != nil {
 			// "这个 key 不存在"与"读失败"要分开：前者是常态，后者说明存储引擎出了问题，
 			// 报成 NOKEY 会让一次读故障看起来像负载里本来就没有这个 key。
@@ -205,26 +210,28 @@ func (kvs *KVServer) StartGet(args *kvrpc.GetInRaftRequest) *kvrpc.GetInRaftResp
 	if kvs.inlinePlacement {
 		// 小值内联时一次点查就拿到 value，省去"查偏移 + 读日志文件"的第二次 I/O。
 		// 不是内联的 key 会落回下面的多路查找，大 value 的路径完全不变。
-		if v, ok := kvs.persister.GetInline(key); ok {
+		if v, ok := st.persister.GetInline(key); ok {
 			reply.Value = v
 			return reply
 		}
 	}
-	if kvs.FirstGC { // 未开始第二轮GC
-		reply = kvs.firstGCGet(key, reply)
+	if st.firstGC { // 未开始第二轮GC
+		reply = kvs.firstGCGet(st, key, reply)
 		return reply
 	}
-	reply = kvs.anotherGCGet(key, reply)
+	reply = kvs.anotherGCGet(st, key, reply)
 	return reply
 }
 
 func (kvs *KVServer) GetInRaft(ctx context.Context, in *kvrpc.GetInRaftRequest) (*kvrpc.GetInRaftResponse, error) {
-	kvs.stateMu.RLock() // 同 ScanRangeInRaft：整次读看同一份状态机
-	defer kvs.stateMu.RUnlock()
+	// 同 ScanRangeInRaft：一致性靠 captureState 那一小段，生命周期靠 storeRetireMu。
+	// 点查很短，但"短"不等于"原子"——一次点查仍然可能在回收旧库时正在进行。
+	kvs.storeRetireMu.RLock()
+	defer kvs.storeRetireMu.RUnlock()
 	if code, leader, ok := kvs.requireLeader(); !ok {
 		return &kvrpc.GetInRaftResponse{Err: code, LeaderId: leader}, nil
 	}
-	reply := kvs.StartGet(in)
+	reply := kvs.StartGet(kvs.captureState(), in)
 	if reply.Err == raft.ErrWrongLeader {
 		reply.LeaderId = kvs.raft.GetLeaderId()
 	} else if reply.Err == raft.ErrNoKey {

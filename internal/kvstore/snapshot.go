@@ -321,28 +321,26 @@ func (kvs *KVServer) installSnapshot(span raft.SSTableSpan) (int, raftrpc.Instal
 		return kvs.appliedIndexNow(), raftrpc.InstallSSTableStatus_FAILED
 	}
 
-	// 整体替换期间不能有人在读旧状态，也不能有 GC 在换文件。
+	// 整体替换期间 apply 不能在跑，也不能有 GC 在换文件。
 	//
-	// **这个写锁可能要等很久，而等待期间 apply 会一起停。** 读路径按读锁持有 stateMu，
-	// 而 ScanRangeInRaft 是**整段扫描**都持着它——持有时长与结果大小成正比，4GB 数据、
-	// 扫 1/4 键空间时实测 33 秒。Go 的 RWMutex 在有写者等待时不再放新读者进来，
-	// 于是这里一开始等，applyCommand 的读锁就全部排在后面：apply 停一次扫描的时长。
+	// **这把写锁现在只等 apply 与几次字段捕获，都是纳秒到微秒级。** 读路径原先是整段读
+	// 都持着 stateMu 的读锁，而 Go 的 RWMutex 在有写者等待时不再放新读者进来，
+	// applyCommand 又同样按读锁持有它——于是这里一等，apply 就停一次扫描的时长
+	// （4GB 规模下 33 秒）。现在读路径只在 captureState 那一小段持读锁，
+	// 生命周期交给 storeRetireMu（见 read.go 的 stateSnapshot）。
 	//
-	// 触发条件窄——本节点要先作为 leader 接了一次长扫描，又在扫描没结束时掉了 leader
-	// 身份、还收到了快照（扫描只有 leader 会服务，装快照只有 follower 会做）。所以
-	// **没有实测到过**，也没有据此盲改：
-	//   - 直接 TryLock 退回不行：扫描连续时安装会被永久饿死，那是更糟的失效
-	//     （那个副本从此追不上，即 [LOG-STUCK] 的"再也追不上了"）。
-	//   - 正确的改法是读路径不再整段持 stateMu：进来时在一小段临界区里把
-	//     persister/currentLog/分区组一次取下并各自加引用计数，与 pinPartitions 和
-	//     storeRetireMu 已经在做的事同一套。那是一处独立改动。
-	// 先把它变成**可观测**的：等超过一秒就说出来，下次有没有发生就有据可查，
-	// 而不是表现成"这个副本莫名其妙追不上"。
+	// 为什么 apply 这一侧的互斥必须留着：上面那条 lastAppliedIndex 的检查在很早就做完了，
+	// 而下面的落位/ingest/装分区组要花几秒。这段窗口里若 apply 还能推进，
+	// 第 5 步把 lastAppliedIndex 重设成 sm.AppliedIndex 就是**往回退**，
+	// 而那几条已应用的数据在旧库里、第 7 步会被删掉。
 	waitStart := time.Now()
 	kvs.stateMu.Lock()
 	if waited := time.Since(waitStart); waited > time.Second {
-		fmt.Printf("[SNAPSHOT] 等状态机写锁等了 %v 才拿到——期间 apply 一并被挡住"+
-			"（很可能有一次长范围扫描正持着读锁，见本函数上方注释）\n", waited.Round(time.Millisecond))
+		// 现在它不该再等很久了。真等久了说明有别的东西在长时间持 stateMu 的读锁，
+		// 那是新问题，要报出来而不是静默忍受。
+		fmt.Printf("[SNAPSHOT] 等状态机写锁等了 %v 才拿到——期间 apply 一并被挡住。"+
+			"读路径已经不整段持这把锁了，所以这说明有别的长时间读者，值得查\n",
+			waited.Round(time.Millisecond))
 	}
 	defer kvs.stateMu.Unlock()
 
@@ -493,9 +491,25 @@ func (kvs *KVServer) installSnapshot(span raft.SSTableSpan) (int, raftrpc.Instal
 	kvs.saveKVState()
 	kvs.mu.Unlock()
 
-	// 7) 旧的东西：分区组已经进退役队列（引用归零才删文件），库与日志现在可以删了——
-	//    读者都被 stateMu 挡在外面，没人再持有它们。
+	// 7) 旧的东西：分区组已经进退役队列（引用归零才删文件），库与日志要等在途的读者。
+	//
+	// **读者不再被 stateMu 挡在外面了**（那个"没人再持有它们"的旧说法随之失效）：
+	// 一次读在 captureState 里取下 persister 与 currentLog 之后就放掉了 stateMu，
+	// 之后整段读只持 storeRetireMu 的读锁。所以这里要取它的写锁——
+	// 而 apply **一概不碰 storeRetireMu**，于是等读者的是这条回收路径，不是写入路径。
+	//
+	// 不设上限地等：一次范围扫描的时长与结果大小成正比（4GB 下 33 秒），
+	// 而这几行只是删文件，晚几十秒毫无影响——状态文件已经写完，本节点在功能上
+	// 已经装好了这份快照。**不能用 TryLock 退回**：连续扫描下会把回收永久饿死，
+	// 盘上于此积压一份被取代的库，而那比晚删几十秒糟得多。
+	// 等超过一次扫描的量级就说一声，好让"盘上为什么多一份库"有线索。
 	kvs.reapPartitions()
+	retireStart := time.Now()
+	kvs.storeRetireMu.Lock()
+	if waited := time.Since(retireStart); waited > 5*time.Second {
+		fmt.Printf("[SNAPSHOT] 等在途的读者放开旧库等了 %v（很可能有一次长范围扫描）\n",
+			waited.Round(time.Millisecond))
+	}
 	if prevStore != "" && prevStore != names.storePath {
 		if err := os.RemoveAll(prevStore); err != nil {
 			util.EPrintf("[SNAPSHOT] 删除被替换的库 %s 失败: %v", prevStore, err)
@@ -506,6 +520,7 @@ func (kvs *KVServer) installSnapshot(span raft.SSTableSpan) (int, raftrpc.Instal
 			util.EPrintf("[SNAPSHOT] 删除被替换的日志 %s 失败: %v", prevLog, err)
 		}
 	}
+	kvs.storeRetireMu.Unlock()
 	fmt.Printf("[SNAPSHOT] 装好一份：位点=(%d,%d) applied=%d 日志到=%d 分区=%d(%dB) "+
 		"库行数=%d 耗时=%v（原状态：分区=%d 日志=%s）\n",
 		sm.LastIncludedIndex, sm.LastIncludedTerm, sm.AppliedIndex, last,
