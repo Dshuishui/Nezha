@@ -58,6 +58,19 @@ KEY_LEN = _key_len()
 def keys_in(path, stride):
     """返回 (解析出的 key 集合, 解析不了的记录数)。
 
+    **按每条记录的头往前走，不按固定跨步。** 记录的编码是（internal/raft/logwriter.go）：
+        [0:4] index  [4:8] term  [8:12] votedFor  [12:16] keySize  [16:20] valueSize
+        然后是 keySize 字节的 key、valueSize 字节的 value
+    长度写在头里，所以变长记录与定长记录都能走。
+
+    早先是按 `stride = 20 + KEY_LEN + vsize` 盲目跨步的，只有在**每条记录都等长**时才对。
+    2026-09-18 在 nezha-nogc 上炸了：未经 GC 的原始日志开头有一条 leader 任期开始时写的
+    NoOp（keySize=0、valueSize=0，只占 20 字节的头），它把后面每一条都错位 20 字节，
+    于是 446 万条**全部**解析不了，工具报"盘上丢了 4462025 条"——
+    一个健康的系统被报成丢了全部数据。
+    以前照不到是因为历史跑法都是 nezha（开 GC），而 GC 产物里没有 NoOp，
+    定长跨步恰好对得上。
+
     单条解析失败不能让整个工具崩掉：一个被篡改或截断的文件恰恰是最需要这个计数的时候。
     此前这里直接 `int(...)`，遇到清零的 key 字节抛 ValueError，整个脚本带着 traceback
     退出，crash-recovery.sh 拿到空串把它报成"盘上丢了 ? 条"——**唯一一个全量覆盖的闸门
@@ -65,16 +78,28 @@ def keys_in(path, stride):
     """
     with open(path, "rb") as f:
         data = f.read()
-    if len(data) % stride:
-        print(f"  警告: {os.path.basename(path)} 长度 {len(data)} 不是 {stride} 的整数倍，"
-              f"余 {len(data) % stride} 字节——可能不是定长负载，结果不可信")
-    out, broken = set(), 0
-    for i in range(len(data) // stride):
-        raw = data[i * stride + HEADER:i * stride + HEADER + KEY_LEN]
-        try:
-            out.add(int(raw))
-        except ValueError:
+    out, broken, noop, pos, n = set(), 0, 0, 0, len(data)
+    while pos + HEADER <= n:
+        key_size = int.from_bytes(data[pos + 12:pos + 16], "little")
+        val_size = int.from_bytes(data[pos + 16:pos + 20], "little")
+        end = pos + HEADER + key_size + val_size
+        if end > n:
+            # 最后一条被截断：文件写到一半崩过。这正是要报出来的情况。
+            print(f"  警告: {os.path.basename(path)} 末尾有半条记录"
+                  f"（还差 {end - n} 字节）——写到一半崩过")
             broken += 1
+            break
+        if key_size == 0:
+            noop += 1          # leader 任期开始的空指令，不是用户数据
+        else:
+            raw = data[pos + HEADER:pos + HEADER + key_size]
+            try:
+                out.add(int(raw))
+            except ValueError:
+                broken += 1
+        pos = end
+    if noop:
+        print(f"  {os.path.basename(path)}: 跳过 {noop} 条 NoOp（任期开始的空指令，不是用户数据）")
     return out, broken
 
 
