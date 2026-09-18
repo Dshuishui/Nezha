@@ -373,8 +373,17 @@ run_cell() { # $1=phase $2=total_mb $3=vsize $4=system
     # ---- 等 GC 轮数稳定 ----
     # 不能只等"至少一轮"：GC 每 5 秒查一次阈值，写完之后新 valuelog 还会继续被回收，
     # 而读性能取决于**布局**。两格在不同轮数的布局上测，差异就无法归因。
+    #
+    # **不跑 GC 的系统要整段跳过。** 稳定判据是"轮数不变**且** ≥ 1"，而 baseline 与
+    # nezha-nogc 的轮数恒为 0（前者没有 valuelog，后者按定义不回收），于是永远不满足，
+    # 把 120 次 × 10 秒空转满——**每格白等 20 分钟**。2026-09-18 的四系统冒烟上实测：
+    # baseline 的 PUT 两分钟跑完，然后一动不动 20 分钟。
+    # 两个系统 × 两档 value = 每轮白等 80 分钟，10GB 那轮同理。
     local prev=-1 stable=0 k g cur
     gcmax=0
+    if ! has_gc; then
+        say "[${cell}] ${SYSTEM} 不跑 GC（gc_done 恒为 0，是设计），跳过等待稳定"
+    else
     for k in $(seq 1 120); do
         cur=0
         for i in 0 1 2; do
@@ -390,25 +399,29 @@ run_cell() { # $1=phase $2=total_mb $3=vsize $4=system
         sleep 10
     done
     say "[${cell}] GC 轮数 = ${gcmax}（连续 ${stable} 次不变）"
+    fi
     # **轮数不变 ≠ 没有一轮在途中。** 计数数的是"轮垃圾回收完成"这行，而 numGC 在一轮
     # **开始**时就自增、产物文件也随之改名。于是完成数可以连续 40 秒不变，而下一轮正在
     # 往盘上写：2026-09-18 实测，第 8 轮完成后判了稳定，而第 9 轮在途，紧接着的
     # lost-keys.py 读到一个写了一半的布局、报错退出，回执为空 -> NA。
     # 所以再等 gc_in_progress 落回 false，这个字段就是节点自己写的、口径不会错。
-    local k2 inflight
-    for k2 in $(seq 1 60); do
-        inflight=0
-        for i in 0 1 2; do
-            rq "$(host_of "$i")" "grep -c '\"gc_in_progress\": true' ~/work/three-$i/data/kv_state.json 2>/dev/null" \
-                | grep -q '^1' && inflight=1
+    # 不跑 GC 的系统没有"在途的一轮"可等，整段跳过（理由同上面那段）。
+    if has_gc; then
+        local k2 inflight=1
+        for k2 in $(seq 1 60); do
+            inflight=0
+            for i in 0 1 2; do
+                rq "$(host_of "$i")" "grep -c '\"gc_in_progress\": true' ~/work/three-$i/data/kv_state.json 2>/dev/null" \
+                    | grep -q '^1' && inflight=1
+            done
+            [ "$inflight" = 0 ] && break
+            sleep 10
         done
-        [ "$inflight" = 0 ] && break
-        sleep 10
-    done
-    if [ "$inflight" != 0 ]; then
-        warn "[${cell}] 600s 内仍有节点的 gc_in_progress 为 true，后面读盘的检查可能读到半成品"
-    else
-        say "[${cell}] 三个节点的 gc_in_progress 都已落回 false（等了 $((k2*10))s）"
+        if [ "$inflight" != 0 ]; then
+            warn "[${cell}] 600s 内仍有节点的 gc_in_progress 为 true，后面读盘的检查可能读到半成品"
+        else
+            say "[${cell}] 三个节点的 gc_in_progress 都已落回 false（等了 $((k2*10))s）"
+        fi
     fi
     if [ "$gcmax" -lt 1 ] && has_gc; then
         say "[$cell] GC 一轮都没跑（阈值 ${GCGB}GB）——读路径不走有序文件，这一格测的不是要测的东西"
