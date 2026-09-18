@@ -131,8 +131,20 @@ for h in $HOSTS; do
     ssh "$h" "cd ~/work/Nezha && git fetch ~/deploy.bundle $BRANCH && git checkout -B $BRANCH FETCH_HEAD" || {
       echo "DEPLOY_FAIL $h: fetch/checkout"; exit 1; }
   fi
-  got=$(ssh "$h" "cd ~/work/Nezha && git rev-parse HEAD" 2>/dev/null | tr -d '\r')
-  [ "$got" = "$WANT" ] || { echo "DEPLOY_FAIL $h: HEAD is $got, wanted $WANT"; exit 1; }
+  # 回读也要重试：一次 ssh 打嗝会让 $got 变成空串，而消息 "HEAD is , wanted ..."
+  # 读起来像**仓库落错了 commit**——2026-09-18 实测，node55 明明已经在目标提交上。
+  # 这是本文件里第四处"把连接层抖动报成数据/代码问题"，判据一律要能重试并说清区别。
+  got=""
+  for attempt in 1 2 3; do
+    got=$(ssh -o ConnectTimeout=20 "$h" "cd ~/work/Nezha && git rev-parse HEAD" 2>/dev/null | tr -d '\r')
+    [ -n "$got" ] && break
+    sleep 3
+  done
+  if [ -z "$got" ]; then
+    echo "DEPLOY_FAIL ${h}: 回读 HEAD 三次都是空串——**ssh 抖动，不是仓库问题**"
+    exit 1
+  fi
+  [ "$got" = "$WANT" ] || { echo "DEPLOY_FAIL ${h}: HEAD 是 ${got}，要的是 ${WANT}"; exit 1; }
   # **ssh 自己失败与"远端命令失败"必须分开报。**
   #
   # ssh 连接层出问题时退出码是 255，而远端命令的失败退出码是它自己的。原先两者都落进
