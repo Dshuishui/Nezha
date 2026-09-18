@@ -104,16 +104,32 @@ for h in $HOSTS; do
   fi
   got=$(ssh "$h" "cd ~/work/Nezha && git rev-parse HEAD" 2>/dev/null | tr -d '\r')
   [ "$got" = "$WANT" ] || { echo "DEPLOY_FAIL $h: HEAD is $got, wanted $WANT"; exit 1; }
+  # **ssh 自己失败与"远端命令失败"必须分开报。**
+  #
+  # ssh 连接层出问题时退出码是 255，而远端命令的失败退出码是它自己的。原先两者都落进
+  # 同一句 "DEPLOY_FAIL $h: build"，于是一次握手超时被报成**编译不过**——
+  # 2026-09-18 实测连撞三次，每次失败在不同的随机步骤（节点二进制 / countkeys /
+  # scp rep-node.sh），而每一步单独手工跑都是 rc=0。照那条消息去查代码是白查。
+  # 255 这个码是 ssh 的约定：远端命令即便返回 255 也极少见，误判的代价远小于混报。
+  rrun() { # rrun <主机> <说明> <远端命令>
+    local host=$1 what=$2; shift 2
+    ssh "$host" "$@"; local rc=$?
+    [ "$rc" = 0 ] && return 0
+    if [ "$rc" = 255 ]; then
+      echo "DEPLOY_FAIL ${host}: ssh 连接层失败（rc=255）于「${what}」——**不是代码问题**"
+    else
+      echo "DEPLOY_FAIL ${host}: ${what} 失败（rc=${rc}）"
+    fi
+    return 1
+  }
   if [ "$BUILD" = 1 ]; then
-    ssh "$h" "source ~/env.sh; cd ~/work/Nezha && go build -o /tmp/nezha-three-normal ./cmd/nezha/" || {
-      echo "DEPLOY_FAIL $h: build"; exit 1; }
+    rrun "$h" "编译节点二进制" "source ~/env.sh; cd ~/work/Nezha && go build -o /tmp/nezha-three-normal ./cmd/nezha/" || exit 1
     # **bench 工具也要跟着建。** 以前这里只建节点二进制，于是 tikv240 上的 scanverify /
     # readonly 一直停留在 2026-09-06——早于 eb8b5d0（key 宽到 24B）和 afbcf71（定长编码
     # 移到客户端）。旧工具按旧编码补齐 key，而节点现在原样存 key，**拿它校验会把每一条
     # 都报成丢失**，读起来正像快照弄坏了数据。2026-09-16 差点因此白跑一整轮。
     for t in scanverify readonly randwrite_goroutine countkeys; do
-      ssh "$h" "source ~/env.sh; cd ~/work/Nezha && go build -o /tmp/$t ./cmd/bench/$t/" || {
-        echo "DEPLOY_FAIL $h: build $t"; exit 1; }
+      rrun "$h" "编译 $t" "source ~/env.sh; cd ~/work/Nezha && go build -o /tmp/$t ./cmd/bench/$t/" || exit 1
     done
   fi
   # 两份节点脚本都要送。rep-node.sh 此前不在这里，于是对它的改动（比如把 gc_done 的
