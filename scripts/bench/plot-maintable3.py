@@ -19,7 +19,8 @@
             变短，健康的运行里也会大幅分叉（见 maintable3.sh 的 lag_check）。
 
 用法:
-    plot-maintable3.py latency <maintable3-X.csv> [输出目录]
+    plot-maintable3.py main4   <maintable3-X.csv> [输出目录]   四系统 × 三操作对比
+    plot-maintable3.py latency <maintable3-X.csv> [输出目录]   单系统的分位数
     plot-maintable3.py series  <mt3-X 归档目录>   [输出目录]
     plot-maintable3.py lag     <mt3-X 归档目录>   [输出目录]
     plot-maintable3.py ab <修复前的 mt3-X 目录> <修复后的> [输出目录]   混合阶段的 A/B
@@ -76,6 +77,21 @@ def fnum(row, key):
 # ---------------------------------------------------------------------------
 def plot_latency(csvpath, outdir):
     rows = read_main(csvpath)
+    # **这个模式只能画单系统。** 它按 (op, vsize) 收，system 列压根没进 key——
+    # 四个系统一起喂进来的话，后一个系统会把前一个覆盖掉，图上只剩最后跑的那个
+    # （`nezha-avp`），却标成整轮的结果。汇总少打一列还看得出可疑，**图会直接骗人**。
+    # 2026-09-19 差点这样出图：那一轮的交付物正是四系统对比。
+    # 所以这里先数一遍系统个数，多于一个就拒绝，并指向 main4。
+    systems = []
+    for r in rows:
+        s = r.get("system", "")
+        if r["op"] in OPS and s and s not in systems:
+            systems.append(s)
+    if len(systems) > 1:
+        sys.exit(
+            f"{csvpath} 里有 {len(systems)} 个系统（{', '.join(systems)}），"
+            "而 latency 模式忽略 system 列、会让它们互相覆盖，只画出最后一个。\n"
+            "四系统对比请用：plot-maintable3.py main4 <csv> [输出目录]")
     # 按 (op, vsize) 收。同一格可能被跑过多次（重跑、A/B），取最后一行——
     # 不取平均：两次跑之间可能换了 commit，平均掉就把差异抹平了。
     cell = {}
@@ -116,6 +132,124 @@ def plot_latency(csvpath, outdir):
     axes[0].legend(title="value size", fontsize=8)
     fig.suptitle("Three-node latency percentiles (log scale)", y=1.02)
     save(fig, outdir, "latency")
+
+
+# ---------------------------------------------------------------------------
+# main4：四系统 × 三操作的对比（本轮的交付物）
+# ---------------------------------------------------------------------------
+# 系统顺序按"改动逐步累加"排，与 maintable.sh 和驱动的 SYSTEMS 默认值一致——
+# 读者从左到右就能看出每一步的贡献，而不是按字母序乱排。
+SYS_ORDER = ["baseline", "nezha-nogc", "nezha", "nezha-avp"]
+# 灰度可读：颜色 + 填充纹理双重编码。论文常被黑白打印，只靠颜色等于没区分。
+SYS_STYLE = {
+    "baseline":   ("#9e9e9e", ""),
+    "nezha-nogc": ("#1f4e79", "//"),
+    "nezha":      ("#b45f06", "xx"),
+    "nezha-avp":  ("#38761d", ".."),
+}
+MAIN_OPS = ["PUT", "GET", "SCAN"]
+
+
+def _collect4(rows):
+    """按 (system, op, vsize) 收，返回 (表, 出现过的系统, 出现过的 value 档)。
+
+    同一格跑过多次就取最后一行，理由同 plot_latency：两次跑之间可能换了 commit，
+    取平均会把差异抹平。
+    """
+    cell, systems, vsizes = {}, [], []
+    for r in rows:
+        sy, op, vs = r.get("system", ""), r.get("op", ""), r.get("vsize", "")
+        if not sy or op not in MAIN_OPS:
+            continue
+        cell[(sy, op, vs)] = r
+        if sy not in systems:
+            systems.append(sy)
+        if vs not in vsizes:
+            vsizes.append(vs)
+    systems.sort(key=lambda s: SYS_ORDER.index(s) if s in SYS_ORDER else 99)
+    vsizes.sort(key=int)
+    return cell, systems, vsizes
+
+
+def _bars4(cell, systems, vsizes, field, ylabel, title, outdir, name, logy=True):
+    """一张图：每个操作一个面板，x 轴是 value 档，每组里四根柱子是四个系统。"""
+    fig, axes = plt.subplots(1, len(MAIN_OPS), figsize=(3.6 * len(MAIN_OPS), 3.3))
+    if len(MAIN_OPS) == 1:
+        axes = [axes]
+    width = 0.8 / max(len(systems), 1)
+    drew = False
+    for ax, op in zip(axes, MAIN_OPS):
+        for i, sy in enumerate(systems):
+            xs, ys = [], []
+            for j, vs in enumerate(vsizes):
+                r = cell.get((sy, op, vs))
+                v = fnum(r, field) if r else None
+                # **缺的格子要空着，不要画成 0。** 画 0 会让"这一格没跑"
+                # 看起来像"这个系统在这一项上是 0"，而 0 在延迟图里意味着最好。
+                if v is None:
+                    continue
+                xs.append(j + (i - (len(systems) - 1) / 2) * width)
+                ys.append(v)
+            if not xs:
+                continue
+            drew = True
+            color, hatch = SYS_STYLE.get(sy, ("#555555", ""))
+            ax.bar(xs, ys, width=width, label=sy, color=color, hatch=hatch,
+                   edgecolor="white", linewidth=0.5)
+        ax.set_xticks(range(len(vsizes)))
+        ax.set_xticklabels([f"{vs}B" for vs in vsizes])
+        if logy:
+            ax.set_yscale("log")
+        ax.set_title(op)
+        ax.grid(axis="y", alpha=0.3, which="both")
+        if ax is axes[0]:
+            ax.set_ylabel(ylabel)
+    if not drew:
+        plt.close(fig)
+        return False
+    axes[0].legend(fontsize=7)
+    fig.suptitle(title, y=1.03)
+    save(fig, outdir, name)
+    return True
+
+
+def plot_main4(csvpath, outdir):
+    rows = read_main(csvpath)
+    cell, systems, vsizes = _collect4(rows)
+    if not systems:
+        sys.exit(f"{csvpath} 里没有带 system 列的 PUT/GET/SCAN 行")
+    # **缺哪个系统要说出来。** 跑到一半的 CSV 也能出图（等全轮跑完前就想看趋势），
+    # 但图注不能假装四个系统都在——少了谁必须写在标题里。
+    missing = [s for s in SYS_ORDER if s not in systems]
+    note = ""
+    if missing:
+        note = f"  [incomplete: missing {', '.join(missing)}]"
+        print(f"注意: CSV 里缺这些系统: {', '.join(missing)}——图注会标明不完整", file=sys.stderr)
+
+    any_drew = False
+    any_drew |= _bars4(cell, systems, vsizes, "p50_ms", "Latency (ms)",
+                       "Median latency by system (log scale)" + note, outdir, "main4-p50")
+    any_drew |= _bars4(cell, systems, vsizes, "p99_ms", "Latency (ms)",
+                       "p99 latency by system (log scale)" + note, outdir, "main4-p99")
+    any_drew |= _bars4(cell, systems, vsizes, "ops_per_s", "Throughput (ops/s)",
+                       "Throughput by system (log scale)" + note, outdir, "main4-throughput")
+    if not any_drew:
+        sys.exit("一张图都没画出来——检查 CSV 的 p50_ms / p99_ms / ops_per_s 列")
+
+    # 文字版一并打出来：图不方便核对具体数字，而这一轮的结论要能被逐个查证。
+    print()
+    for op in MAIN_OPS:
+        for vs in vsizes:
+            print(f"--- {op} {vs}B ---")
+            for sy in systems:
+                r = cell.get((sy, op, vs))
+                if not r:
+                    print(f"  {sy:<11} (没有这一格)")
+                    continue
+                print(f"  {sy:<11} p50={r.get('p50_ms','NA'):>10} "
+                      f"p99={r.get('p99_ms','NA'):>10} "
+                      f"ops/s={r.get('ops_per_s','NA'):>10} "
+                      f"gc={r.get('gc_max','NA'):>3} lost={r.get('lost_keys','NA')}")
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +473,9 @@ def main():
     if len(sys.argv) < 3:
         sys.exit(__doc__)
     mode = sys.argv[1]
-    if mode == "latency":
+    if mode == "main4":
+        plot_main4(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else ".")
+    elif mode == "latency":
         plot_latency(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else ".")
     elif mode == "series":
         plot_series(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else ".")
