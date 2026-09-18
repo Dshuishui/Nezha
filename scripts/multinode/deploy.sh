@@ -91,6 +91,29 @@ for h in $HOSTS; do
 done
 
 
+# rread <主机> <说明> <远端命令> —— 取一个**短**回执，空串就重试。
+#
+# 今晚这台 Mac 到实验机的 ssh 会话活不过 3~10 秒（sleep 3 通、sleep 10 起 rc=255），
+# 而且即使 rc=0 也可能什么都不返回。于是本文件里**五处**判据先后把这种抖动报成了
+# 数据或代码问题："编译不过"、"cannot read remote HEAD"、"HEAD is ,"、"scp 失败"……
+# 每一条都会把人引去查根本没问题的东西。统一成一个会重试、并且说得清"是连不上还是
+# 真读不到"的入口。
+#
+# 只用于**短**命令。长命令（go build 要 30~60 秒）在这种链路上必然失败，
+# 所以编译交给节点脚本与驱动在服务器本地做（BUILD=0）。
+rread() {
+    local host=$1 what=$2; shift 2
+    local out="" rc=0 attempt
+    for attempt in 1 2 3 4 5; do
+        rc=0
+        out=$(ssh -o ConnectTimeout=20 -o BatchMode=yes "$host" "$@" 2>/dev/null | tr -d '\r') || rc=$?
+        [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+        sleep 3
+    done
+    echo "DEPLOY_FAIL ${host}: 「${what}」取了 5 次都是空回执（最后一次 rc=${rc}）——**ssh 抖动**，不是远端的问题" >&2
+    return 1
+}
+
 rrun() { # rrun <主机> <说明> <远端命令>
   local host=$1 what=$2; shift 2
   local rc=0
@@ -108,16 +131,7 @@ for h in $HOSTS; do
   #   仓库真有问题（目录不在、不是 git 库）——要去查
   #   ssh 抖了一下（rc=255）——与仓库无关，重试即可
   # 2026-09-18 实测撞上后者，而消息指向前者。
-  rc=0
-  have=$(ssh "$h" "cd ~/work/Nezha && git rev-parse HEAD" 2>/dev/null | tr -d '\r') || rc=$?
-  if [ -z "$have" ]; then
-    if [ "$rc" = 255 ]; then
-      echo "DEPLOY_FAIL ${h}: ssh 连接层失败（rc=255）于「读远端 HEAD」——**不是仓库问题**"
-    else
-      echo "DEPLOY_FAIL ${h}: 读不到远端 HEAD（rc=${rc}）——查 ~/work/Nezha 是不是 git 库"
-    fi
-    exit 1
-  fi
+  have=$(rread "$h" "读远端 HEAD" "cd ~/work/Nezha && git rev-parse HEAD") || exit 1
   if [ "$have" = "$WANT" ]; then
     echo "$h already at ${WANT:0:7}"
   else
@@ -134,16 +148,7 @@ for h in $HOSTS; do
   # 回读也要重试：一次 ssh 打嗝会让 $got 变成空串，而消息 "HEAD is , wanted ..."
   # 读起来像**仓库落错了 commit**——2026-09-18 实测，node55 明明已经在目标提交上。
   # 这是本文件里第四处"把连接层抖动报成数据/代码问题"，判据一律要能重试并说清区别。
-  got=""
-  for attempt in 1 2 3; do
-    got=$(ssh -o ConnectTimeout=20 "$h" "cd ~/work/Nezha && git rev-parse HEAD" 2>/dev/null | tr -d '\r')
-    [ -n "$got" ] && break
-    sleep 3
-  done
-  if [ -z "$got" ]; then
-    echo "DEPLOY_FAIL ${h}: 回读 HEAD 三次都是空串——**ssh 抖动，不是仓库问题**"
-    exit 1
-  fi
+  got=$(rread "$h" "回读 HEAD" "cd ~/work/Nezha && git rev-parse HEAD") || exit 1
   [ "$got" = "$WANT" ] || { echo "DEPLOY_FAIL ${h}: HEAD 是 ${got}，要的是 ${WANT}"; exit 1; }
   # **ssh 自己失败与"远端命令失败"必须分开报。**
   #
@@ -178,7 +183,7 @@ for h in $HOSTS; do
     ok=0
     for attempt in 1 2 3; do
       scp -q "scripts/multinode/$f" "$h:~/$f" >/dev/null 2>&1 || true
-      got=$(ssh -o ConnectTimeout=20 "$h" "sha256sum ~/$f 2>/dev/null | cut -d' ' -f1" 2>/dev/null | tr -d '\r')
+      got=$(rread "$h" "回读 $f 的校验和" "sha256sum ~/$f 2>/dev/null | cut -d' ' -f1" 2>/dev/null) || got=""
       [ "$got" = "$want" ] && { ok=1; break; }
       sleep 3
     done
