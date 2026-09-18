@@ -292,7 +292,12 @@ def plot_series(archive, outdir):
     for cellname in cells_of(archive):
         celldir = os.path.join(archive, cellname)
         data = read_samples(celldir)
+        # **跳过要说出来。** 原先是 `continue` 了事，于是某一格没有采样时**一张图都不出、
+        # 一个字也不打**，只能靠数输出文件的个数才发现少了谁——又是"缺失看起来像没事"。
+        # 2026-09-19 实测撞到：正在跑的那一格采样还没落盘，它就被静默略过了。
         if not data:
+            print(f"跳过 {cellname}：这一格没有可读的采样（节点的 sample.csv 为空或缺失）",
+                  file=sys.stderr)
             continue
         t0 = min(c["ts"][0] for c in data.values())
         panels = [
@@ -347,7 +352,10 @@ def plot_lag(archive, outdir):
     for cellname in cells_of(archive):
         celldir = os.path.join(archive, cellname)
         data = read_samples(celldir)
+        # 落差要至少两个节点才有意义；不足也要说一声，理由同 plot_series。
         if len(data) < 2:
+            print(f"跳过 {cellname}：只有 {len(data)} 个节点有采样，算不了跨节点落差",
+                  file=sys.stderr)
             continue
         # 三个节点的采样时刻不会重合：三个独立的循环，各自的相位不同。
         # 第一版按**秒**取整再要求三台都有，于是基本对不上——A-64B 那一格直接被跳过
