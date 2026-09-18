@@ -49,7 +49,12 @@ FORCE=${FORCE:-0}   # FORCE=1 to deploy anyway while something is running
 CONNERR=$(mktemp -t deploy-ssh).err
 trap 'rm -f "$CONNERR"' EXIT
 for h in $HOSTS; do
-  ssh -o ConnectTimeout=20 -o BatchMode=yes "$h" true 2>"$CONNERR"; rc=$?
+  # **必须写成 `|| rc=$?`。** `cmd; rc=$?` 在 set -e 下是两条简单命令，第一条失败就
+  # 立刻退出，`rc=$?` 与下面的诊断**一行都不会跑**——于是又变成"裸 255、零输出"，
+  # 正是这段代码要消灭的症状。`||` 列表豁免 set -e，所以 rc 才拿得到。
+  # 2026-09-18 实测：第一版这么写，部署仍然静默退出 255。
+  rc=0
+  ssh -o ConnectTimeout=20 -o BatchMode=yes "$h" true 2>"$CONNERR" || rc=$?
   [ "$rc" = 0 ] && continue
   echo "DEPLOY_FAIL $h: ssh 连不上（rc=${rc}）——**不是代码问题**，先查连通性"
   sed 's/^/    /' "$CONNERR" | head -3
@@ -88,7 +93,8 @@ done
 
 rrun() { # rrun <主机> <说明> <远端命令>
   local host=$1 what=$2; shift 2
-  ssh "$host" "$@"; local rc=$?
+  local rc=0
+  ssh "$host" "$@" || rc=$?   # `|| rc=$?` 而不是 `; rc=$?`，理由见连通性预检那段
   [ "$rc" = 0 ] && return 0
   if [ "$rc" = 255 ]; then
     echo "DEPLOY_FAIL ${host}: ssh 连接层失败（rc=255）于「${what}」——**不是代码问题**"
@@ -102,7 +108,8 @@ for h in $HOSTS; do
   #   仓库真有问题（目录不在、不是 git 库）——要去查
   #   ssh 抖了一下（rc=255）——与仓库无关，重试即可
   # 2026-09-18 实测撞上后者，而消息指向前者。
-  have=$(ssh "$h" "cd ~/work/Nezha && git rev-parse HEAD" 2>/dev/null | tr -d '\r'); rc=$?
+  rc=0
+  have=$(ssh "$h" "cd ~/work/Nezha && git rev-parse HEAD" 2>/dev/null | tr -d '\r') || rc=$?
   if [ -z "$have" ]; then
     if [ "$rc" = 255 ]; then
       echo "DEPLOY_FAIL ${h}: ssh 连接层失败（rc=255）于「读远端 HEAD」——**不是仓库问题**"
