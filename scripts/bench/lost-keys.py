@@ -111,6 +111,13 @@ def main():
     if inline_threshold and vsize < inline_threshold:
         print(f"不适用：value {vsize}B 小于内联阈值 {inline_threshold}B，小值不在 valuelog 里，"
               f"本工具数不准。这种配置请用 cmd/bench/readonly 或 scanverify 逐条校验。")
+        # **调用方要能把"不适用"与"没跑成"分开，所以再给一行机器可读的判定。**
+        # 原先只有上面那句中文散文，而驱动是按 `丢失 <数字>` 取值的，取不到就记 NA；
+        # NA 在 LOST_KEYS=fail 下判失败——于是 nezha-avp 的每一格都被判死，
+        # 而它其实是**工具看过配置之后明确回答"这里没法查"**，跟超时、崩溃完全不是一回事。
+        # 2026-09-18 的四系统冒烟就停在这里（前三个系统全部跑完，第四个一格没出）。
+        # 散文会改、会翻译、会被 tail 截断，判定行不会，所以判定走这一行。
+        print("LOST_KEYS_VERDICT=not_applicable")
         return
     stride = HEADER + KEY_LEN + vsize
     vlog = os.path.join(d, "data", "valuelog")

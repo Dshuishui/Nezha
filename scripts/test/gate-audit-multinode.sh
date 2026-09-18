@@ -845,6 +845,46 @@ else
 fi
 
 echo
+info "=== 二十九、给了内联阈值就必须认得 \"不适用\" 这个回答 ==="
+# 2026-09-18 实测：四系统冒烟跑完了 baseline / nezha-nogc / nezha 六格，
+# 在 nezha-avp 第一格上停住，理由是
+#     丢 key 检查没有回执——拿不到判据不等于通过
+# 但工具其实**回答了**：它看过配置，说"value 64B 小于内联阈值 512B，小值不在 valuelog 里"。
+# 驱动只按 `丢失 <数字>` 取值，取不到就记 NA，于是这个结论掉进了"没回执"那一档。
+#
+# 这是一类：工具有三种回答（数字 / 不适用 / 没回执），前两种是结论，第三种不是，
+# 而只认第一种的调用方会把第二种误判成第三种。第二十六节防的是反过来那一半
+# （把"没回执"当成通过），两条合起来才完整。
+#
+# 判据：给 lost-keys.py 传了**可能非零**的内联阈值的脚本，必须 grep LOST_KEYS_VERDICT。
+# 传字面 0 的调用不受约束——那种调用永远触发不了"不适用"。
+# 本文件要排除：上面这段解释里就写着那个标记。
+VERBAD=0
+while IFS= read -r p; do
+    case "$(basename "$p")" in gate-audit-multinode.sh) continue;; esac
+    grep -q 'lost-keys.py' "$p" || continue
+    # 第四个位置参数是内联阈值。写成变量（`$INLINE_TH`）才可能非零；
+    # 写字面 0 的调用永远触发不了"不适用"，不用管。
+    # **前面那个 `python3` 是必须的**：不带它的话，`good "lost-keys.py 报出 $BROKEN ... $LK ..."`
+    # 这种**只是提到工具名字的消息串**也会被算成一次调用（第一版就误报了 gate-audit.sh）。
+    nonzero=$(grep -cE 'python3[^|]*lost-keys\.py +[^ ]+ +[^ ]+ +[^ ]+ +\$' "$p" || true)
+    [ "$nonzero" -eq 0 ] && continue
+    grep -q 'LOST_KEYS_VERDICT' "$p" && continue
+    echo "       ${p#"$PROJECT_DIR"/}  传了变量内联阈值却没有认 LOST_KEYS_VERDICT"
+    VERBAD=$((VERBAD+1))
+done < <(find "$PROJECT_DIR/scripts" -name '*.sh' | sort)
+# 工具那一侧也要还在：标记没了，上面每一处的判定都会静默退回成 NA。
+if ! grep -q 'LOST_KEYS_VERDICT=not_applicable' "$PROJECT_DIR/scripts/bench/lost-keys.py"; then
+    echo "       scripts/bench/lost-keys.py 不再打印 LOST_KEYS_VERDICT——调用方的判定会静默退回成 NA"
+    VERBAD=$((VERBAD+1))
+fi
+if [ "$VERBAD" -eq 0 ]; then
+    good '给了内联阈值的调用都认得「不适用」这个回答'
+else
+    bad "上列 $VERBAD 处会把「不适用」误判成「没回执」——健康的系统会被判死"
+fi
+
+echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"
 else

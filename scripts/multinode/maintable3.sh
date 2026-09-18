@@ -460,25 +460,37 @@ run_cell() { # $1=phase $2=total_mb $3=vsize $4=system
         SSH_TIMEOUT=${LOST_TIMEOUT:-7200} r "$(host_of 0)" \
             "cd ~/work/Nezha && python3 scripts/bench/lost-keys.py ~/work/three-0 $n $vs $INLINE_TH 2>&1" \
             > "$lostlog" 2>&1
-        lost=$(grep -o '丢失 [0-9]*' "$lostlog" | grep -o '[0-9]*' | tail -1)
-        lost="${lost:-NA}"
-        # **NA 在 LOST_KEYS=fail 下必须判失败。**
-        #
-        # 第一版的 else 分支把 NA 和 0 一起打成"盘上丢失 NA 条"就往下走了。于是 4GB
-        # 那一格在超时之后**照常跑完 GET 与 SCAN**，而唯一能发现"GC 搬丢了记录"的检查
-        # 一条都没做——GC 搬丢记录不报任何错，只会在某次 GET 上变成一个 NOKEY，
-        # 而命中率看不出来（CLAUDE.md 记着这一条）。
-        # "拿不到判据不等于判据通过"是 gate.sh 里反复写的规则，这里却违反了它。
-        if [ "$lost" = NA ]; then
-            say "[$cell] 丢 key 检查没有回执——拿不到判据不等于通过。它自己的输出末尾："
-            tail -6 "$lostlog" 2>/dev/null | sed 's/^/        /' | tee -a "$LOG"
-            [ "$LOST_KEYS" = fail ] && { fail=1; return 1; }
-            warn "[$cell] LOST_KEYS=warn，继续，但这一格**没有**做过丢 key 检查"
-        elif [ "$lost" -gt 0 ]; then
-            say "[$cell] node0 盘上丢了 ${lost} 条记录"
-            [ "$LOST_KEYS" = fail ] && { fail=1; return 1; }
+        # 工具有**三种**回答，必须分开处理：
+        #   一个数字        → 查过了，这就是丢的条数
+        #   不适用          → 工具看过配置，明确说"这种配置没法查"（nezha-avp 全内联）
+        #   什么都没有      → 超时 / 崩了 / 路径不对，**什么都不知道**
+        # 前两种是结论，第三种不是。原先只认前一种，于是"不适用"掉进了第三种，
+        # 被当成"拿不到判据"判失败——nezha-avp 的两格因此一格都出不来。
+        if grep -q '^LOST_KEYS_VERDICT=not_applicable$' "$lostlog"; then
+            lost=skip
+            say "[${cell}] 丢 key 检查对 ${SYSTEM} 的 ${vs}B 档不适用（小值被内联，不在 valuelog 里），本格记 skip"
+            say "[${cell}] 这一档的正确性由 C 阶段的 scanverify / readonly 逐条校验保障"
         else
-            say "[$cell] node0 盘上丢失 0 条"
+            lost=$(grep -o '丢失 [0-9]*' "$lostlog" | grep -o '[0-9]*' | tail -1)
+            lost="${lost:-NA}"
+            # **NA 在 LOST_KEYS=fail 下必须判失败。**
+            #
+            # 第一版的 else 分支把 NA 和 0 一起打成"盘上丢失 NA 条"就往下走了。于是 4GB
+            # 那一格在超时之后**照常跑完 GET 与 SCAN**，而唯一能发现"GC 搬丢了记录"的检查
+            # 一条都没做——GC 搬丢记录不报任何错，只会在某次 GET 上变成一个 NOKEY，
+            # 而命中率看不出来（CLAUDE.md 记着这一条）。
+            # "拿不到判据不等于判据通过"是 gate.sh 里反复写的规则，这里却违反了它。
+            if [ "$lost" = NA ]; then
+                say "[$cell] 丢 key 检查没有回执——拿不到判据不等于通过。它自己的输出末尾："
+                tail -6 "$lostlog" 2>/dev/null | sed 's/^/        /' | tee -a "$LOG"
+                [ "$LOST_KEYS" = fail ] && { fail=1; return 1; }
+                warn "[$cell] LOST_KEYS=warn，继续，但这一格**没有**做过丢 key 检查"
+            elif [ "$lost" -gt 0 ]; then
+                say "[$cell] node0 盘上丢了 ${lost} 条记录"
+                [ "$LOST_KEYS" = fail ] && { fail=1; return 1; }
+            else
+                say "[$cell] node0 盘上丢失 0 条"
+            fi
         fi
     fi
 
