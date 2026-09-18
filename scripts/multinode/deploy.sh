@@ -153,8 +153,24 @@ for h in $HOSTS; do
   # 两份节点脚本都要送。rep-node.sh 此前不在这里，于是对它的改动（比如把 gc_done 的
   # 计数从 '垃圾回收完成' 改成 '轮垃圾回收完成'）**根本到不了服务器**：本地改完、
   # 提交完、部署完，跑起来还是旧逻辑，而且不报错。
+  # **判据是校验和，不是 scp 的退出码。**
+  #
+  # 2026-09-18 实测：scp 把文件完整送达（verbose 里 "Exit status 0"、字节数对得上），
+  # 随后自己被 SIGHUP —— `Killed by signal 1`，于是退出码非零。40 次部署里绝大多数
+  # 栽在这个**假失败**上，而文件的 sha256 与本地逐字节相同。
+  # 反过来也要防：scp 报成功而文件被截断（本机内存压力下见过 ssh 被饿住），
+  # 那时只看退出码同样发现不了。两个方向都由校验和覆盖，所以干脆只认它。
   for f in three-node.sh rep-node.sh; do
-    scp -q "scripts/multinode/$f" "$h:~/$f" || { echo "DEPLOY_FAIL $h: scp $f"; exit 1; }
+    want=$(shasum -a 256 "scripts/multinode/$f" 2>/dev/null | cut -d' ' -f1)
+    [ -n "$want" ] || want=$(sha256sum "scripts/multinode/$f" | cut -d' ' -f1)
+    ok=0
+    for attempt in 1 2 3; do
+      scp -q "scripts/multinode/$f" "$h:~/$f" >/dev/null 2>&1 || true
+      got=$(ssh -o ConnectTimeout=20 "$h" "sha256sum ~/$f 2>/dev/null | cut -d' ' -f1" 2>/dev/null | tr -d '\r')
+      [ "$got" = "$want" ] && { ok=1; break; }
+      sleep 3
+    done
+    [ "$ok" = 1 ] || { echo "DEPLOY_FAIL ${h}: ${f} 传了 3 次校验和仍不符（想要 ${want:0:12} 拿到 ${got:0:12}）"; exit 1; }
   done
   # 驱动脚本现在也可以**在服务器上**执行（2026-09-16 起：从 Mac 上跑时本机内存压力会把
   # ssh 饿住，回执静默变空，两轮验证因此报废）。它们从工作树里跑，所以只要仓库到位就行；
