@@ -34,6 +34,28 @@ HOSTS=${HOSTS:-"tikv240 tikv241"}
 BUILD=${BUILD:-1}   # BUILD=0 to skip rebuilding the node binaries
 FORCE=${FORCE:-0}   # FORCE=1 to deploy anyway while something is running
 
+# **先确认每台机器都连得上，再谈别的。**
+#
+# 下面那个进程守卫把 ssh 的输出捕进变量，于是 ssh 失败（rc=255）时 `set -eu` 立刻退出，
+# 而失败命令的输出在变量里——**操作者一个字都看不到，只有一个 255**，看起来像脚本坏了。
+# 2026-09-18 实测过一次：三台同时 "Connection timed out during banner exchange"。
+#
+# 即使不退出，空的 $running 也分不清两件事：**"没有进程在跑"（可以部署）** 与
+# **"连不上这台机器"（什么都不知道）**。后者当成前者，就是带着未知状态往下走——
+# 与 gate.sh 里那条"拿不到判据不等于判据通过"是同一件事。
+#
+# rc 要先存下来再用：写在 `if ! ssh ...; then` 的分支里取 $? 拿到的是**被 ! 取反后的 0**，
+# 打出来是 "rc=0"，等于这行诊断在说假话（第一版就是这么写的）。
+CONNERR=$(mktemp -t deploy-ssh).err
+trap 'rm -f "$CONNERR"' EXIT
+for h in $HOSTS; do
+  ssh -o ConnectTimeout=20 -o BatchMode=yes "$h" true 2>"$CONNERR"; rc=$?
+  [ "$rc" = 0 ] && continue
+  echo "DEPLOY_FAIL $h: ssh 连不上（rc=${rc}）——**不是代码问题**，先查连通性"
+  sed 's/^/    /' "$CONNERR" | head -3
+  exit 1
+done
+
 # 部署到正在跑实验的机器上会污染那次实验：BUILD=1 会重建节点二进制，而覆盖工作树还会
 # 换掉正在被 bash 执行的脚本（bash 按字节偏移惰性读取，换了文件等于从中途跳到别处）。
 # 所以先看一眼有没有被测进程在跑，有就拒绝，除非显式 FORCE=1。
