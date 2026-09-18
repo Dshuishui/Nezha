@@ -588,7 +588,14 @@ run_cell() { # $1=phase $2=total_mb $3=vsize $4=system
         mixbytes=$(awk -v n="$mput" -v r="$rec" 'BEGIN{printf "%.0f", n*r}')
         need=$(awk -v g="$GCGB" 'BEGIN{printf "%.0f", g*1073741824}')
         if [ "$gcafter" = "$gcbefore" ]; then
-            if awk -v a="$mixbytes" -v b="$need" 'BEGIN{exit !(a >= b)}'; then
+            # **不跑 GC 的系统当然推不进 GC。** has_gc 这一层本来漏了：2026-09-18 的
+            # smoke4e 上，baseline 与 nezha-nogc 的四格各报一条"写了 62MB 却一轮 GC
+            # 都没推进——值得查"，而这两个系统**按设计就没有 GC**（gc_done 恒为 0）。
+            # 写入量那道门槛只挡住了"写得不够多"，挡不住"根本没有 GC 这回事"。
+            # 判据对健康系统报警，报的还是"值得查"，正是训练人忽略警告的那种写法。
+            if ! has_gc; then
+                say "[${cell}] ${SYSTEM} 不跑 GC，混合期间 GC 轮数不变是设计如此"
+            elif awk -v a="$mixbytes" -v b="$need" 'BEGIN{exit !(a >= b)}'; then
                 warn "[${cell}] 混合期间写了 $((mixbytes/1048576))MB（阈值 $((need/1048576))MB）却一轮 GC 都没推进——值得查"
             else
                 say "[${cell}] 混合期间 GC 未推进属正常：只写了 $((mixbytes/1048576))MB，阈值 $((need/1048576))MB"

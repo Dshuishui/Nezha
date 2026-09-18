@@ -947,6 +947,41 @@ else
 fi
 
 echo
+info "=== 三十一、关于 GC 的判据必须先过 has_gc ==="
+# 这一类已经咬了五次，每次都是"判据对一个健康的系统报警/判死"：
+#   1. "GC 一轮都没跑" 那条判据把 baseline 与 nezha-nogc 判死（gc_done 恒为 0 是设计）
+#   2. "等 GC 轮数稳定" 的循环条件要求 ≥ 1，对这两个系统永远不成立 → 每格空转 20 分钟
+#   3. -partitionTargetMB 传给 baseline，那个二进制不认识这个 flag，直接退出
+#   4. lost-keys.py 对 baseline 一条都找不到，会把健康系统报成丢了全部
+#   5. 2026-09-18 smoke4e："混合期间写了 62MB 却一轮 GC 都没推进——值得查"，
+#      在 baseline 与 nezha-nogc 的四格各报一条。写入量那道门槛只挡住"写得不够多"，
+#      挡不住"根本没有 GC 这回事"。
+#
+# 判据：scripts/multinode 下任何提到 GC 的 warn，往上 20 行内必须出现 has_gc。
+# 20 行是按现有代码里 if/elif 链的长度定的；写得比这更远就该自己重构，而不是放宽判据。
+GCGUARD=0
+while IFS= read -r p; do
+    case "$(basename "$p")" in gate-audit-multinode.sh) continue;; esac
+    grep -q 'has_gc' "$p" || continue   # 没有多系统概念的脚本不受约束
+    while IFS= read -r hit; do
+        ln=${hit%%:*}
+        lo=$((ln-20)); [ "$lo" -lt 1 ] && lo=1
+        # **找守卫时必须先把注释行剔掉。** 不剔的话，写在这条 warn 上面的那段
+        # 成因说明里就有 "has_gc" 三个字，判据于是永远认为守卫在——第一版就是这样，
+        # 把守卫改成 `if false` 也照样判过。判据自己被自己的文档骗了。
+        sed -n "${lo},${ln}p" "$p" | grep -v '^[[:space:]]*#' | grep -q 'has_gc' && continue
+        echo "       ${p#"$PROJECT_DIR"/}:${ln}  提到 GC 的 warn 上游 20 行内没有 has_gc"
+        printf '           %s\n' "$(printf '%s' "${hit#*:}" | cut -c1-96)"
+        GCGUARD=$((GCGUARD+1))
+    done < <(grep -nE '^[[:space:]]*warn "' "$p" | grep -E 'GC|gc_' || true)
+done < <(find "$PROJECT_DIR/scripts" -name '*.sh' | sort)
+if [ "$GCGUARD" -eq 0 ]; then
+    good "关于 GC 的判据都先过了 has_gc，不会对没有 GC 的系统报警"
+else
+    bad "上列 $GCGUARD 处会对 baseline / nezha-nogc 报 GC 的警——健康系统被报成「值得查」"
+fi
+
+echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"
 else
