@@ -105,8 +105,12 @@ done
 # 每一条都会把人引去查根本没问题的东西。统一成一个会重试、并且说得清"是连不上还是
 # 真读不到"的入口。
 #
-# 只用于**短**命令。长命令（go build 要 30~60 秒）在这种链路上必然失败，
-# 所以编译交给节点脚本与驱动在服务器本地做（BUILD=0）。
+# 只用于**短**命令：它靠"回执非空"判成功，长命令的中途输出会被它当成已经成功。
+#
+# 从 mac 发起时，链路（mac → winbox-wsl → jump_ncu_via_win → 实验机）空闲 5~8 秒
+# 就断，`go build` 那 30~60 秒必然失败，只能 BUILD=0。**从 WSL 里发起就没这个问题**，
+# BUILD=1 正常。所以不是"这个仓库只能 BUILD=0"，而是"从 mac 发起时只能 BUILD=0"——
+# 正确做法是把部署本身挪到 WSL 上跑（winjob run），而不是绕开编译。
 rread() {
     local host=$1 what=$2; shift 2
     local out="" rc=0 attempt
@@ -138,6 +142,38 @@ for h in $HOSTS; do
   #   ssh 抖了一下（rc=255）——与仓库无关，重试即可
   # 2026-09-18 实测撞上后者，而消息指向前者。
   have=$(rread "$h" "读远端 HEAD" "cd ~/work/Nezha && git rev-parse HEAD") || exit 1
+  # **服务器上的工作树脏了，要在开跑之前就说清楚，而不是让 checkout 在中途炸。**
+  #
+  # 2026-09-18 实测：tikv240 上 `scripts/bench/lost-keys.py` 被手工改过（在服务器上
+  # 边查边改的同一处修复），于是 checkout 被 git 拒绝，部署停在
+  #     error: Your local changes to the following files would be overwritten
+  #     DEPLOY_FAIL tikv240: fetch/checkout
+  # 这条消息没错，但它出现在**已经给这台机器传完 bundle 之后**，而且不说是哪些文件、
+  # 也不说该怎么办；更要紧的是三台机器只处理到第一台就退出了。
+  #
+  # 这里不自动丢弃：`~/work/Nezha` 是共用账号下的目录，改动可能是别人留在那儿的，
+  # 悄悄 checkout 掉就是删别人的东西。所以只报出来、让人看一眼，
+  # 确认无用之后用 ALLOW_REMOTE_DIRTY=1 明确授权丢弃。
+  # 末尾那个 __END__ 是必须的：rread 把**空回执当成 ssh 抖动**（重试 5 次再报失败），
+  # 而"工作树干净"的正常回执恰恰就是空串。不加哨兵的话，每一次干净的部署都会
+  # 在这里重试 15 秒然后 DEPLOY_FAIL——判据自己把好机器判死，正是这个文件里
+  # 反复出现的那一类。
+  rdirty=$(rread "$h" "查远端工作树" \
+    "cd ~/work/Nezha && git status --porcelain -- ':!results' ':!notes' | grep -v '^??'; echo __END__") || exit 1
+  rdirty=$(printf '%s' "${rdirty%__END__}" | sed '/^[[:space:]]*$/d')
+  if [ -n "$rdirty" ]; then
+    echo "DEPLOY_WARN $h 的工作树有未提交的改动，**checkout 会被 git 拒绝**："
+    echo "$rdirty" | sed 's/^/    /'
+    if [ "${ALLOW_REMOTE_DIRTY:-0}" = 1 ]; then
+      echo "    ALLOW_REMOTE_DIRTY=1 —— 丢弃这些改动"
+      rrun "$h" "丢弃远端改动" "cd ~/work/Nezha && git checkout -- ." || exit 1
+    else
+      echo "    → 先看一眼是不是别人的（这是共用账号）：ssh $h 'cd ~/work/Nezha && git diff'"
+      echo "    → 确认可以丢弃再重跑：ALLOW_REMOTE_DIRTY=1 $0"
+      echo "DEPLOY_REFUSED $h: 远端工作树不干净"
+      exit 1
+    fi
+  fi
   if [ "$have" = "$WANT" ]; then
     echo "$h already at ${WANT:0:7}"
   else
