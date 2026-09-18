@@ -14,7 +14,12 @@
 #   TOTAL_MB=4096     每档 value 写入的总字节数（MiB）。条数随 value 反比派生，
 #                     所以跨档比较的是同样多的数据。
 #   VSIZES="64 256"
-#   SYSTEM=nezha      nezha | nezha-nogc | original | nezha-avp（avp 会加 -inlinePlacement）
+#   SYSTEMS="baseline nezha-nogc nezha nezha-avp"   四个系统顺序跑；单个也行
+#                     别名：baseline = original。四者只差存储侧开关，Raft 与客户端路径相同：
+#                       baseline    -system original                无 KV 分离、无 GC
+#                       nezha-nogc  -system nezha-nogc              KV 分离，不回收 valuelog
+#                       nezha       -system nezha                   KV 分离 + GC
+#                       nezha-avp   -system nezha -inlinePlacement  再加小值内联
 #   GCGB=0.3          gcThresholdGB。**必须显式给。** three-node.sh 的派生式是"总量的
 #                     1/3"，只保证至少触发一轮；4GB 要跑十几轮 GC 就得给一个小值。
 #   SYNC_WAL=0        出性能数字必须 0（每条 fsync 慢约 50 倍，4GB 是几十小时）。
@@ -61,7 +66,10 @@ require_driver_host || exit 1
 LABEL="${1:-$(date +%m%d-%H%M)}"
 TOTAL_MB="${TOTAL_MB:-4096}"
 VSIZES="${VSIZES:-64 256}"
-SYSTEM="${SYSTEM:-nezha}"
+# SYSTEMS 是复数：四个系统顺序跑，顺序按"改动逐步累加"排（与 maintable.sh 一致），
+# 读者从左到右就能看出每一步的贡献。SYSTEM（单数）留着兼容旧的调用方式。
+SYSTEMS="${SYSTEMS:-${SYSTEM:-nezha}}"
+SYSTEM=""   # 每一格开始时由 run_cell 设成当前那个，别处一律读它
 GCGB="${GCGB:-0.3}"
 SYNC_WAL="${SYNC_WAL:-0}"
 PARTITION_MB="${PARTITION_MB:-}"
@@ -252,15 +260,24 @@ run_watched() {
 # 一个意料之外的顺序生效。
 node_system() {
     case "$SYSTEM" in
+        baseline) printf '%s' "original" ;;
         nezha|nezha-nogc|original|lsm-raft) printf '%s' "$SYSTEM" ;;
         nezha-avp) printf '%s' "nezha" ;;
         *) echo "未知 SYSTEM=$SYSTEM" >&2; return 1 ;;
     esac
 }
+
+# has_gc —— 这个系统会不会跑 GC。**baseline 与 nezha-nogc 的 gc_done 恒为 0，是设计
+# 不是失败**：baseline 没有 valuelog 需要回收，nezha-nogc 按定义不回收。
+# 不区分的话"GC 一轮都没跑"那条判据会把这两个系统直接判死。
+has_gc() { case "$SYSTEM" in nezha|nezha-avp) return 0 ;; *) return 1 ;; esac; }
 node_extra() {
     local e=""
     [ "$SYSTEM" = nezha-avp ] && e="-inlinePlacement"
-    [ -n "$PARTITION_MB" ] && e="$e -partitionTargetMB $PARTITION_MB"
+    # **-partitionTargetMB 只给会产出分区的系统。** baseline 那个二进制路径里没有分区，
+    # 而且"改进前"的基线二进制根本不认识这个 flag，传了会直接退出
+    # （maintable.sh 的 PARTITION_MB 注释里记着这一条）。
+    if [ -n "$PARTITION_MB" ] && has_gc; then e="$e -partitionTargetMB $PARTITION_MB"; fi
     printf '%s' "$e"
 }
 
@@ -326,15 +343,17 @@ field(){ local v; v=$(grep -o "$2=[0-9.]*" <<<"$1" | head -1 | cut -d= -f2); ech
 # 一格（一个 value 档）
 # ---------------------------------------------------------------------------
 
-run_cell() { # $1=phase $2=total_mb $3=vsize
+run_cell() { # $1=phase $2=total_mb $3=vsize $4=system
     local phase=$1 mb=$2 vs=$3
+    SYSTEM=$4
     local n rec gap cell d gcmax lost rsspk fdpk lagsp
     rec=$(record_bytes "$vs")
     n=$(awk -v mb="$mb" -v r="$rec" 'BEGIN{printf "%d", mb*1048576/r}')
     gap="$SCAN_GAP"
     [ -z "$gap" ] && gap=$(( n / SCAN_FRAC ))
     [ "$gap" -ge 1 ] && [ "$gap" -lt "$n" ] || { say "gapkey=${gap} 不在 [1,${n}) 内（vsize=${vs}）"; fail=1; return 1; }
-    cell="$phase-${vs}B"
+    # 格名带上系统：四个系统的归档目录必须分开，否则后跑的把先跑的覆盖掉。
+    cell="$phase-$SYSTEM-${vs}B"
     d="$HOME/work/mt3-$LABEL/$cell"; mkdir -p "$d"
 
     say "===== [${cell}] value=${vs}B entries=${n} total=${mb}MB gapkey=${gap}（单次约 $((gap*rec/1048576))MB）====="
@@ -391,7 +410,7 @@ run_cell() { # $1=phase $2=total_mb $3=vsize
     else
         say "[${cell}] 三个节点的 gc_in_progress 都已落回 false（等了 $((k2*10))s）"
     fi
-    if [ "$gcmax" -lt 1 ] && [ "$SYSTEM" != nezha-nogc ] && [ "$SYSTEM" != original ]; then
+    if [ "$gcmax" -lt 1 ] && has_gc; then
         say "[$cell] GC 一轮都没跑（阈值 ${GCGB}GB）——读路径不走有序文件，这一格测的不是要测的东西"
         fail=1; return 1
     fi
@@ -400,7 +419,21 @@ run_cell() { # $1=phase $2=total_mb $3=vsize
     # 放在读之前：丢了 key 会让后面的 GET/SCAN 数字失去意义。GC 搬丢记录不报任何错，
     # 只在某次 GET 上变成一个 NOKEY，而命中率看不出来（CLAUDE.md 记了这一条）。
     lost=NA
-    if [ "$LOST_KEYS" != off ]; then
+    # **这个检查只对有 valuelog 的系统成立。**
+    #
+    # lost-keys.py 的做法是把盘上有序文件与 valuelog 里出现过的 key 全收起来，
+    # 与"本应写入的 0..N-1"做差集。于是：
+    #   baseline   `-system original` 根本没有 valuelog，value 直接在 RocksDB 里。
+    #              拿它去数会**一条都找不到**，把一个健康的系统报成丢了全部 N 条。
+    #   nezha-avp  value 小于内联阈值时被内联进 RocksDB，不在 valuelog 里。
+    #              工具支持传阈值让它自己判"不适用"，所以传进去即可（脚本里有说明：
+    #              64B/256B 上曾被误报几十条，而命中率是 1.0000）。
+    # 这一格因此在 CSV 里写 skip 而不是 0——**写 0 等于声称"检查过了、没丢"**，
+    # 而实际上是没法查。正确性保障对 baseline 来自 scanverify/readonly 的逐条校验。
+    if [ "$LOST_KEYS" != off ] && [ "$SYSTEM" = baseline ]; then
+        lost=skip
+        say "[${cell}] 丢 key 检查对 baseline 不适用（没有 valuelog），本格记 skip"
+    elif [ "$LOST_KEYS" != off ]; then
         local INLINE_TH=0
         [ "$SYSTEM" = nezha-avp ] && INLINE_TH="${INLINE_THRESHOLD:-512}"
         # **超时要给够。** 这个脚本把盘上出现过的 key 全收进一个 Python 集合再做差集，
@@ -682,7 +715,7 @@ phase_c() { # $1=vsize
 
 say "拓扑 TOPO=${TOPO}：node0=$(host_of 0) node1=$(host_of 1) node2=$(host_of 2)"
 say "驱动跑在 $(hostname 2>/dev/null)（ON_SERVER=${ON_SERVER}）；客户端在 $CLIENT_HOST"
-say "commit=$COMMIT system=$SYSTEM syncWAL=$SYNC_WAL gcThresholdGB=$GCGB 阶段=[$PHASES]"
+say "commit=$COMMIT systems=[$SYSTEMS] syncWAL=$SYNC_WAL gcThresholdGB=$GCGB 阶段=[$PHASES]"
 say "输出 $OUT / 日志 $LOG / 归档 $HOME/work/mt3-$LABEL/"
 
 # 开跑前先确认三台机器上没有别人的进程。这三台是共用的，撞端口会同时毁掉两边的实验，
@@ -709,8 +742,8 @@ done
 
 for ph in $PHASES; do
     case "$ph" in
-        A) for vs in $VSIZES; do run_cell A "$SMOKE_MB" "$vs" || break; done ;;
-        B) for vs in $VSIZES; do run_cell B "$TOTAL_MB" "$vs" || break; done ;;
+        A) for sy in $SYSTEMS; do for vs in $VSIZES; do run_cell A "$SMOKE_MB" "$vs" "$sy" || break 2; done; done ;;
+        B) for sy in $SYSTEMS; do for vs in $VSIZES; do run_cell B "$TOTAL_MB" "$vs" "$sy" || break 2; done; done ;;
         C) for vs in $C_VSIZES; do phase_c "$vs" || break; done ;;
         *) say "未知阶段 $ph"; fail=1 ;;
     esac
