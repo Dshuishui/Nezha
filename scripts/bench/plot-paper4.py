@@ -146,7 +146,7 @@ def grouped(ax, cell, op, field, vsizes, scale=1.0, fmt="{:.2f}"):
     return drew
 
 
-def toplegend(fig, ax, ncol=4):
+def toplegend(fig, ax, ncol=4, y=1.10):
     """图例统一放到**图外**顶部。
 
     第一版把图例放在某个面板内（loc="upper left" 之类），结果在 p99 那张图上直接
@@ -154,7 +154,7 @@ def toplegend(fig, ax, ncol=4):
     图例本该帮读者认柱子，反而把柱子藏了。放到图外就不存在这个问题。
     """
     h, l = ax.get_legend_handles_labels()
-    fig.legend(h, l, ncol=ncol, loc="upper center", bbox_to_anchor=(0.5, 1.10),
+    fig.legend(h, l, ncol=ncol, loc="upper center", bbox_to_anchor=(0.5, y),
                handlelength=1.4, columnspacing=1.6, borderaxespad=0)
 
 
@@ -165,92 +165,76 @@ def headroom(ax, factor=1.30):
 
 
 # ---------------------------------------------------------------------------
-# 图 1：SCAN —— 主结果
+# 统一版式：**左吞吐、右时延**
 # ---------------------------------------------------------------------------
-def fig_scan(cell, vsizes, outdir):
-    """一张图说清整个故事：KV 分离让扫描变慢，GC 不但补回来还倒赚。"""
-    fig, axes = plt.subplots(1, 2, figsize=(7.0, 2.7))
-    for ax, (op, title) in zip(axes, [("SCAN", "Scan only"),
-                                      ("MIXSCAN", "Scan under concurrent write + point-read")]):
-        grouped(ax, cell, op, "p50_ms", vsizes, scale=1 / 1000.0, fmt="{:.1f}")
-        ax.set_ylabel("range-scan latency (s)" if ax is axes[0] else "")
-        ax.set_title(title)
-        headroom(ax)
-    fig.tight_layout()
-    toplegend(fig, axes[0])
-    save(fig, outdir, "fig1-scan-latency")
+# 吞吐一律用 MB/s 而不是 ops/s：三个操作的单次数据量差了三个数量级
+# （一次 GET 取 1 个 value，一次 SCAN 取上千万个），ops/s 放在一起没法横向比，
+# MB/s 才是同一个量纲。
+#
+# mb_per_s 这一列用的是十进制 MB（10^6），不是 MiB——与 bytes/elapsed_s 反算差 4.86%，
+# 全表一致，所以直接取用，只需在图注里写清单位口径。
+# 它有 4 位小数，不存在 ops_per_s 那种被舍成 0 的问题（见 num() 里的说明）。
 
 
-# ---------------------------------------------------------------------------
-# 图 2：PUT 尾延迟 —— 写这一侧唯一差异超过噪声的维度
-# ---------------------------------------------------------------------------
-def fig_put_tail(cell, vsizes, outdir):
-    """p50 被 Raft 共识锁死（四家差 3%），尾部才是存储布局能赢的地方。"""
-    fig, axes = plt.subplots(1, 3, figsize=(7.4, 2.6))
-    for ax, (field, title) in zip(axes, [("p50_ms", "p50  (consensus-bound)"),
-                                         ("p95_ms", "p95"),
-                                         ("p99_ms", "p99  (storage-bound)")]):
-        grouped(ax, cell, "PUT", field, vsizes, fmt="{:.2f}")
-        ax.set_ylabel("write latency (ms)" if ax is axes[0] else "")
-        ax.set_title(title)
-        headroom(ax)
-    fig.tight_layout()
-    toplegend(fig, axes[0])
-    save(fig, outdir, "fig2-put-tail-latency")
-
-
-# ---------------------------------------------------------------------------
-# 图 3：GET —— AVP 把 KV 分离的读代价补回了多少
-# ---------------------------------------------------------------------------
-def fig_get_recovery(cell, vsizes, outdir):
-    """左：绝对延迟与吞吐。右：AVP 相对 Nezha 补掉了多少"差距"。
-
-    "补掉的差距" = (Nezha的差距 − AVP的差距) / Nezha的差距，基准是 Original。
-    这是这一轮读这一侧真正的结论：不是"超过 Original"，而是"把 Nezha 的软肋补上"。
-    """
-    fig, axes = plt.subplots(1, 3, figsize=(7.6, 2.6))
-    grouped(axes[0], cell, "GET", "p50_ms", vsizes, fmt="{:.3f}")
-    axes[0].set_ylabel("point-read latency (ms)")
-    axes[0].set_title("Point read, p50")
+def pair(cell, vsizes, outdir, op, name, title,
+         lat_field="p50_ms", lat_scale=1.0, lat_unit="latency (ms)",
+         lat_fmt="{:.2f}", lat_title="Latency, p50"):
+    """一张图两个面板：左吞吐（MB/s），右时延。"""
+    fig, axes = plt.subplots(1, 2, figsize=(5.6, 2.7))
+    grouped(axes[0], cell, op, "mb_per_s", vsizes, fmt="{:.1f}")
+    axes[0].set_ylabel("throughput (MB/s)")
+    axes[0].set_title("Throughput")
     headroom(axes[0])
 
-    grouped(axes[1], cell, "GET", "ops_per_s", vsizes, scale=1 / 1000.0, fmt="{:.0f}")
-    axes[1].set_ylabel("throughput (K ops/s)")
-    axes[1].set_title("Point read, throughput")
-    headroom(axes[1], 1.30)
-
-    # 右图：差距补掉的比例
-    ax = axes[2]
-    width = 0.34
-    for j, vs in enumerate(vsizes):
-        for k, (field, mark) in enumerate([("p50_ms", "latency"), ("ops_per_s", "throughput")]):
-            b = num(cell, "baseline", "GET", vs, field)
-            n = num(cell, "nezha", "GET", vs, field)
-            a = num(cell, "nezha-avp", "GET", vs, field)
-            if None in (b, n, a) or n == b:
-                continue
-            closed = (abs(n - b) - abs(a - b)) / abs(n - b) * 100
-            x = j + (k - 0.5) * width
-            ax.bar(x, closed, width=width * 0.9,
-                   color=COLOR["nezha-avp"] if k == 0 else "#56B4E9",
-                   hatch=HATCH["nezha-avp"] if k == 0 else "\\\\\\",
-                   edgecolor="white", linewidth=0.6, zorder=3,
-                   label=mark if j == 0 else None)
-            ax.annotate(f"{closed:.0f}%", (x, closed), textcoords="offset points",
-                        xytext=(0, 2.5), ha="center", fontsize=6.8, zorder=4)
-    ax.set_xticks(range(len(vsizes)))
-    ax.set_xticklabels([f"{v} B" for v in vsizes])
-    ax.set_xlabel("value size")
-    ax.set_ylabel("penalty recovered (%)")
-    ax.set_title("Gap to Original closed by AVP")
-    ax.set_ylim(0, 100)
-    ax.grid(axis="y", zorder=0)
-    ax.set_axisbelow(True)
-    ax.legend(loc="upper left", handlelength=1.4)
+    grouped(axes[1], cell, op, lat_field, vsizes, scale=lat_scale, fmt=lat_fmt)
+    axes[1].set_ylabel(lat_unit)
+    axes[1].set_title(lat_title)
+    headroom(axes[1])
 
     fig.tight_layout()
+    # 顺序：总标题最上，图例紧随其下，都在图外。
+    # 第一版 suptitle 用 y=1.02、图例用 y=1.10，于是图例跑到了标题**上面**，
+    # 两者还挨着——读起来像图例是标题的一部分。
+    fig.suptitle(title, y=1.17, fontsize=9.5)
+    toplegend(fig, axes[0], y=1.05)
+    save(fig, outdir, name)
+
+
+def fig_scan(cell, vsizes, outdir):
+    """扫描：KV 分离让它变慢，GC 不但补回来还比不做分离的基线更快。"""
+    pair(cell, vsizes, outdir, "SCAN", "fig1-scan",
+         "Range scan (1 GB per scan, 40 scans per cell)",
+         lat_scale=1 / 1000.0, lat_unit="scan latency (s)", lat_fmt="{:.1f}")
+
+
+def fig_put(cell, vsizes, outdir):
+    """写：p50 被 Raft 共识锁死（四家差 3%），所以时延这一侧只看 p99。"""
+    pair(cell, vsizes, outdir, "PUT", "fig2-put",
+         "Write  (p50 is consensus-bound and identical across systems; the tail is not)",
+         lat_field="p99_ms", lat_unit="write latency (ms)",
+         lat_fmt="{:.2f}", lat_title="Latency, p99")
+
+
+def fig_get(cell, vsizes, outdir):
+    """点读：AVP 把 Nezha 在小值上的读代价补回一部分（具体比例见 meta.txt）。"""
+    pair(cell, vsizes, outdir, "GET", "fig3-get",
+         "Point read",
+         lat_unit="point-read latency (ms)", lat_fmt="{:.3f}")
+
+
+def fig_throughput(cell, vsizes, outdir):
+    """三个操作的吞吐总览，统一 MB/s。"""
+    fig, axes = plt.subplots(1, 3, figsize=(7.4, 2.6))
+    for ax, (op, title) in zip(axes, [("PUT", "Write"),
+                                      ("GET", "Point read"),
+                                      ("SCAN", "Range scan")]):
+        grouped(ax, cell, op, "mb_per_s", vsizes, fmt="{:.1f}")
+        ax.set_ylabel("throughput (MB/s)" if ax is axes[0] else "")
+        ax.set_title(title)
+        headroom(ax)
+    fig.tight_layout()
     toplegend(fig, axes[0])
-    save(fig, outdir, "fig3-get-penalty-recovery")
+    save(fig, outdir, "fig5-throughput")
 
 
 # ---------------------------------------------------------------------------
@@ -289,26 +273,6 @@ def fig_space(outdir, space):
     save(fig, outdir, "fig4-log-space")
 
 
-# ---------------------------------------------------------------------------
-# 图 5：吞吐总览
-# ---------------------------------------------------------------------------
-def fig_throughput(cell, vsizes, outdir):
-    fig, axes = plt.subplots(1, 3, figsize=(7.4, 2.6))
-    for ax, (op, field, title, unit) in zip(axes, [
-            ("PUT", "ops_per_s", "Write", "K ops/s"),
-            ("GET", "ops_per_s", "Point read", "K ops/s"),
-            ("SCAN", "scans_per_s", "Range scan", "scans/s")]):
-        sc = 1 / 1000.0 if unit.startswith("K") else 1.0
-        f = "{:.0f}" if unit.startswith("K") else "{:.3f}"
-        grouped(ax, cell, op, field, vsizes, scale=sc, fmt=f)
-        ax.set_ylabel(unit if ax is axes[0] else unit if op == "SCAN" else "")
-        ax.set_title(title)
-        headroom(ax, 1.32)
-    fig.tight_layout()
-    toplegend(fig, axes[0])
-    save(fig, outdir, "fig5-throughput")
-
-
 def main():
     if len(sys.argv) < 3:
         sys.exit(__doc__)
@@ -320,8 +284,8 @@ def main():
         print(f"注意: CSV 里缺这些系统: {', '.join(missing)}", file=sys.stderr)
 
     fig_scan(cell, vsizes, outdir)
-    fig_put_tail(cell, vsizes, outdir)
-    fig_get_recovery(cell, vsizes, outdir)
+    fig_put(cell, vsizes, outdir)
+    fig_get(cell, vsizes, outdir)
     fig_throughput(cell, vsizes, outdir)
 
     # 空间数据不在主 CSV 里，由调用方通过环境变量给（见归档脚本）。
