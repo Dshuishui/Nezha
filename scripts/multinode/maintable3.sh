@@ -378,15 +378,23 @@ field(){ local v; v=$(grep -o "$2=[0-9.]*" <<<"$1" | head -1 | cut -d= -f2); ech
 run_cell() { # $1=phase $2=total_mb $3=vsize $4=system
     local phase=$1 mb=$2 vs=$3
     SYSTEM=$4
-    local n rec gap cell d gcmax lost rsspk fdpk lagsp
+    local n rec gap cell d gcmax lost rsspk fdpk lagsp lagfloor
     rec=$(record_bytes "$vs")
     n=$(awk -v mb="$mb" -v r="$rec" 'BEGIN{printf "%d", mb*1048576/r}')
     # 落差阈值按本格条数派生（理由见 LAG_PCT 那段）。显式给了 LAG_ENTRIES 就照用。
+    #
+    # **下限本身也要有上限。** LAG_FLOOR 是按"别让极小的格子被百分比压出噪声"定的
+    # 一个常数，可是大 value 档的总条数会**小于这个常数**：10GB ÷ 256KB 只有 40955 条，
+    # 而下限 50000 比总条数还大——落差永远不可能达到阈值，这道闸门在整档里恒不触发。
+    # 它不报错、日志里照样打阈值，看起来在查，实际什么都没查。这与自审第 25、26 节
+    # 是同一类毛病：判据自己失效，而失效本身没有任何迹象。
     if [ -n "$LAG_ENTRIES" ]; then
         LAG_LIMIT="$LAG_ENTRIES"
     else
+        lagfloor=$LAG_FLOOR
+        [ "$lagfloor" -gt $(( n / 4 )) ] && lagfloor=$(( n / 4 ))
         LAG_LIMIT=$(( n * LAG_PCT / 100 ))
-        [ "$LAG_LIMIT" -lt "$LAG_FLOOR" ] && LAG_LIMIT="$LAG_FLOOR"
+        [ "$LAG_LIMIT" -lt "$lagfloor" ] && LAG_LIMIT="$lagfloor"
     fi
     gap="$SCAN_GAP"
     [ -z "$gap" ] && gap=$(( n / SCAN_FRAC ))
@@ -394,6 +402,9 @@ run_cell() { # $1=phase $2=total_mb $3=vsize $4=system
     # 格名带上系统：四个系统的归档目录必须分开，否则后跑的把先跑的覆盖掉。
     cell="$phase-$SYSTEM-${vs}B"
     d="$HOME/work/mt3-$LABEL/$cell"; mkdir -p "$d"
+    # 兜底：不管阈值是怎么来的（派生、下限、还是 LAG_ENTRIES 显式指定），只要它
+    # 达不到就说明这一格根本没有这道闸门。宁可吵，也不要静悄悄地不查。
+    [ "$LAG_LIMIT" -lt "$n" ] || warn "[${cell}] 落差阈值 ${LAG_LIMIT} ≥ 本格条数 ${n}，这道闸门在本格**恒不触发**，等于没查"
 
     say "===== [${cell}] value=${vs}B entries=${n} total=${mb}MB gapkey=${gap}（单次约 $((gap*rec/1048576))MB）====="
     start_cluster "$vs" "$n" || return 1

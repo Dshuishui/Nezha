@@ -982,6 +982,52 @@ else
 fi
 
 echo
+info "=== 三十二、派生的闸门阈值不得超过本格条数 ==="
+# 跨节点落差阈值取 `max(条数×LAG_PCT%, LAG_FLOOR)`。LAG_FLOOR 是个常数，按"别让极小的
+# 格子被百分比压出噪声"定的；可是**大 value 档的总条数会小于这个常数**——
+# 10GB ÷ 256KB 只有 40955 条，而下限 50000 比总条数还大。落差不可能达到阈值，
+# 这道闸门在整档里恒不触发，却照样在日志里打出阈值、看起来在查。
+# 这与第 25、26 节同一类：判据自己失效，而失效本身没有任何迹象。
+#
+# 这里**不是**比对字符串（那只是给当前写法拍张照，换个等价写法就误报）。
+# 做法是把 maintable3.sh 里那段派生原文抠出来直接执行，喂进六档真实条数，
+# 断言 LAG_LIMIT 始终小于本格条数。去掉那个上限，256KB 档立刻判出来。
+MT3="$PROJECT_DIR/scripts/multinode/maintable3.sh"
+DERIV=$(awk '/^    if \[ -n "\$LAG_ENTRIES" \]; then$/{f=1} f{print} f&&/^    fi$/{exit}' "$MT3")
+LAGBAD=0
+if [ -z "$DERIV" ]; then
+    echo "       抠不出 LAG_LIMIT 的派生段——maintable3.sh 的写法变了，这一节没在审任何东西"
+    LAGBAD=$((LAGBAD+1))
+else
+    # 六档 = 64B / 256B / 1KB / 4KB / 16KB / 256KB 在 10GB 下的条数，外加一个极小格。
+    for n in 114227853 37543420 10187303 2602379 654162 40955 8000; do
+        out=$(
+            set +e
+            export n
+            LAG_ENTRIES="" LAG_PCT="${LAG_PCT:-25}" LAG_FLOOR="${LAG_FLOOR:-50000}" LAG_LIMIT=""
+            eval "$DERIV"
+            echo "$LAG_LIMIT"
+        )
+        case "$out" in ''|*[!0-9]*) echo "       n=$n 派生出的阈值不是数字：'$out'"; LAGBAD=$((LAGBAD+1)); continue;; esac
+        if [ "$out" -ge "$n" ]; then
+            echo "       n=${n} 派生出阈值 ${out} ≥ 条数——这一档的落差闸门恒不触发"
+            LAGBAD=$((LAGBAD+1))
+        fi
+    done
+fi
+# 第二道：运行期还要有个兜底，因为 LAG_ENTRIES 是显式覆盖，上面那段管不到它。
+# 找守卫时先把注释剔掉（第 31 节的教训：成因说明里的字会把判据自己骗过去）。
+if ! grep -v '^[[:space:]]*#' "$MT3" | grep -qF 'LAG_LIMIT" -lt "$n"'; then
+    echo "       maintable3.sh 里没有「阈值 < 本格条数」的运行期兜底——LAG_ENTRIES 写错了不会有人知道"
+    LAGBAD=$((LAGBAD+1))
+fi
+if [ "$LAGBAD" -eq 0 ]; then
+    good "落差阈值在六档 value 下都小于本格条数，运行期另有兜底"
+else
+    bad "上列 $LAGBAD 处会让落差闸门在某些档位恒不触发——它不报错，只是什么都不查"
+fi
+
+echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"
 else
