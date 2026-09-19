@@ -15,7 +15,11 @@
   相对倍率      次要信息用"× 基线"的形式标在柱内，避免再开一张图
 
 用法:
-    plot-paper4.py <maintable3-X.csv> <输出目录>
+    plot-paper4.py <maintable3-X.csv> [更多.csv ...] <输出目录>
+
+多个 CSV 会按 (system, op, vsize) 合并成一张表——论文那六个 value 档是分两轮跑出来的
+（64B/256B 一轮，1KB/4KB/16KB/256KB 一轮），合并后横坐标才是完整的六档。
+后给的文件覆盖先给的同名格子。
 """
 import csv
 import os
@@ -76,13 +80,29 @@ def save(fig, outdir, name):
     plt.close(fig)
 
 
-def load(csvpath):
-    """(system, op, vsize) -> row。同一格跑多次取最后一行，理由同 plot-maintable3。"""
+def load(*csvpaths):
+    """(system, op, vsize) -> row。同一格跑多次取最后一行，理由同 plot-maintable3。
+
+    多个文件依次读入，后来的覆盖先前的同名格子。**不同轮次的 CSV 能不能合并，
+    取决于口径是否一致**——这里合并的两轮都是 10GiB / 三节点 / 每次扫描 1.07GB /
+    GET 200 万次，只有 value 档不同，所以可以。口径不同的两轮合进一张图会骗人，
+    合并前必须自己核对，脚本查不了这件事。
+    """
     cell = {}
-    with open(csvpath, newline="") as f:
-        for r in csv.DictReader(f):
-            cell[(r["system"], r["op"], r["vsize"])] = r
+    for csvpath in csvpaths:
+        with open(csvpath, newline="") as f:
+            for r in csv.DictReader(f):
+                cell[(r["system"], r["op"], r["vsize"])] = r
     return cell
+
+
+def vlabel(vs):
+    """横坐标上的 value 档名。六档跨 64B~256KB，一律写成 "1024 B" 又长又难认。
+    数字与单位之间沿用文件里原有的窄空格，不然六档里两档的排版跟另外四档不一样。"""
+    v = int(vs)
+    if v >= 1024 and v % 1024 == 0:
+        return f"{v // 1024} KB"
+    return f"{v} B"
 
 
 def num(cell, sy, op, vs, field):
@@ -106,8 +126,31 @@ def num(cell, sy, op, vs, field):
         return None
 
 
-def grouped(ax, cell, op, field, vsizes, scale=1.0, fmt="{:.2f}"):
-    """一个面板：x 轴是 value 档，每组四根柱子是四个系统。返回是否画出了东西。"""
+def grouped(ax, cell, op, field, vsizes, scale=1.0, fmt="{:.2f}",
+            annotate=None, logy=None):
+    """一个面板：x 轴是 value 档，每组四根柱子是四个系统。返回是否画出了东西。
+
+    annotate 与 logy 默认按数据自己定，两条理由见下。
+    """
+    # **柱顶数值标注只在档位少时才放得下。** 两档时一个面板 8 根柱子，标得下；
+    # 六档时是 24 根，在 2.4 英寸宽的面板里每根只有 0.1 英寸，竖排的数字会互相压住
+    # ——又是"想多说一件事，结果把本来说清楚的那件弄脏了"。六档时去掉标注，
+    # 具体数值放进同目录的对照表。
+    if annotate is None:
+        annotate = len(vsizes) <= 3
+    vals_all = []
+    for sy in SYS:
+        for vs in vsizes:
+            v = num(cell, sy, op, vs, field)
+            if v is not None and v * scale > 0:
+                vals_all.append(v * scale)
+    # **跨度超过 30 倍就得上对数轴。** 六档合并之后 GET 吞吐从 64B 的 7.85 MB/s
+    # 到 256KB 的 3135 MB/s，差 400 倍：线性轴上前四档会被压成贴着零线的一条毛边，
+    # 读者只看得出"大 value 更快"这件早就知道的事，四个系统的差异全看不见。
+    if logy is None:
+        logy = bool(vals_all) and max(vals_all) / min(vals_all) > 30
+    if logy:
+        ax.set_yscale("log")
     width = 0.8 / len(SYS)
     drew = False
     for i, sy in enumerate(SYS):
@@ -127,6 +170,8 @@ def grouped(ax, cell, op, field, vsizes, scale=1.0, fmt="{:.2f}"):
                       color=COLOR[sy], hatch=HATCH[sy],
                       edgecolor="white", linewidth=0.6, zorder=3)
         for b, y in zip(bars, ys):
+            if not annotate:
+                break
             # **标注竖排。** 一组四根柱子挨得很近，横排的数字在数值接近时会直接连成
             # "1.711.691.691.70" 一团——读者分不出哪个数配哪根柱子。竖排彻底消掉这类碰撞，
             # 代价只是多占一点纵向空间（由 headroom 补）。
@@ -139,10 +184,16 @@ def grouped(ax, cell, op, field, vsizes, scale=1.0, fmt="{:.2f}"):
         # 典型的图表垃圾：想多说一件事，结果把本来说清楚的那件也弄脏了。
         # 倍率放到图注和 meta.txt 里讲，图上只留绝对值。
     ax.set_xticks(range(len(vsizes)))
-    ax.set_xticklabels([f"{v} B" for v in vsizes])
+    ax.set_xticklabels([vlabel(v) for v in vsizes],
+                       rotation=30 if len(vsizes) > 3 else 0,
+                       ha="right" if len(vsizes) > 3 else "center")
     ax.set_xlabel("value size")
     ax.grid(axis="y", zorder=0)
     ax.set_axisbelow(True)
+    if logy and vals_all:
+        # 对数轴画不出 0，柱底要显式给下界，否则 matplotlib 自己挑一个很小的数，
+        # 把所有柱子拉成差不多长，柱高的**比例**就读不出来了。取最小值的一半。
+        ax.set_ylim(bottom=min(vals_all) / 2)
     return drew
 
 
@@ -159,9 +210,45 @@ def toplegend(fig, ax, ncol=4, y=1.10):
 
 
 def headroom(ax, factor=1.30):
-    """给柱顶的数值标注留出空间，否则标注会贴到边框上。"""
+    """给柱顶的数值标注留出空间，否则标注会贴到边框上。
+
+    对数轴上乘一个常数就是往上挪固定的视觉距离，正好是要的效果，所以两种轴共用。
+    """
     lo, hi = ax.get_ylim()
     ax.set_ylim(lo, hi * factor)
+
+
+# leader 网卡 1000 Mb/s = 125 MB/s（十进制）出向，而每次 PUT 要把 value 复制给
+# **两个** follower，于是应用层写吞吐上限约 62.5 MB/s。
+# 这条线不是装饰：2026-09-19 实测 leader 出向在 256KB 档占 92.8% 线速、1KB 档只占
+# 65.7%，说明大 value 的写吞吐差异是被这条链路压小的。不标的话审稿人会问
+# "为什么大 value 上四个系统的写吞吐挤在一起"，而诚实的答案就是这条线。
+NIC_CEILING_MBPS = 62.5
+
+
+def put_ceiling(ax):
+    """在写吞吐面板上画出链路上限。**够不着就不画。**
+
+    第一版无条件画。64B/256B 那张图的最大值只有 14.5 MB/s，62.5 的线远在画布之外，
+    于是 matplotlib 把纵轴一直拉到 62.5，`bbox_inches="tight"` 再把这一大片空白
+    原样保留——整张图变成一片空白加底下一条柱子，柱间差异完全看不出来。
+    一条"帮读者理解"的参考线，把它要解释的那张图毁掉了：与图内图例压住柱子、
+    柱内标倍率糊成一团是同一类毛病。
+    所以先看这个面板的量级：上限比画面顶还高出一倍以上，说明这一档离链路瓶颈还很远，
+    画它没有信息量，不画。
+    """
+    top = ax.get_ylim()[1]
+    if NIC_CEILING_MBPS > 2.2 * top:
+        return False
+    ax.axhline(NIC_CEILING_MBPS, color="#444444", linestyle=(0, (4, 3)),
+               linewidth=0.8, zorder=5)
+    ax.annotate("1 GbE ceiling (2x replication)", (1.0, NIC_CEILING_MBPS),
+                xycoords=("axes fraction", "data"),
+                textcoords="offset points", xytext=(-2, 2.5),
+                ha="right", va="bottom", fontsize=6.2, color="#444444", zorder=5)
+    # axhline 会让自动缩放把纵轴再抬一截；显式钉回去，留一点点放标注的余量。
+    ax.set_ylim(ax.get_ylim()[0], max(top, NIC_CEILING_MBPS * 1.12))
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -180,11 +267,16 @@ def pair(cell, vsizes, outdir, op, name, title,
          lat_field="p50_ms", lat_scale=1.0, lat_unit="latency (ms)",
          lat_fmt="{:.2f}", lat_title="Latency, p50"):
     """一张图两个面板：左吞吐（MB/s），右时延。"""
-    fig, axes = plt.subplots(1, 2, figsize=(5.6, 2.7))
+    # 六档比两档多三倍的柱子，宽度不跟着长，柱子会细到看不出纹理。
+    width_in = 5.6 if len(vsizes) <= 3 else 7.6
+    fig, axes = plt.subplots(1, 2, figsize=(width_in, 2.9))
     grouped(axes[0], cell, op, "mb_per_s", vsizes, fmt="{:.1f}")
     axes[0].set_ylabel("throughput (MB/s)")
     axes[0].set_title("Throughput")
     headroom(axes[0])
+    # 写吞吐这一侧标出链路上限，理由见 NIC_CEILING_MBPS 那段。
+    if op == "PUT":
+        put_ceiling(axes[0])
 
     grouped(axes[1], cell, op, lat_field, vsizes, scale=lat_scale, fmt=lat_fmt)
     axes[1].set_ylabel(lat_unit)
@@ -224,7 +316,8 @@ def fig_get(cell, vsizes, outdir):
 
 def fig_throughput(cell, vsizes, outdir):
     """三个操作的吞吐总览，统一 MB/s。"""
-    fig, axes = plt.subplots(1, 3, figsize=(7.4, 2.6))
+    width_in = 7.4 if len(vsizes) <= 3 else 10.2
+    fig, axes = plt.subplots(1, 3, figsize=(width_in, 2.8))
     for ax, (op, title) in zip(axes, [("PUT", "Write"),
                                       ("GET", "Point read"),
                                       ("SCAN", "Range scan")]):
@@ -232,6 +325,8 @@ def fig_throughput(cell, vsizes, outdir):
         ax.set_ylabel("throughput (MB/s)" if ax is axes[0] else "")
         ax.set_title(title)
         headroom(ax)
+        if op == "PUT":
+            put_ceiling(ax)
     fig.tight_layout()
     toplegend(fig, axes[0])
     save(fig, outdir, "fig5-throughput")
@@ -273,11 +368,40 @@ def fig_space(outdir, space):
     save(fig, outdir, "fig4-log-space")
 
 
+def dump_table(cell, vsizes, outdir):
+    """把图上画的每个数写成一张文本表。
+
+    六档时图上不再标数（24 根柱子标不下），**数值就必须另有去处**——
+    没有这张表的话，"去掉标注"等于把数据丢了，而图本身看不出这件事。
+    """
+    os.makedirs(outdir, exist_ok=True)
+    path = os.path.join(outdir, "figure-values.txt")
+    with open(path, "w") as f:
+        for op, field, unit in [("PUT", "mb_per_s", "MB/s"),
+                                ("PUT", "p99_ms", "ms (p99)"),
+                                ("GET", "mb_per_s", "MB/s"),
+                                ("GET", "p50_ms", "ms (p50)"),
+                                ("SCAN", "mb_per_s", "MB/s"),
+                                ("SCAN", "p50_ms", "ms (p50)")]:
+            f.write(f"\n{op}  {field}  [{unit}]\n")
+            # 表头要空出系统名那一列的宽度，否则每个档名都偏左 12 个字符，
+            # 读者会把 64B 的数对到 256B 的表头上。
+            f.write("  " + " " * 12
+                    + "".join(f"{vlabel(v):>12}" for v in vsizes) + "\n")
+            for sy in SYS:
+                row = "".join(
+                    f"{num(cell, sy, op, v, field):>12.2f}"
+                    if num(cell, sy, op, v, field) is not None else f"{'-':>12}"
+                    for v in vsizes)
+                f.write(f"  {LABEL[sy]:<12}{row}\n")
+    print(path)
+
+
 def main():
     if len(sys.argv) < 3:
         sys.exit(__doc__)
-    csvpath, outdir = sys.argv[1], sys.argv[2]
-    cell = load(csvpath)
+    *csvpaths, outdir = sys.argv[1:]
+    cell = load(*csvpaths)
     vsizes = sorted({vs for (_, _, vs) in cell}, key=int)
     missing = [s for s in SYS if not any(k[0] == s for k in cell)]
     if missing:
@@ -287,6 +411,7 @@ def main():
     fig_put(cell, vsizes, outdir)
     fig_get(cell, vsizes, outdir)
     fig_throughput(cell, vsizes, outdir)
+    dump_table(cell, vsizes, outdir)
 
     # 空间数据不在主 CSV 里，由调用方通过环境变量给（见归档脚本）。
     sp = os.environ.get("SPACE_BYTES", "")
