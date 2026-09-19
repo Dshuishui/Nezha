@@ -34,7 +34,12 @@
 #   SAMPLE_IV=15      节点采样间隔秒
 #   FLOOR_GB=40       任一节点所在盘的**剩余空间**低于此值就中止。
 #                     按剩余字节而不是百分比：node55 常态就在 93%（别人的 1.4T 占着）。
-#   LAG_ENTRIES=200000  压缩点跨节点的最大允许落差，超了记一条警告（不直接判失败，
+#   LAG_PCT=25        压缩点跨节点落差超过本格条数的这个百分比才计入连续计数。
+#                     按比例派生而不是写死绝对值：同一个绝对值在 400MB 上是数据集的
+#                     4.5%、在 10GB 上是 0.18%，含义完全不同。取 25% 的理由见下面
+#                     LAG_PCT 那段（幅度这一维没有真阳性样本，判定靠 LAG_STREAK）。
+#   LAG_FLOOR=50000   百分比的下限，防止极小的格子被压出噪声。
+#   LAG_ENTRIES=      显式给绝对值就不再按比例派生。超了记一条警告（不直接判失败，
 #                     理由见 lag_check）。
 #   LAG_STREAK=3      连续这么多次检查都超阈值才报。一轮 GC 的错位会产生一次尖峰而
 #                     马上收回，实测两次（见 lag_check），报它只会训练人忽略这个警告。
@@ -91,7 +96,30 @@ CLIENT_TIMEOUT="${CLIENT_TIMEOUT:-86400}"
 WATCH_IV="${WATCH_IV:-60}"
 SAMPLE_IV="${SAMPLE_IV:-15}"
 FLOOR_GB="${FLOOR_GB:-40}"
-LAG_ENTRIES="${LAG_ENTRIES:-200000}"
+# **落差阈值按每格的条数派生，不写死绝对值。**
+#
+# 写死 200000 的后果 2026-09-19 实测到了：在 400MB 那轮它等于数据集的 4.5%，
+# 在 10GB 这轮只有 0.18%——**同一个数字在两个规模下含义完全不同**。于是 10GB 上
+# nezha 那两格报了 53 条警告、"连续 25 次超阈值"，而实测落差是 69.7 万 / 1.14 亿
+# = **0.61%**，压缩点落差本身根本没有随数据量按比例涨（400MB 时是 99.9 万，
+# 绝对值反而更大）。它反映的是采样那一刻三台 GC 轮次错开多远，取决于单轮 GC 的时长，
+# 与数据集大小无关。
+# 一个每次都报、每次都良性的警告只会训练人忽略它，而这个判据存在的意义正是
+# "某台**真的**掉队了"。CLAUDE.md 的"参数按比例派生"说的就是这件事。
+# **阈值给得宽，判定交给持续性。** 这是按证据定的，不是拍的：
+#   已观测的落差**全部良性**——400MB 那轮的尖峰是 22.4% / 11.7% / 6.9% / 5.1% / 4.5%，
+#   每一次都在轮数追平后收回；10GB 这轮 nezha 两格是 0.61% / 0.55%。
+#   **一次真的掉队从没被观测到**，所以幅度这一维没有真阳性样本可校准——
+#   挑一个"看着有道理"的百分比只是把写死的绝对值换成写死的百分比。
+# 真正区分两者的是**会不会收回去**：良性错位被单轮 GC 的时长封住，真掉队追不上、
+# 落差会无界增长，于是它迟早越过任何阈值并**一直**停在外面，被 LAG_STREAK 抓住。
+# 所以 25% 取的是"压住全部已观测良性尖峰"的下沿，把判定的重量放在连续次数上。
+LAG_PCT="${LAG_PCT:-25}"           # 落差超过本格条数的百分之几才计入连续计数
+LAG_FLOOR="${LAG_FLOOR:-50000}"    # 下限：极小的格子不要被百分比压出噪声
+LAG_ENTRIES="${LAG_ENTRIES:-}"     # 显式给了就用绝对值，不再按比例派生
+# LAG_LIMIT 是实际生效的阈值，每格开始时按 n 重算；没进任何格子时（看门狗早于
+# 第一格）退回下限，绝不留空——空值会让下面的 `-gt` 比较报语法错误而不是判据失效。
+LAG_LIMIT="${LAG_ENTRIES:-$LAG_FLOOR}"
 LOST_KEYS="${LOST_KEYS:-fail}"
 GC_STABLE_CHECKS="${GC_STABLE_CHECKS:-4}"
 PHASES="${PHASES:-A B C}"
@@ -181,10 +209,10 @@ lag_check() {
     # 训练人去忽略它——而这个判据存在的意义正是"某台真的掉队了"。
     # 所以要求连续 LAG_STREAK 次检查都超阈值才报。真掉队的副本压缩点会一直落后，
     # 尖峰不会。
-    if [ "$LAG_SPREAD" -gt "$LAG_ENTRIES" ]; then
+    if [ "$LAG_SPREAD" -gt "$LAG_LIMIT" ]; then
         LAG_OVER=$((LAG_OVER + 1))
         if [ "$LAG_OVER" -ge "${LAG_STREAK:-3}" ]; then
-            warn "压缩点跨节点落差连续 ${LAG_OVER} 次超阈值，现为 ${LAG_SPREAD} 条（最慢 node${who} = ${mn}，最快 = ${mx}，阈值 ${LAG_ENTRIES}）"
+            warn "压缩点跨节点落差连续 ${LAG_OVER} 次超阈值，现为 ${LAG_SPREAD} 条（最慢 node${who} = ${mn}，最快 = ${mx}，阈值 ${LAG_LIMIT}）"
             echo "$lines" | tee -a "$LOG"
         fi
     else
@@ -349,6 +377,13 @@ run_cell() { # $1=phase $2=total_mb $3=vsize $4=system
     local n rec gap cell d gcmax lost rsspk fdpk lagsp
     rec=$(record_bytes "$vs")
     n=$(awk -v mb="$mb" -v r="$rec" 'BEGIN{printf "%d", mb*1048576/r}')
+    # 落差阈值按本格条数派生（理由见 LAG_PCT 那段）。显式给了 LAG_ENTRIES 就照用。
+    if [ -n "$LAG_ENTRIES" ]; then
+        LAG_LIMIT="$LAG_ENTRIES"
+    else
+        LAG_LIMIT=$(( n * LAG_PCT / 100 ))
+        [ "$LAG_LIMIT" -lt "$LAG_FLOOR" ] && LAG_LIMIT="$LAG_FLOOR"
+    fi
     gap="$SCAN_GAP"
     [ -z "$gap" ] && gap=$(( n / SCAN_FRAC ))
     [ "$gap" -ge 1 ] && [ "$gap" -lt "$n" ] || { say "gapkey=${gap} 不在 [1,${n}) 内（vsize=${vs}）"; fail=1; return 1; }
