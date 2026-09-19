@@ -210,14 +210,17 @@ func (kvs *KVServer) StartGet(st stateSnapshot, args *kvrpc.GetInRaftRequest) *k
 		reply.Value = value
 		return reply
 	}
-	if kvs.inlinePlacement {
-		// 小值内联时一次点查就拿到 value，省去"查偏移 + 读日志文件"的第二次 I/O。
-		// 不是内联的 key 会落回下面的多路查找，大 value 的路径完全不变。
-		if v, ok := st.persister.GetInline(key); ok {
-			reply.Value = v
-			return reply
-		}
-	}
+	// **这里不再预查一次"是不是内联"。**
+	//
+	// 原先这个位置有一段 `if kvs.inlinePlacement { GetInline(key) }`：小值内联时它
+	// 一次点查就拿到 value，省掉第二次 I/O。可是**不是内联的 key 要为它多付一次
+	// 完整的 db.Get**——预查落空之后，下面的多路查找还要再查一遍才能拿到偏移。
+	// 2026-09-19 的 10GB 实测：开了 -inlinePlacement 时，1KB / 4KB 两档的点读吞吐
+	// 因此低 9.0% / 8.5%，而 16KB / 256KB 归零，正是"每次读的固定开销被大 value
+	// 摊薄"的形状。
+	//
+	// 现在分流下沉到每一路自己的那一次查找里（lookupValue → raft.GetRecord）：
+	// 记录的首字节已经说明了它是内联还是偏移，查一次就够，内联的 key 依然只查一次。
 	if st.firstGC { // 未开始第二轮GC
 		reply = kvs.firstGCGet(st, key, reply)
 		return reply

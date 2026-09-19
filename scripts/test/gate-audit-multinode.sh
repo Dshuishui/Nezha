@@ -1028,6 +1028,50 @@ else
 fi
 
 echo
+info "=== 三十三、点读路径上一个库只许查一次 ==="
+# 2026-09-19 的 10GB 实测查出来的缺陷：StartGet 先调 GetInline 问一次"是不是内联"，
+# 不是就回落到多路查找里用 Get_opt 再查一次拿偏移——**两次都是完整的 db.Get**。
+# 于是开了 -inlinePlacement 而 value 大于内联阈值时，每一次点读都白查一遍：
+# 1KB / 4KB 两档的点读吞吐因此低 9.0% / 8.5%，16KB / 256KB 归零（固定开销被摊薄）。
+#
+# 它不报错、不影响正确性，只是慢——**没有任何判据会发现它**，是靠"两个本该一样的
+# 系统数字对不上"才追出来的。所以把修完之后的形状钉住：
+#   read.go     一律走 lookupValue（内部是 GetRecord，一次查找同时分流）
+#   service.go  不许再有预查
+# Get_opt 只回答偏移，拿到内联记录会返回错误，所以用它就必然要先问一次——
+# 判据钉的是"读路径不许再出现 Get_opt"，而不是某种写法。
+DBLLOOK=0
+if [ ! -f "$PROJECT_DIR/internal/kvstore/read.go" ]; then
+    echo "       找不到 internal/kvstore/read.go——这一节没在审任何东西"
+    DBLLOOK=$((DBLLOOK+1))
+else
+    # 剔注释再查（第 31 节的教训：成因说明里的字会把判据自己骗过去）。
+    if grep -v '^[[:space:]]*//' "$PROJECT_DIR/internal/kvstore/read.go" | grep -qF 'Get_opt('; then
+        echo "       internal/kvstore/read.go 又出现 Get_opt——它答不了内联，调用方必然要多查一次"
+        DBLLOOK=$((DBLLOOK+1))
+    fi
+    if grep -v '^[[:space:]]*//' "$PROJECT_DIR/internal/kvstore/service.go" | grep -qF 'GetInline('; then
+        echo "       internal/kvstore/service.go 又出现 GetInline 预查——落空的那次是白查的"
+        DBLLOOK=$((DBLLOOK+1))
+    fi
+    # 正向：修法本身还在。只钉不许出现什么、不钉必须出现什么的话，
+    # 把 lookupValue 整个删掉也能判过。
+    if ! grep -qF 'func (kvs *KVServer) lookupValue(' "$PROJECT_DIR/internal/kvstore/read.go"; then
+        echo "       internal/kvstore/read.go 里没有 lookupValue——一次查找完成分流的那一层被拆了"
+        DBLLOOK=$((DBLLOOK+1))
+    fi
+    if ! grep -qF 'func (p *Persister) GetRecord(' "$PROJECT_DIR/internal/raft/persister.go"; then
+        echo "       internal/raft/persister.go 里没有 GetRecord——分流所需的那一次查找没了"
+        DBLLOOK=$((DBLLOOK+1))
+    fi
+fi
+if [ "$DBLLOOK" -eq 0 ]; then
+    good "点读路径每个库只查一次，分流由记录首字节在同一次查找里完成"
+else
+    bad "上列 $DBLLOOK 处会让点读回到双查找——它不报错，只是每次读都白查一遍"
+fi
+
+echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"
 else

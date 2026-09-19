@@ -210,25 +210,71 @@ func (p *Persister) PutInline(key string, value string) {
 	}
 }
 
-// GetInline 取内联 value。第二个返回值为 false 表示这个 key 不是内联存储的
-// （或不存在），调用方应回落到偏移查找路径。
-func (p *Persister) GetInline(key string) (string, bool) {
+// RecordKind 是一条记录的形态。
+type RecordKind int
+
+const (
+	RecordMissing RecordKind = iota // 这个 key 不在这个存储引擎里
+	RecordInline                    // value 就内联在记录里
+	RecordOffset                    // 记录里只有 valuelog 偏移
+)
+
+// GetRecord 取一条记录，**一次 db.Get 同时回答"是内联还是偏移"和"内容是什么"**。
+//
+// 这个方法存在的理由是一个实测到的缺陷：原先点读路径先调 GetInline 问一次
+// "是不是内联"，不是就回落到 Get_opt 再查一次拿偏移——而两者都是完整的
+// db.Get。于是**开了 -inlinePlacement 而 value 大于内联阈值时，每一次点读都要
+// 查两遍 RocksDB**，第一遍注定落空。
+// 2026-09-19 的 10GB 实测：1KB / 4KB 两档的点读吞吐因此比不开这个开关低
+// 9.0% / 8.5%，而 16KB / 256KB 归零——正是"每次读的固定开销被大 value 摊薄"
+// 的形状。
+//
+// 分流所需的信息本来就在同一条记录里，问两遍是把一件事拆成了两次 I/O。
+func (p *Persister) GetRecord(key string) (RecordKind, string, int64, error) {
 	ro := grocksdb.NewDefaultReadOptions()
 	defer ro.Destroy()
 
 	slice, err := p.db.Get(ro, []byte(key))
 	if err != nil {
-		return "", false
+		util.EPrintf("Get key %s failed, err: %s", key, err)
+		return RecordMissing, "", 0, err
 	}
 	defer slice.Free()
+	// 判"有没有这个 key"用 Exists()，理由同 Get：长度为 0 既可能是缺键，
+	// 也可能是一个内容为空串的 value。
 	if !slice.Exists() {
-		return "", false
+		return RecordMissing, "", 0, nil
 	}
 	b := slice.Data()
-	if len(b) == 0 || b[0] != TagInline {
+	if len(b) == 0 {
+		return RecordMissing, "", 0, errors.New("empty record")
+	}
+	switch b[0] {
+	case TagInline:
+		// slice 在本函数返回时就被 Free，所以必须拷一份出去，不能只借它的底层数组。
+		return RecordInline, string(b[1:]), 0, nil
+	case TagOffset:
+		off, err := DecodeOffsetRecord(b)
+		if err != nil {
+			return RecordMissing, "", 0, err
+		}
+		return RecordOffset, "", off, nil
+	}
+	return RecordMissing, "", 0, fmt.Errorf("unknown record tag: 0x%02x", b[0])
+}
+
+// GetInline 取内联 value。第二个返回值为 false 表示这个 key 不是内联存储的
+// （或不存在），调用方应回落到偏移查找路径。
+//
+// **点读路径不要再用它**：它只回答"是不是内联"，不是的话调用方还得再查一遍，
+// 那正是 GetRecord 那段注释里说的双查找。保留它是因为它的语义对只关心内联的
+// 调用方（单测、诊断）更直白。
+func (p *Persister) GetInline(key string) (string, bool) {
+	kind, v, _, err := p.GetRecord(key)
+	if err != nil || kind != RecordInline {
 		return "", false
 	}
-	return string(b[1:]), true
+	return v, true
 }
 
 func (p *Persister) Get_opt(key string) (int64, error) {

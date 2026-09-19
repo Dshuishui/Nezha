@@ -523,27 +523,54 @@ func ReadEntry(reader *bufio.Reader, currentOffset int64) (*raft.Entry, int64, e
 
 // ==================================================
 
+// lookupValue 在一个存储引擎里查一个 key，并把 value 取回来。
+//
+// **一次查找就把分流做完。** 一条记录要么内联着 value（它本身就是答案），要么只存了
+// 偏移（再去 valuelog 按偏移读一次）。两者由同一条记录的首字节区分，所以查一次就够。
+//
+// 此前不是这样：点读入口先调 GetInline 问一次"是不是内联"，不是就回落到这里再用
+// Get_opt 查一次拿偏移——**两次都是完整的 db.Get**。于是开了 -inlinePlacement 而
+// value 大于内联阈值时，每一次点读都白查一遍。代价实测见 raft.GetRecord 的注释。
+//
+// 顺带堵掉一个洞：原先的预查只问**新库**，而内联记录也可能只存在于旧库里；
+// 那种情况下旧库那一路会拿 Get_opt 去解析一条内联记录、得到一个错误，于是这个 key
+// 在那一路上查不到。现在每一路都认得两种记录。
+//
+// 第二个返回值"找到了没有"与 error 分开：**没有这个 key 是常态，查不了是故障**，
+// 混成一个会让一次读故障看起来像负载里本来就没有这个 key。
+// 错误里带上 where 与阶段：多路汇合时只剩一句 out.note，不写清楚就分不出是取记录
+// 失败还是按偏移读失败。
+func (kvs *KVServer) lookupValue(p *raft.Persister, logFile, key, where string) (string, bool, error) {
+	kind, inline, off, err := p.GetRecord(key)
+	if err != nil {
+		return "", false, fmt.Errorf("%s 取记录: %w", where, err)
+	}
+	switch kind {
+	case raft.RecordMissing:
+		return "", false, nil
+	case raft.RecordInline:
+		return inline, true, nil
+	}
+	readKey, value, err := kvs.raft.ReadValueFromFile(logFile, off)
+	if err != nil {
+		return "", false, fmt.Errorf("%s 按偏移读: %w", where, err)
+	}
+	if readKey != key {
+		// 偏移指向了别的记录：索引与日志不配套，是个真问题。但它在**读侧**，
+		// 报上去并带上现场，不要带走整个节点。
+		return "", false, fmt.Errorf("%s 偏移 %d 处的 key 是 %q，与请求的 %q 不符",
+			where, off, readKey, key)
+	}
+	return value, true, nil
+}
+
 func (kvs *KVServer) firstGCGet(st stateSnapshot, key string, reply *kvrpc.GetInRaftResponse) *kvrpc.GetInRaftResponse {
-	if !st.startGC { // 还未开始 GC，只有一路可查：当前 rocksdb 的偏移 + 当前 valuelog
+	if !st.startGC { // 还未开始 GC，只有一路可查：当前 rocksdb 的记录 + 当前 valuelog
 		var out readOutcome
-		positionBytes, err := st.persister.Get_opt(key)
-		if err != nil {
-			out.note("当前 rocksdb 取偏移", err)
-			return out.finish(reply, key)
-		}
-		if positionBytes == -1 {
-			return out.finish(reply, key) // 没有记录：键不存在
-		}
-		readKey, value, err := kvs.raft.ReadValueFromFile(st.currentLog, positionBytes)
-		if err != nil {
-			out.note("当前 valuelog 按偏移读", err)
-			return out.finish(reply, key)
-		}
-		if readKey != key {
-			// 偏移指向了别的记录：索引与日志不配套，是个真问题。但它在**读侧**，
-			// 报上去并带上现场，不要带走整个节点。
-			out.note("当前 valuelog", fmt.Errorf("偏移 %d 处的 key 是 %q，与请求的 %q 不符",
-				positionBytes, readKey, key))
+		value, found, err := kvs.lookupValue(st.persister, st.currentLog, key, "当前 valuelog")
+		out.note("当前 valuelog", err)
+		if !found {
+			// 没找到与查不了是两件事，out.finish 按 err 是否为空分开报。
 			return out.finish(reply, key)
 		}
 		reply.Value = value
@@ -566,25 +593,8 @@ func (kvs *KVServer) firstGCGet(st stateSnapshot, key string, reply *kvrpc.GetIn
 
 		// 并行搜索新文件
 		st.spawn(func() {
-			positionBytes, err := st.persister.Get_opt(key)
-			if err != nil {
-				newFileResult <- searchResult{false, "", err, false}
-				return
-			}
-			if positionBytes == -1 {
-				newFileResult <- searchResult{false, "", nil, false}
-				return
-			}
-			read_key, value, err := kvs.raft.ReadValueFromFile(st.currentLog, positionBytes)
-			if err != nil {
-				newFileResult <- searchResult{false, "", err, false}
-				return
-			}
-			if read_key == key {
-				newFileResult <- searchResult{true, value, nil, false}
-			} else {
-				newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file"), false}
-			}
+			value, found, err := kvs.lookupValue(st.persister, st.currentLog, key, "当前 valuelog")
+			newFileResult <- searchResult{found, value, err, false}
 		})
 
 		// 并行搜索旧文件
@@ -597,25 +607,8 @@ func (kvs *KVServer) firstGCGet(st stateSnapshot, key string, reply *kvrpc.GetIn
 				oldFileResult <- searchResult{false, "", errRetiredStore, false}
 				return
 			}
-			positionBytes, err := st.oldPersister.Get_opt(key)
-			if err != nil {
-				oldFileResult <- searchResult{false, "", err, false}
-				return
-			}
-			if positionBytes == -1 {
-				oldFileResult <- searchResult{false, "", nil, false}
-				return
-			}
-			read_key, value, err := kvs.raft.ReadValueFromFile(st.oldLog, positionBytes)
-			if err != nil {
-				oldFileResult <- searchResult{false, "", err, false}
-				return
-			}
-			if read_key == key {
-				oldFileResult <- searchResult{true, value, nil, false}
-			} else {
-				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in old file"), false}
-			}
+			value, found, err := kvs.lookupValue(st.oldPersister, st.oldLog, key, "旧 valuelog")
+			oldFileResult <- searchResult{found, value, err, false}
 		})
 
 		// 按优先级逐路取结果：新文件在前，同一个 key 的较新写入在那里。
@@ -655,25 +648,8 @@ func (kvs *KVServer) anotherGCGet(st stateSnapshot, key string, reply *kvrpc.Get
 
 		// 并行搜索旧文件（上一轮的新文件），这时候还没开始第二轮GC，文件还没切换
 		st.spawn(func() {
-			positionBytes, err := st.persister.Get_opt(key)
-			if err != nil {
-				oldFileResult <- searchResult{false, "", err, false}
-				return
-			}
-			if positionBytes == -1 {
-				oldFileResult <- searchResult{false, "", nil, false}
-				return
-			}
-			read_key, value, err := kvs.raft.ReadValueFromFile(st.currentLog, positionBytes)
-			if err != nil {
-				oldFileResult <- searchResult{false, "", err, false}
-				return
-			}
-			if read_key == key {
-				oldFileResult <- searchResult{true, value, nil, false}
-			} else {
-				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file"), false}
-			}
+			value, found, err := kvs.lookupValue(st.persister, st.currentLog, key, "当前 valuelog")
+			oldFileResult <- searchResult{found, value, err, false}
 		})
 
 		// 并行搜索排序文件，这个排序文件在第一轮GC完就已经切换，所以下面的不用改
@@ -723,48 +699,14 @@ func (kvs *KVServer) anotherGCGet(st stateSnapshot, key string, reply *kvrpc.Get
 				oldFileResult <- searchResult{false, "", errRetiredStore, false}
 				return
 			}
-			positionBytes, err := st.oldPersister.Get_opt(key)
-			if err != nil {
-				oldFileResult <- searchResult{false, "", err, false}
-				return
-			}
-			if positionBytes == -1 {
-				oldFileResult <- searchResult{false, "", nil, false}
-				return
-			}
-			read_key, value, err := kvs.raft.ReadValueFromFile(st.oldLog, positionBytes)
-			if err != nil {
-				oldFileResult <- searchResult{false, "", err, false}
-				return
-			}
-			if read_key == key {
-				oldFileResult <- searchResult{true, value, nil, false}
-			} else {
-				oldFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file"), false}
-			}
+			value, found, err := kvs.lookupValue(st.oldPersister, st.oldLog, key, "旧 valuelog")
+			oldFileResult <- searchResult{found, value, err, false}
 		})
 
 		// 并行搜索新文件（本轮的新文件）
 		st.spawn(func() {
-			positionBytes, err := st.persister.Get_opt(key)
-			if err != nil {
-				newFileResult <- searchResult{false, "", err, false}
-				return
-			}
-			if positionBytes == -1 {
-				newFileResult <- searchResult{false, "", nil, false}
-				return
-			}
-			read_key, value, err := kvs.raft.ReadValueFromFile(st.currentLog, positionBytes)
-			if err != nil {
-				newFileResult <- searchResult{false, "", err, false}
-				return
-			}
-			if read_key == key {
-				newFileResult <- searchResult{true, value, nil, false}
-			} else {
-				newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file"), false}
-			}
+			value, found, err := kvs.lookupValue(st.persister, st.currentLog, key, "当前 valuelog")
+			newFileResult <- searchResult{found, value, err, false}
 		})
 
 		// 并行搜索排序文件
@@ -809,25 +751,8 @@ func (kvs *KVServer) anotherGCGet(st stateSnapshot, key string, reply *kvrpc.Get
 
 	// 并行搜索新文件（本轮的新文件）
 	st.spawn(func() {
-		positionBytes, err := st.persister.Get_opt(key)
-		if err != nil {
-			newFileResult <- searchResult{false, "", err, false}
-			return
-		}
-		if positionBytes == -1 {
-			newFileResult <- searchResult{false, "", nil, false}
-			return
-		}
-		read_key, value, err := kvs.raft.ReadValueFromFile(st.currentLog, positionBytes)
-		if err != nil {
-			newFileResult <- searchResult{false, "", err, false}
-			return
-		}
-		if read_key == key {
-			newFileResult <- searchResult{true, value, nil, false}
-		} else {
-			newFileResult <- searchResult{false, "", fmt.Errorf("key mismatch in new file"), false}
-		}
+		value, found, err := kvs.lookupValue(st.persister, st.currentLog, key, "当前 valuelog")
+		newFileResult <- searchResult{found, value, err, false}
 	})
 
 	// 并行搜索排序文件

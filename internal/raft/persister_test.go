@@ -252,3 +252,73 @@ func TestGetDoesNotMistakeSentinelShapedValue(t *testing.T) {
 		}
 	}
 }
+
+// GetRecord 是双查找那个缺陷的修法：**一次 db.Get 同时回答"是内联还是偏移"和
+// "内容是什么"**。此前点读要先问 GetInline、不是内联再问 Get_opt，两次都是完整查找。
+//
+// 这一组钉住三件事：三种形态各自回答什么、内联与偏移在那个会撞车的长度上仍然分得开、
+// 以及 GetInline 的行为没被这次改动改掉（它现在是 GetRecord 的薄封装）。
+func TestGetRecordAnswersKindAndContentInOneLookup(t *testing.T) {
+	p := newTestPersister(t)
+
+	// 缺键：不是错误，是一种正常回答。把它报成错误会让一次读故障与
+	// "负载里本来就没有这个 key" 混在一起。
+	kind, _, _, err := p.GetRecord("nope")
+	if err != nil {
+		t.Fatalf("缺键不该是错误: %v", err)
+	}
+	if kind != RecordMissing {
+		t.Fatalf("缺键的形态 = %v, want RecordMissing", kind)
+	}
+
+	// 偏移记录：形态是 RecordOffset，偏移取得回来，且**不**冒充内联。
+	p.Put_opt("offkey", 123456789)
+	kind, inline, off, err := p.GetRecord("offkey")
+	if err != nil {
+		t.Fatalf("GetRecord(offkey): %v", err)
+	}
+	if kind != RecordOffset {
+		t.Fatalf("偏移记录的形态 = %v, want RecordOffset", kind)
+	}
+	if off != 123456789 {
+		t.Fatalf("偏移 = %d, want 123456789", off)
+	}
+	if inline != "" {
+		t.Fatalf("偏移记录不该带内联 value，却给了 %q", inline)
+	}
+
+	// 内联记录：7 字节 value 加标记正好 8 字节，正是旧的按长度判别会撞车的尺寸。
+	p.PutInline("inkey", "1234567")
+	kind, inline, off, err = p.GetRecord("inkey")
+	if err != nil {
+		t.Fatalf("GetRecord(inkey): %v", err)
+	}
+	if kind != RecordInline {
+		t.Fatalf("内联记录的形态 = %v, want RecordInline", kind)
+	}
+	if inline != "1234567" {
+		t.Fatalf("内联 value = %q, want %q", inline, "1234567")
+	}
+	if off != 0 {
+		t.Fatalf("内联记录不该带偏移，却给了 %d", off)
+	}
+
+	// 空 value 与缺键必须分开：长度为 0 有两种成因，按长度判会把已提交的空 value
+	// 报成"没有这个 key"。Get / Get_opt 都用 Exists()，GetRecord 也必须。
+	p.PutInline("emptykey", "")
+	kind, inline, _, err = p.GetRecord("emptykey")
+	if err != nil {
+		t.Fatalf("GetRecord(emptykey): %v", err)
+	}
+	if kind != RecordInline || inline != "" {
+		t.Fatalf("空的内联 value 读成了 kind=%v value=%q —— 被当成缺键了", kind, inline)
+	}
+
+	// GetInline 现在走 GetRecord，行为不能变。
+	if v, ok := p.GetInline("inkey"); !ok || v != "1234567" {
+		t.Fatalf("GetInline(inkey) = %q,%v —— 薄封装把语义改掉了", v, ok)
+	}
+	if _, ok := p.GetInline("offkey"); ok {
+		t.Fatal("GetInline 把偏移记录认成了内联")
+	}
+}
