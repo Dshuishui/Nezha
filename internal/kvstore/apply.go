@@ -34,17 +34,25 @@ func newOpContext(op *raftrpc.DetailCod) (opCtx *OpContext) {
 
 func (kvs *KVServer) applyLoop() {
 	for !kvs.killed() {
+		// **这个循环是单 goroutine，所以它的占空比就是写吞吐的一道硬上限。**
+		// 量 idle 与 busy 两头才能分清它是天花板还是被饿着——判据与代价见
+		// putstats.go 里 applyLoopStats 那段。
+		tIdle := time.Now()
 		msg := <-kvs.applyCh
+		idle := time.Since(tIdle)
 		if !msg.CommandValid {
 			continue
 		}
+		tLock := time.Now()
 		kvs.mu.Lock()
+		lockWait := time.Since(tLock)
 		// In lsm-raft mode a follower holds committed entries and ingests the leader's
 		// SSTables instead of replaying them (lsmraft.go).
 		if kvs.lsm == nil || !kvs.lsmHoldOrApply(msg) {
 			kvs.applyCommand(msg)
 		}
 		kvs.mu.Unlock()
+		recordApplyLoop(idle, lockWait, time.Since(tLock))
 	}
 }
 

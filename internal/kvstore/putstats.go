@@ -39,6 +39,61 @@ var putStats struct {
 	applyCalls   atomic.Uint64
 }
 
+// applyLoop 自身的耗时。**S4 占了写延迟的 89.6%，而此前只量了嵌套在里面的
+// RocksDB 写（8.8µs），剩下 96% 没有任何度量**——三个候选（apply 循环串行、
+// 复制链路、rf.mu 争用）谁是天花板全靠猜。
+//
+// 判据是 idle 与 busy 的**对比**，不是任何一个的绝对值：
+//
+//	idle 约等于 0、busy × 速率 ≈ 1   → 循环一直在忙，它**就是**天花板，
+//	                                   所有请求排在它后面（它是单 goroutine）
+//	idle 占大头                      → 循环大部分时间在等消息，**它被饿着**，
+//	                                   瓶颈在上游的复制/提交，优化 apply 没用
+//
+// 没有 idle 这一项就分不出这两种，而它们的优化方向完全相反。
+//
+// 代价：每条多两次 time.Now()（约 50ns），相对每条 17.8µs 是 0.3%，可以接受；
+// 这条路径上本来就有 recordPut / recordApplyStore 在做同样的事。
+var applyLoopStats struct {
+	iters      atomic.Uint64
+	idleNs     atomic.Uint64 // 阻塞在 <-applyCh 上的时间
+	lockWaitNs atomic.Uint64 // 等 kvs.mu
+	busyNs     atomic.Uint64 // 取锁 + 应用 + 放锁，即"循环在干活"的时间
+}
+
+func recordApplyLoop(idle, lockWait, busy time.Duration) {
+	applyLoopStats.iters.Add(1)
+	applyLoopStats.idleNs.Add(uint64(idle))
+	applyLoopStats.lockWaitNs.Add(uint64(lockWait))
+	applyLoopStats.busyNs.Add(uint64(busy))
+}
+
+// ApplyLoopStatsLine 输出 apply 循环的占空比。
+//
+// busy_share 是这一行的重点：它就是**单 goroutine 的 apply 循环的利用率**。
+// 接近 100% 意味着它已经跑满，写吞吐不可能超过 1/avg_busy，再加并发只会排队。
+func ApplyLoopStatsLine() string {
+	n := applyLoopStats.iters.Load()
+	if n == 0 {
+		return "[APPLY-LOOP] 无数据"
+	}
+	ms := func(total uint64) float64 { return float64(total) / float64(n) / 1e6 }
+	idle, lockWait, busy := ms(applyLoopStats.idleNs.Load()),
+		ms(applyLoopStats.lockWaitNs.Load()), ms(applyLoopStats.busyNs.Load())
+	share := 0.0
+	if idle+busy > 0 {
+		share = busy / (idle + busy) * 100
+	}
+	cap_ := 0.0
+	if busy > 0 {
+		cap_ = 1000.0 / busy // 每秒能处理多少条：1/avg_busy
+	}
+	return fmt.Sprintf(
+		"[APPLY-LOOP] iters=%d avg_idle=%.4fms avg_lock_wait=%.4fms avg_busy=%.4fms "+
+			"busy_share=%.1f%% serial_cap=%.0f entries/s",
+		n, idle, lockWait, busy, share, cap_)
+}
+
 func recordPut(handler, raftStart, commitWait time.Duration) {
 	putStats.calls.Add(1)
 	putStats.handlerNs.Add(uint64(handler))
@@ -96,6 +151,7 @@ func StartWriteStatsReporter(interval time.Duration) {
 		for range time.Tick(interval) {
 			if putStats.calls.Load() > 0 {
 				fmt.Println(PutStatsLine())
+				fmt.Println(ApplyLoopStatsLine())
 				fmt.Println(ApplyRaceStatsLine())
 				fmt.Println(raft.RaftWriteStatsLine())
 				fmt.Println(raft.GroupCommitStatsLine())
