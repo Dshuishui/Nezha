@@ -25,6 +25,10 @@
 #   SYNC_WAL=0        出性能数字必须 0（每条 fsync 慢约 50 倍，4GB 是几十小时）。
 #   PARTITION_MB=     GC 产物中单个分区的目标大小。留空用节点默认（128MB）。
 #   PUT_CLIENTS=100 GET_CLIENTS=100        并发度（SCAN 恒为 1，理由见下）
+#   PUT_KEYSPACE=     B 阶段 PUT 的键空间。留空/0 = 唯一 key（盘上无垃圾，GC 的
+#                     `回收` 恒为 0，它只是在做全量重排序）；给了就是覆盖写，
+#                     写 n 条但只有 PUT_KEYSPACE 个不同的 key，旧版本成为垃圾。
+#   PUT_DIST=uniform  覆盖写的键分布，uniform|zipf|range（仅 PUT_KEYSPACE>0 时有效）
 #   GET_OPS=200000 GET_TESTS=10            GET 总请求 = 两者之积
 #   SCAN_DNUMS=250 SCAN_TESTS=4            总扫描次数 = 两者之积（默认 1000）
 #   SCAN_FRAC=4       单次扫描覆盖 记录总数/SCAN_FRAC 条。4 即每次约 TOTAL_MB/4。
@@ -395,9 +399,26 @@ run_cell() { # $1=phase $2=total_mb $3=vsize $4=system
     start_cluster "$vs" "$n" || return 1
 
     # ---- PUT ----
-    say "[$cell] PUT $n 条 × ${vs}B，并发 $PUT_CLIENTS"
+    # **PUT_KEYSPACE 决定这是唯一写还是覆盖写，而这件事会改变 GC 的性质。**
+    #
+    # 默认（0）写 n 个互不相同的 key，于是盘上**没有任何垃圾**——2026-09-19 的 10GB 跑
+    # 里 13 轮 GC 每一轮都是 `回收=0B`，GC 实际上只是在做全量重排序，不是回收。
+    # 同一份日志里还有 `复用分区=0`：吸收本想复用"没被尾部碰到"的分区，而随机 key 的
+    # 尾部会散落进每一个分区的区间，于是一个都复用不了，每轮把整个数据集重写一遍
+    # （第 13 轮重写 8.19GB，耗时 3m52s，13 轮累计重写约 37GB 来存 10GB）。
+    #
+    # 给了 PUT_KEYSPACE 就从 [0,PUT_KEYSPACE) 里取 key、允许重复，于是旧版本成为垃圾，
+    # `回收` 才可能不为 0。**这两种负载下 GC 的开销模型完全不同，所以在为 GC 做任何
+    # 优化之前，必须先分别量一遍**——否则可能在为一个只存在于唯一 key 负载下的问题优化。
+    local putextra=""
+    if [ -n "${PUT_KEYSPACE:-}" ] && [ "${PUT_KEYSPACE:-0}" -gt 0 ]; then
+        putextra="-keyspace $PUT_KEYSPACE -dist ${PUT_DIST:-uniform}"
+        say "[$cell] PUT $n 条 × ${vs}B，并发 ${PUT_CLIENTS}（**覆盖写**：键空间 ${PUT_KEYSPACE}，分布 ${PUT_DIST:-uniform}，约 $((n / PUT_KEYSPACE)) 倍重写）"
+    else
+        say "[$cell] PUT $n 条 × ${vs}B，并发 ${PUT_CLIENTS}（唯一 key，盘上无垃圾）"
+    fi
     run_watched "$cell/PUT" "$d/put.out" \
-        "source ~/env.sh; /tmp/mt3-randwrite_goroutine -cnums $PUT_CLIENTS -dnums $n -vsize $vs -servers $ALL" \
+        "source ~/env.sh; /tmp/mt3-randwrite_goroutine -cnums $PUT_CLIENTS -dnums $n -vsize $vs $putextra -servers $ALL" \
         || return 1
     local PUTL PUTT
     PUTL=$(grep '^\[LATENCY\]' "$d/put.out" | tail -1)
