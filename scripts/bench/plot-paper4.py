@@ -332,6 +332,53 @@ def fig_throughput(cell, vsizes, outdir):
     save(fig, outdir, "fig5-throughput")
 
 
+def fig_relative(cell, vsizes, outdir):
+    """三个操作的吞吐，**归一化到 Original**。
+
+    为什么要有这一张：六档合并之后绝对吞吐跨 400 倍，fig5 只能上对数轴，
+    而对数轴把四个系统之间 10~40% 的差异压成了几乎看不见的高度差——
+    那恰恰是这张图存在的理由。归一化之后纵轴回到线性的 0.5~1.5，
+    对比一眼可见，代价是看不到绝对量级（绝对值在 fig5 与 figure-values.txt 里）。
+    两张图各答一个问题，不是同一张图的两个版本。
+    """
+    ref = SYS[0]
+    width_in = 7.4 if len(vsizes) <= 3 else 10.2
+    fig, axes = plt.subplots(1, 3, figsize=(width_in, 2.8))
+    width = 0.8 / len(SYS)
+    for ax, (op, title) in zip(axes, [("PUT", "Write"),
+                                      ("GET", "Point read"),
+                                      ("SCAN", "Range scan")]):
+        for i, sy in enumerate(SYS):
+            xs, ys = [], []
+            for j, vs in enumerate(vsizes):
+                v = num(cell, sy, op, vs, "mb_per_s")
+                b = num(cell, ref, op, vs, "mb_per_s")
+                # 基准缺了就整组都画不了——**不能拿别的档的基准凑**，
+                # 那样画出来的倍率不属于任何一次测量。
+                if v is None or not b:
+                    continue
+                xs.append(j + (i - (len(SYS) - 1) / 2) * width)
+                ys.append(v / b)
+            if not xs:
+                continue
+            ax.bar(xs, ys, width=width * 0.92, label=LABEL[sy],
+                   color=COLOR[sy], hatch=HATCH[sy],
+                   edgecolor="white", linewidth=0.6, zorder=3)
+        ax.axhline(1.0, color="#444444", linewidth=0.8, zorder=4)
+        ax.set_xticks(range(len(vsizes)))
+        ax.set_xticklabels([vlabel(v) for v in vsizes],
+                           rotation=30 if len(vsizes) > 3 else 0,
+                           ha="right" if len(vsizes) > 3 else "center")
+        ax.set_xlabel("value size")
+        ax.set_ylabel(f"throughput / {LABEL[ref]}" if ax is axes[0] else "")
+        ax.set_title(title)
+        ax.grid(axis="y", zorder=0)
+        ax.set_axisbelow(True)
+    fig.tight_layout()
+    toplegend(fig, axes[0])
+    save(fig, outdir, "fig6-relative")
+
+
 # ---------------------------------------------------------------------------
 # 图 4：空间 —— 13.5 倍的日志回收
 # ---------------------------------------------------------------------------
@@ -411,6 +458,7 @@ def main():
     fig_put(cell, vsizes, outdir)
     fig_get(cell, vsizes, outdir)
     fig_throughput(cell, vsizes, outdir)
+    fig_relative(cell, vsizes, outdir)
     dump_table(cell, vsizes, outdir)
 
     # 空间数据不在主 CSV 里，由调用方通过环境变量给（见归档脚本）。
