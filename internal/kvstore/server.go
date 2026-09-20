@@ -47,9 +47,15 @@ type KVServer struct {
 	seqMap    map[int64]int64    // 客户端id -> 客户端seq
 
 	lastAppliedIndex int // 已持久化存储的日志index
-	commitTimeout    time.Duration
-	cfg              Config
-	lsm              *lsmRaft // LSM-Raft baseline state; nil unless -system lsm-raft
+
+	// applyBatch 的复用缓冲。**不是过早优化**：逐条路径上每条会 make 两个切片，
+	// 而攒批之前一次都没有。2026-09-20 实测低并发退化 8.3%，这是其中一份成因。
+	// 只在 kvs.mu 之下被用，所以不需要额外同步。
+	applyRowsBuf  []raft.StoreRow
+	applyWakeBuf  []*OpContext
+	commitTimeout time.Duration
+	cfg           Config
+	lsm           *lsmRaft // LSM-Raft baseline state; nil unless -system lsm-raft
 	kvrpc.UnimplementedKVServer
 	// resultCh  chan *kvrpc.PutInRaftResponse
 

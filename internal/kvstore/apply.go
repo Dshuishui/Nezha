@@ -40,6 +40,31 @@ func newOpContext(op *raftrpc.DetailCod) (opCtx *OpContext) {
 // 256 条 × 每条约 10µs 的实际写入 ≈ 2.5ms，与单次扫描动辄几秒相比可以忽略。
 const maxApplyBatch = 256
 
+// minApplyBatch 是"值得攒批"的队列深度门槛：通道里排着的不到这么多，就逐条应用。
+//
+// **攒批不是免费的。** 它把 kvs.mu 从"每条取放一次"变成"整批持有一次"，而 PUT
+// 处理函数要取 kvs.mu 注册/删除 opCtx——整批期间它们被锁在外面。在延迟受限的
+// 低并发区间，这一项压倒了省下来的固定开销。
+//
+// 2026-09-20 实测（64B，512MB，nezha-nogc，三台）。低端各测三次，离散 ≤0.7%，
+// 所以下面的差远大于噪声：
+//
+//	并发   批大小   吞吐           p50
+//	 25    11.8    -8.3%   36194 -> 33183    0.648 -> 0.716 ms
+//	 50    19.4    -3.4%   51357 -> 49593    0.897 -> 0.933 ms
+//	100    33.0   +20.8%   55672 -> 67329    1.676 -> 1.357 ms
+//	200    49.5   +45.2%   55488 -> 80589    3.366 -> 2.214 ms
+//	400    72.9   +61.1%   55437 -> 89286    6.801 -> 4.168 ms
+//
+// 交叉点落在批 19 与 33 之间，所以门槛取 24。低于它走的是与攒批前**完全一致**
+// 的路径（一条一批），于是低并发那段的退化被还掉，高并发那段的收益留着。
+//
+// （**记一笔教训**：我原先按算术推断低并发下攒批应当持平——"12 条各等自己那次写
+// 的平均是 59µs，攒成一批一起等 54.9µs，还更短"——据此怀疑那 8.3% 是噪声。
+// 重测三次全部复现。模型漏掉了 kvs.mu 的持有时长这一项。
+// **拿模型去怀疑数据之前，先把模型算全。**）
+const minApplyBatch = 24
+
 // applyLoop 把**已经排在 applyCh 里**的条目一次取走一批，一批只写一次存储引擎。
 //
 // 为什么要批：2026-09-20 的并发扫描实测，写吞吐在并发 100→400 之间完全压平
@@ -53,17 +78,25 @@ const maxApplyBatch = 256
 // 所以它只在 -syncWAL 下才启用（server.go:370）。这里没有窗口，也就没有这个代价。
 func (kvs *KVServer) applyLoop() {
 	batch := make([]raft.ApplyMsg, 0, maxApplyBatch)
+	single := make([]raft.ApplyMsg, 1) // 逐条路径复用，不每条 make 一个切片
 	for !kvs.killed() {
 		// **量 idle 与 busy 两头才能分清这个循环是天花板还是被饿着。**
 		// 判据与代价见 putstats.go 里 applyLoopStats 那段。
 		tIdle := time.Now()
 		msg := <-kvs.applyCh
 		idle := time.Since(tIdle)
-		batch = batch[:0]
-		if msg.CommandValid {
-			batch = append(batch, msg)
+		if !msg.CommandValid {
+			continue
 		}
-		// 机会性抽干：只取已经到的。default 一命中就停，不等。
+		// 队列浅到不值得攒批时逐条应用——与攒批前完全一致的路径。
+		// 门槛的理由与实测数字见 minApplyBatch。
+		if len(kvs.applyCh) < minApplyBatch {
+			single[0] = msg
+			kvs.applyUnderLock(idle, single)
+			continue
+		}
+		batch = append(batch[:0], msg)
+		// 机会性抽干：只取**已经到的**。default 一命中就停，绝不为凑满而等。
 		for drained := false; !drained && len(batch) < maxApplyBatch; {
 			select {
 			case m := <-kvs.applyCh:
@@ -74,30 +107,33 @@ func (kvs *KVServer) applyLoop() {
 				drained = true
 			}
 		}
-		if len(batch) == 0 {
-			continue
-		}
-		tLock := time.Now()
-		kvs.mu.Lock()
-		lockWait := time.Since(tLock)
-		// In lsm-raft mode a follower holds committed entries and ingests the leader's
-		// SSTables instead of replaying them (lsmraft.go).
-		//
-		// **lsm 模式下不能批。** lsmHoldOrApply 要逐条决定"扣住还是应用"，
-		// 而它的判定依赖前一条的处理结果（held 队列与 lastAppliedIndex）。
-		// 那个模式不在被测的四个系统里，保持逐条是最省事也最安全的。
-		if kvs.lsm != nil {
-			for i := range batch {
-				if !kvs.lsmHoldOrApply(batch[i]) {
-					kvs.applyCommand(batch[i])
-				}
-			}
-		} else {
-			kvs.applyBatch(batch)
-		}
-		kvs.mu.Unlock()
-		recordApplyLoop(idle, lockWait, time.Since(tLock), len(batch))
+		kvs.applyUnderLock(idle, batch)
 	}
+}
+
+// applyUnderLock 在 kvs.mu 之下应用一批。batch 只有一条时就是逐条路径，
+// 两条路径共用这一份实现（同一段逻辑写两遍这件事这个仓库已经栽过）。
+func (kvs *KVServer) applyUnderLock(idle time.Duration, batch []raft.ApplyMsg) {
+	tLock := time.Now()
+	kvs.mu.Lock()
+	lockWait := time.Since(tLock)
+	// In lsm-raft mode a follower holds committed entries and ingests the leader's
+	// SSTables instead of replaying them (lsmraft.go).
+	//
+	// **lsm 模式下不能批。** lsmHoldOrApply 要逐条决定"扣住还是应用"，
+	// 而它的判定依赖前一条的处理结果（held 队列与 lastAppliedIndex）。
+	// 那个模式不在被测的四个系统里，保持逐条是最省事也最安全的。
+	if kvs.lsm != nil {
+		for i := range batch {
+			if !kvs.lsmHoldOrApply(batch[i]) {
+				kvs.applyCommand(batch[i])
+			}
+		}
+	} else {
+		kvs.applyBatch(batch)
+	}
+	kvs.mu.Unlock()
+	recordApplyLoop(idle, lockWait, time.Since(tLock), len(batch))
 }
 
 // applyCommand applies one committed entry to the store and wakes the client waiting on
@@ -129,10 +165,14 @@ func (kvs *KVServer) applyBatch(msgs []raft.ApplyMsg) {
 	kvs.stateMu.RLock()
 	defer kvs.stateMu.RUnlock()
 
-	rows := make([]raft.StoreRow, 0, len(msgs))
+	// 两个切片都复用 KVServer 上的缓冲，不每次 make：逐条路径上那会是每条两次分配
+	// （攒批之前一次都没有），实测是低并发退化的成因之一。append 扩容后要写回，
+	// 否则涨出来的容量下一次用不上。
+	rows := kvs.applyRowsBuf[:0]
 	// 等着被唤醒的客户端。**必须等这一批落库之后再唤醒**：客户端拿到 OK 之后的读
 	// 走 leader 本地的库（租约读），先唤醒再落库会让它读不到自己刚写的值。
-	wake := make([]*OpContext, 0, len(msgs))
+	wake := kvs.applyWakeBuf[:0]
+	defer func() { kvs.applyRowsBuf, kvs.applyWakeBuf = rows, wake }()
 	applied := 0
 	pending := false // 自上次落库以来有没有需要写的东西
 
