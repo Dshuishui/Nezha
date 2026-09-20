@@ -1088,11 +1088,14 @@ if [ ! -f "$AF" ]; then
 else
     NOCOMMENT=$(mktemp "${TMPDIR:-/tmp}/apply-nocomment.XXXXXX")
     grep -vE '^[[:space:]]*//' "$AF" > "$NOCOMMENT"
-    LASTFLUSH=$(grep -n 'flushRows()' "$NOCOMMENT" | tail -1 | cut -d: -f1)
+    # **只认调用，不认定义。** 第一版 grep 的是裸的 flushApplyRows(，而函数定义
+    # 排在 close() 之后，tail -1 抓到的是定义行——于是正确的代码也被判失败。
+    # 调用点一律带 kvs. 前缀，定义行是 `func (kvs *KVServer) flushApplyRows(`，没有。
+    LASTFLUSH=$(grep -n 'kvs\.flushApplyRows(' "$NOCOMMENT" | tail -1 | cut -d: -f1)
     FIRSTCLOSE=$(grep -n 'close(c\.committed)\|close(opCtx\.committed)' "$NOCOMMENT" | head -1 | cut -d: -f1)
     rm -f "$NOCOMMENT"
     if [ -z "$LASTFLUSH" ]; then
-        echo "       apply.go 里没有 flushRows()——攒行落库那一层被拆了"
+        echo "       apply.go 里没有 flushApplyRows()——攒行落库那一层被拆了"
         WAKEORD=$((WAKEORD+1))
     elif [ -z "$FIRSTCLOSE" ]; then
         echo "       apply.go 里没有 close(...committed)——等在写上的客户端不会被唤醒"

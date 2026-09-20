@@ -166,28 +166,13 @@ func (kvs *KVServer) applyBatch(msgs []raft.ApplyMsg) {
 	defer kvs.stateMu.RUnlock()
 
 	// 两个切片都复用 KVServer 上的缓冲，不每次 make：逐条路径上那会是每条两次分配
-	// （攒批之前一次都没有），实测是低并发退化的成因之一。append 扩容后要写回，
-	// 否则涨出来的容量下一次用不上。
+	// （攒批之前一次都没有）。append 扩容后要在函数末尾写回，否则涨出来的容量下次用不上。
 	rows := kvs.applyRowsBuf[:0]
 	// 等着被唤醒的客户端。**必须等这一批落库之后再唤醒**：客户端拿到 OK 之后的读
 	// 走 leader 本地的库（租约读），先唤醒再落库会让它读不到自己刚写的值。
 	wake := kvs.applyWakeBuf[:0]
-	defer func() { kvs.applyRowsBuf, kvs.applyWakeBuf = rows, wake }()
 	applied := 0
 	pending := false // 自上次落库以来有没有需要写的东西
-
-	flushRows := func() {
-		if !pending {
-			return
-		}
-		tRocks := time.Now()
-		if err := kvs.persister.WriteRowsApplied(rows, applied); err != nil {
-			util.EPrintf("applyBatch: %d 行连同 applied=%d 落库失败: %v", len(rows), applied, err)
-		}
-		recordApplyStore(time.Since(tRocks), len(rows))
-		rows = rows[:0]
-		pending = false
-	}
 
 	for i := range msgs {
 		msg := msgs[i]
@@ -203,7 +188,9 @@ func (kvs *KVServer) applyBatch(msgs []raft.ApplyMsg) {
 			pending = true
 			if kvs.lsm != nil {
 				// lsmAfterApply 记录的是"已经落库的状态"，所以先把批写掉。
-				flushRows()
+				if pending {
+					rows, pending = kvs.flushApplyRows(rows, applied), false
+				}
 				kvs.lsmAfterApply(index, "", nil)
 			}
 			continue
@@ -237,7 +224,10 @@ func (kvs *KVServer) applyBatch(msgs []raft.ApplyMsg) {
 				// （Raft 日志 + LSM），而后还要被 compaction 反复搬运。
 				rows = append(rows, raft.EncodeValueRow(op.Key, op.Value))
 				if kvs.lsm != nil {
-					flushRows() // 同 TermLog 那处：lsmAfterApply 要看到已落库的状态
+					// 同 TermLog 那处：lsmAfterApply 要看到已落库的状态
+					if pending {
+						rows, pending = kvs.flushApplyRows(rows, applied), false
+					}
 					kvs.lsmAfterApply(index, op.Key, []byte(op.Value))
 				}
 			case int(msg.FileVersion) == kvs.numGC:
@@ -255,7 +245,9 @@ func (kvs *KVServer) applyBatch(msgs []raft.ApplyMsg) {
 				// Row in the old index, marker in the current one: two writes, not atomic.
 				// Data first, marker second, so a crash in between only replays this entry
 				// once on restart, and the replay is idempotent (same key, same offset).
-				flushRows()
+				if pending {
+					rows, pending = kvs.flushApplyRows(rows, applied), false
+				}
 				kvs.oldPersister.Put_opt(op.Key, msg.Offset)
 			}
 			applied = index
@@ -278,9 +270,29 @@ func (kvs *KVServer) applyBatch(msgs []raft.ApplyMsg) {
 		}
 	}
 
-	flushRows()
+	if pending {
+		rows = kvs.flushApplyRows(rows, applied)
+	}
+	kvs.applyRowsBuf, kvs.applyWakeBuf = rows, wake
 	// 唤醒挂起的RPC——**在落库之后**，理由见 wake 的声明处。
 	for _, c := range wake {
 		close(c.committed)
 	}
+}
+
+// flushApplyRows 把攒下的行连同**一个** applied 标记落库，返回清空后的切片。
+//
+// **写成方法而不是闭包，是实测逼出来的。** 原先它是 applyBatch 里的一个闭包，
+// 而闭包会捕获 rows / applied / pending，把这几个变量逼到堆上——applyBatch 在
+// 逐条路径上每条记录走一次，于是这成了凭空多出来的每条开销。
+// 2026-09-20 实测：加了队列门槛之后 c=25 的 per_batch 已经是 1.0（确实走的逐条
+// 路径），吞吐却只有 30067，比攒批前的 36194 低 17%。一条"本该完全一致"的路径
+// 慢 17%，问题就不在攒批上，而在重构自己带进来的开销里。
+func (kvs *KVServer) flushApplyRows(rows []raft.StoreRow, applied int) []raft.StoreRow {
+	tRocks := time.Now()
+	if err := kvs.persister.WriteRowsApplied(rows, applied); err != nil {
+		util.EPrintf("applyBatch: %d 行连同 applied=%d 落库失败: %v", len(rows), applied, err)
+	}
+	recordApplyStore(time.Since(tRocks), len(rows))
+	return rows[:0]
 }
