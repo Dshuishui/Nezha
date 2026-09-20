@@ -330,9 +330,13 @@ func New(cfg Config) (*KVServer, error) {
 	StartAVPViz(cfg.VizAddr, cfg.systemName(), kvs.inlineThreshold)
 	// One line that says which system this log measured: the switches can come from the
 	// preset or be set individually, and results must be attributable afterwards.
-	fmt.Printf("[SYSTEM] %s | kvSeparation=%v gcEnabled=%v gcThresholdGB=%g extraPersistence=%v syncWAL=%v | inlinePlacement=%v inlineThreshold=%dB inlineCacheMB=%d\n",
+	cq := cfg.CommitQuorum
+	if cq == "" {
+		cq = "majority"
+	}
+	fmt.Printf("[SYSTEM] %s | kvSeparation=%v gcEnabled=%v gcThresholdGB=%g extraPersistence=%v syncWAL=%v commitQuorum=%s | inlinePlacement=%v inlineThreshold=%dB inlineCacheMB=%d\n",
 		cfg.systemName(), kvs.kvSeparation, kvs.gcEnabled, kvs.gcThresholdGB,
-		kvs.extraPersistence, cfg.SyncWAL,
+		kvs.extraPersistence, cfg.SyncWAL, cq,
 		kvs.inlinePlacement, kvs.inlineThreshold, cfg.InlineCacheMB)
 
 	// A fresh node opens the initial store; a restarted node restores GC state, the
@@ -368,6 +372,16 @@ func New(cfg Config) (*KVServer, error) {
 		}
 	}
 	kvs.raft.SetSyncOnWrite(cfg.SyncWAL)
+	// 取值只认这两个。**写错不能静默当成默认值**：把 "Leader" 或 "leader-only"
+	// 悄悄当成 majority，跑出来的会是一份标着"异步复制"的标准 Raft 数据，
+	// 而没有任何迹象。空串是"没传"，按默认走。
+	switch cfg.CommitQuorum {
+	case "", "majority":
+	case "leader":
+		kvs.raft.SetLeaderOnlyCommit(true)
+	default:
+		return nil, fmt.Errorf("-commitQuorum 只认 majority | leader，收到 %q", cfg.CommitQuorum)
+	}
 	// 攒批只在 syncWAL 打开时启用。窗口的全部意义是把一批写入摊到**一次 fsync** 上，
 	// 不开 syncWAL 时落盘那一步不 fsync（见 WriteEntryToFile 里的 syncOnWrite），
 	// 攒批于是只剩代价：每条最多多等一个窗口。

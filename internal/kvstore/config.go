@@ -22,6 +22,22 @@ type Config struct {
 	// no fsync to amortise. Default is 100, the measured optimum.
 	SyncWAL       bool
 	GroupCommitUs int
+	// CommitQuorum 决定一条日志要多少副本落盘才算提交：
+	//   "majority"（默认）标准 Raft，⌊n/2⌋+1 份已落盘的副本
+	//   "leader"          只要 leader 自己落盘就算，不等任何 follower
+	//
+	// **"leader" 不是优化，是一个持久性档位。** 它让 leader 确认一条**没有任何
+	// follower 拿到**的写：同一个任期内读己之写仍然成立（租约读由 leader 本地应答），
+	// 但一旦发生故障切换，新 leader 没有那些写，已经返回 OK 的数据就丢了。
+	// 类比是 Redis 的异步复制。
+	//
+	// 代价不止于此：后台复制不会停，而排空速率是固定的。leader 接收得比排空快时
+	// follower 会持续掉队，nextIndex 掉到压缩点之前就改由快照补齐——**大量的快照
+	// 同步正是这个档位要承受的东西**，不是测量误差。
+	//
+	// 租约不受它影响：grantLease 由**心跳**的多数派回执驱动（raft.go 的 leaseRound），
+	// 与这里的日志提交条件是两套独立机制。
+	CommitQuorum string
 	// SnapshotRateMB 限制发快照的速率（MiB/s），0 表示不限。默认 100，与实测的 GC
 	// 搬运速率 110 MB/s 同量级，也与 TiKV 的 snap-io-max-bytes-per-sec 默认值一致。
 	// 不要调得很低：发送方在传输期间会挡住日志截断，传得太慢反而让 leader 的内存

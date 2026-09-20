@@ -41,6 +41,7 @@ func main() {
 	// 默认是 0 的时候这条路走不到，改成 100 就必须把启用条件挂到 syncWAL 上，
 	// 否则所有不开 syncWAL 的运行会凭空多出延迟。
 	flag.IntVar(&cfg.GroupCommitUs, "groupCommitUs", 100, "group commit window in microseconds (0 = disabled); takes effect only with -syncWAL; 100 is the measured optimum (see results/groupcommit/)")
+	flag.StringVar(&cfg.CommitQuorum, "commitQuorum", "majority", "replicas that must have the entry on disk before it commits: majority (standard Raft) or leader (async replication -- a failover loses acknowledged writes)")
 	flag.IntVar(&cfg.SnapshotRateMB, "snapshotRateMB", 100, "rate limit for shipping a snapshot to a lagging replica, MiB/s (0 = unlimited)")
 	flag.IntVar(&cfg.RaftLogBudgetMB, "raftLogBudgetMB", 256, "byte budget for the in-memory Raft log, MiB; past it a lagging replica is truncated past and repaired by snapshot")
 	// -system selects the configuration by the name used in the paper (see

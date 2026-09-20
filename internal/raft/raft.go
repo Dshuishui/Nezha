@@ -246,6 +246,10 @@ type Raft struct {
 	flushSignal chan struct{}
 	groupCommit bool
 	batchWindow time.Duration
+	// leaderOnlyCommit：只要 leader 自己落盘就算提交，不等任何 follower。
+	// 语义与代价见 kvstore.Config 的 CommitQuorum。用 atomic 是因为
+	// updateCommitIndex 在 rf.mu 之下跑，而 setter 在开始服务之前调用。
+	leaderOnlyCommit atomic.Bool
 
 	// syncOnWrite 决定日志写入后是否 fsync。
 	//
@@ -1154,7 +1158,24 @@ func (rf *Raft) electionLoop() {
 	}
 }
 
+// SetLeaderOnlyCommit 切到"只等 leader 落盘"的提交条件。需在节点开始服务前调用。
+func (rf *Raft) SetLeaderOnlyCommit(v bool) { rf.leaderOnlyCommit.Store(v) }
+
 func (rf *Raft) updateCommitIndex() {
+	// 异步复制档：leader 自己已落盘的位置就是提交点，不看任何 follower。
+	//
+	// 取的仍然是 durableIndex() 而不是 lastIndex()：**已落盘**才算数。
+	// 攒批模式下 rf.log 会领先磁盘一个窗口，拿 lastIndex() 提交就等于确认了一条
+	// 还没落盘的写，此时崩一次，那条**读已经返回过**的写就没了——
+	// 这个档位本来就允许故障切换丢数据，但不该连"本机崩了也丢"都一起送出去。
+	if rf.leaderOnlyCommit.Load() {
+		n := rf.durableIndex()
+		if n > rf.commitIndex && rf.termAt(n) == int32(rf.currentTerm) {
+			rf.commitIndex = n
+			rf.signalApply()
+		}
+		return
+	}
 	sortedMatchIndex := make([]int, 0)
 	// leader 自己的那一票必须取**已落盘**的位置，不是 rf.log 的末尾。
 	//
