@@ -459,17 +459,68 @@ func encodeApplied(applied int) []byte {
 	return b
 }
 
-// writeWithApplied writes one data row and the applied index in a single WriteBatch.
-func (p *Persister) writeWithApplied(key []byte, value []byte, applied int) error {
+// StoreRow 是一条待写入存储引擎的行。Value 里**已经带好标记字节**，
+// 由下面三个 EncodeXxxRow 生成——标记的编码只在那三处，不要在调用方重写一遍
+// （散落各处各写一遍这件事已经犯过：见 DecodeOffsetRecord 的注释）。
+type StoreRow struct {
+	Key   []byte
+	Value []byte
+}
+
+// EncodeOffsetRow 生成 [TagOffset, offset8] 的行（KV 分离：库里只存偏移）。
+func EncodeOffsetRow(key string, offset int64) StoreRow {
+	v := make([]byte, 9)
+	v[0] = TagOffset
+	binary.LittleEndian.PutUint64(v[1:], uint64(offset))
+	return StoreRow{Key: []byte(key), Value: v}
+}
+
+// EncodeInlineRow 生成 [TagInline, value] 的行（小值内联）。
+func EncodeInlineRow(key, value string) StoreRow {
+	v := make([]byte, 1+len(value))
+	v[0] = TagInline
+	copy(v[1:], value)
+	return StoreRow{Key: []byte(key), Value: v}
+}
+
+// EncodeValueRow 生成裸 value 的行（基线：不做 KV 分离，value 直接进库，无标记）。
+func EncodeValueRow(key, value string) StoreRow {
+	return StoreRow{Key: []byte(key), Value: []byte(value)}
+}
+
+// WriteRowsApplied 把 N 行数据与**一个** applied 标记写成一个 WriteBatch。
+//
+// 为什么要有批量版：每条 apply 各写一次 db.Write，实测 9.1µs，是单 goroutine 的
+// apply 循环每条 17.1µs 里最大的一块；而每次 Write 还要**额外重写一遍 applied
+// 标记**，那个标记只有一批里的最后一条有意义。2026-09-20 的并发扫描实测，
+// 写吞吐在并发 100→400 之间完全压平（55,672 / 55,488 / 55,437 ops/s），
+// 而 1/avg_busy = 57~58K 正是那条天花板。
+//
+// **批内顺序等同于逐条应用**：WriteBatch 按插入顺序生效，同一个 key 在一批里
+// 被写两次时后者胜——与顺序应用同一结果。applied 标记放在最后一个 Put，
+// 所以它也不会被同批里更早的行盖掉。
+//
+// 崩溃语义比逐条更粗但仍然正确：一批要么全进要么全不进，而重启会从库里的
+// applied 标记之后重放 Raft 日志，重放是幂等的（同 key 同偏移）。
+func (p *Persister) WriteRowsApplied(rows []StoreRow, applied int) error {
 	wb := grocksdb.NewWriteBatch()
 	defer wb.Destroy()
-	if key != nil {
-		wb.Put(key, value)
+	for i := range rows {
+		wb.Put(rows[i].Key, rows[i].Value)
 	}
 	wb.Put([]byte(appliedIndexKey), encodeApplied(applied))
 	p.muWO.Lock()
 	defer p.muWO.Unlock()
 	return p.db.Write(p.wo, wb)
+}
+
+// writeWithApplied writes one data row and the applied index in a single WriteBatch.
+// 它现在是 WriteRowsApplied 的单行特例，两者共用一份实现。
+func (p *Persister) writeWithApplied(key []byte, value []byte, applied int) error {
+	if key == nil {
+		return p.WriteRowsApplied(nil, applied)
+	}
+	return p.WriteRowsApplied([]StoreRow{{Key: key, Value: value}}, applied)
 }
 
 // PutOffsetApplied is Put_opt plus the applied index, as one atomic batch.

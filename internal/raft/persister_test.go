@@ -322,3 +322,47 @@ func TestGetRecordAnswersKindAndContentInOneLookup(t *testing.T) {
 		t.Fatal("GetInline 把偏移记录认成了内联")
 	}
 }
+
+// WriteRowsApplied 是 apply 批量化的落库原语。这一组钉住三件在批量下才出现的性质：
+// 批内顺序、applied 标记只有一个、以及"只推进标记不写行"仍然成立。
+func TestWriteRowsAppliedKeepsOrderAndOneMarker(t *testing.T) {
+	p := newTestPersister(t)
+
+	// **同一批里同一个 key 被写两次，后者必须胜**——否则批量与逐条应用就不等价了。
+	// WriteBatch 按插入顺序生效，这条是它的契约，但契约要被钉住：换成 map 攒行
+	// 就会丢掉顺序，而丢掉之后表现是"偶尔读到旧值"，没有任何报错。
+	rows := []StoreRow{
+		EncodeValueRow("k", "v1"),
+		EncodeValueRow("k", "v2"),
+		EncodeOffsetRow("off", 77),
+		EncodeInlineRow("inl", "small"),
+	}
+	if err := p.WriteRowsApplied(rows, 42); err != nil {
+		t.Fatalf("WriteRowsApplied: %v", err)
+	}
+	if v, err := p.Get("k"); err != nil || v != "v2" {
+		t.Fatalf("同一批里被覆盖的 key 读回 %q (err=%v)，want %q —— 批内顺序丢了", v, err, "v2")
+	}
+	if kind, _, off, err := p.GetRecord("off"); err != nil || kind != RecordOffset || off != 77 {
+		t.Fatalf("偏移行读回 kind=%v off=%d err=%v", kind, off, err)
+	}
+	if kind, inl, _, err := p.GetRecord("inl"); err != nil || kind != RecordInline || inl != "small" {
+		t.Fatalf("内联行读回 kind=%v value=%q err=%v", kind, inl, err)
+	}
+	// 标记是**一批一个**，且等于传进来的那个值（批里最后一条的 index）。
+	if a, ok, err := p.GetApplied(); err != nil || !ok || a != 42 {
+		t.Fatalf("GetApplied = %d,%v,%v，want 42", a, ok, err)
+	}
+
+	// 只推进标记、不写任何行：TermLog 空指令与"偏移进旧库"那一路都走这条。
+	if err := p.WriteRowsApplied(nil, 99); err != nil {
+		t.Fatalf("WriteRowsApplied(nil): %v", err)
+	}
+	if a, ok, err := p.GetApplied(); err != nil || !ok || a != 99 {
+		t.Fatalf("空行批之后 GetApplied = %d,%v,%v，want 99", a, ok, err)
+	}
+	// 上一批的数据不能被空行批擦掉。
+	if v, err := p.Get("k"); err != nil || v != "v2" {
+		t.Fatalf("空行批把数据弄丢了：k = %q (err=%v)", v, err)
+	}
+}

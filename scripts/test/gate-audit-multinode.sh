@@ -1072,6 +1072,44 @@ else
 fi
 
 echo
+info "=== 三十四、apply 批量落库之后才能唤醒客户端 ==="
+# applyBatch 把一批的行攒成一个 WriteBatch 落库，然后才 close(opCtx.committed)。
+# **顺序反了就是一个静默的读己之写破坏**：客户端拿到 OK 之后的读走 leader 本地的库
+# （租约读），若唤醒发生在落库之前，它会读不到自己刚写的值——而且不报任何错。
+#
+# 这条只能按**行序**钉：运行期测先后是不确定的（applyBatch 是同步的，
+# 两件事都会发生，测不出谁先），所以判据是最后一次 flushRows() 必须出现在
+# close( 之前。剔注释再比，否则这段说明自己就会被当成代码（第 31 节的教训）。
+WAKEORD=0
+AF="$PROJECT_DIR/internal/kvstore/apply.go"
+if [ ! -f "$AF" ]; then
+    echo "       找不到 internal/kvstore/apply.go——这一节没在审任何东西"
+    WAKEORD=$((WAKEORD+1))
+else
+    NOCOMMENT=$(mktemp "${TMPDIR:-/tmp}/apply-nocomment.XXXXXX")
+    grep -vE '^[[:space:]]*//' "$AF" > "$NOCOMMENT"
+    LASTFLUSH=$(grep -n 'flushRows()' "$NOCOMMENT" | tail -1 | cut -d: -f1)
+    FIRSTCLOSE=$(grep -n 'close(c\.committed)\|close(opCtx\.committed)' "$NOCOMMENT" | head -1 | cut -d: -f1)
+    rm -f "$NOCOMMENT"
+    if [ -z "$LASTFLUSH" ]; then
+        echo "       apply.go 里没有 flushRows()——攒行落库那一层被拆了"
+        WAKEORD=$((WAKEORD+1))
+    elif [ -z "$FIRSTCLOSE" ]; then
+        echo "       apply.go 里没有 close(...committed)——等在写上的客户端不会被唤醒"
+        WAKEORD=$((WAKEORD+1))
+    elif [ "$LASTFLUSH" -ge "$FIRSTCLOSE" ]; then
+        echo "       唤醒（第 $FIRSTCLOSE 行）排在最后一次落库（第 $LASTFLUSH 行）之前"
+        echo "           客户端会在数据落库前拿到 OK，随后的租约读读不到自己刚写的值"
+        WAKEORD=$((WAKEORD+1))
+    fi
+fi
+if [ "$WAKEORD" -eq 0 ]; then
+    good "apply 的唤醒排在落库之后，读己之写成立"
+else
+    bad "上列 $WAKEORD 处会让客户端在数据落库前拿到 OK——不报错，只是偶尔读到旧值"
+fi
+
+echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"
 else

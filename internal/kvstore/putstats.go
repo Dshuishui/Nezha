@@ -36,7 +36,8 @@ var putStats struct {
 	raftStartNs  atomic.Uint64 // S1+S2+S3：raft.Start 全程
 	commitWaitNs atomic.Uint64 // S4：等 apply 回调
 	applyStoreNs atomic.Uint64 // RocksDB 写入，嵌套在 S4 内部，不参与求和
-	applyCalls   atomic.Uint64
+	applyCalls   atomic.Uint64 // 落库**调用**次数（批量后一次带多行）
+	applyRows    atomic.Uint64 // 落库的总行数
 }
 
 // applyLoop 自身的耗时。**S4 占了写延迟的 89.6%，而此前只量了嵌套在里面的
@@ -55,14 +56,16 @@ var putStats struct {
 // 代价：每条多两次 time.Now()（约 50ns），相对每条 17.8µs 是 0.3%，可以接受；
 // 这条路径上本来就有 recordPut / recordApplyStore 在做同样的事。
 var applyLoopStats struct {
-	iters      atomic.Uint64
+	iters      atomic.Uint64 // 循环转了多少圈（= 批数）
+	entries    atomic.Uint64 // 这些圈里一共应用了多少条
 	idleNs     atomic.Uint64 // 阻塞在 <-applyCh 上的时间
 	lockWaitNs atomic.Uint64 // 等 kvs.mu
-	busyNs     atomic.Uint64 // 取锁 + 应用 + 放锁，即"循环在干活"的时间
+	busyNs     atomic.Uint64 // 取锁 + 应用一批 + 放锁，即"循环在干活"的时间
 }
 
-func recordApplyLoop(idle, lockWait, busy time.Duration) {
+func recordApplyLoop(idle, lockWait, busy time.Duration, entries int) {
 	applyLoopStats.iters.Add(1)
+	applyLoopStats.entries.Add(uint64(entries))
 	applyLoopStats.idleNs.Add(uint64(idle))
 	applyLoopStats.lockWaitNs.Add(uint64(lockWait))
 	applyLoopStats.busyNs.Add(uint64(busy))
@@ -77,6 +80,7 @@ func ApplyLoopStatsLine() string {
 	if n == 0 {
 		return "[APPLY-LOOP] 无数据"
 	}
+	e := applyLoopStats.entries.Load()
 	ms := func(total uint64) float64 { return float64(total) / float64(n) / 1e6 }
 	idle, lockWait, busy := ms(applyLoopStats.idleNs.Load()),
 		ms(applyLoopStats.lockWaitNs.Load()), ms(applyLoopStats.busyNs.Load())
@@ -84,14 +88,21 @@ func ApplyLoopStatsLine() string {
 	if idle+busy > 0 {
 		share = busy / (idle + busy) * 100
 	}
+	perBatch := 0.0
+	if n > 0 {
+		perBatch = float64(e) / float64(n)
+	}
+	// **串行上限必须按「条」算，不是按「批」算。** 批量之后一圈带多条，
+	// 拿 1/avg_busy 当上限会把它低估 perBatch 倍——那个数字会看起来像
+	// 优化把上限变低了，而实际正好相反。
 	cap_ := 0.0
 	if busy > 0 {
-		cap_ = 1000.0 / busy // 每秒能处理多少条：1/avg_busy
+		cap_ = perBatch * 1000.0 / busy
 	}
 	return fmt.Sprintf(
-		"[APPLY-LOOP] iters=%d avg_idle=%.4fms avg_lock_wait=%.4fms avg_busy=%.4fms "+
-			"busy_share=%.1f%% serial_cap=%.0f entries/s",
-		n, idle, lockWait, busy, share, cap_)
+		"[APPLY-LOOP] batches=%d entries=%d per_batch=%.1f avg_idle=%.4fms avg_lock_wait=%.4fms "+
+			"avg_busy=%.4fms busy_share=%.1f%% serial_cap=%.0f entries/s",
+		n, e, perBatch, idle, lockWait, busy, share, cap_)
 }
 
 func recordPut(handler, raftStart, commitWait time.Duration) {
@@ -101,8 +112,16 @@ func recordPut(handler, raftStart, commitWait time.Duration) {
 	putStats.commitWaitNs.Add(uint64(commitWait))
 }
 
-func recordApplyStore(d time.Duration) {
+// storeWriteCalls 是落库调用次数，给测试用：批量化的收益全在"一批只落一次库"上，
+// 而攒行写错（比如每条都 flush）不会有任何报错，只是收益消失。
+func storeWriteCalls() uint64 { return putStats.applyCalls.Load() }
+
+// recordApplyStore 记一次**落库调用**（批量之后一次可能带 n 行），
+// 所以既记调用次数也记行数——只记调用次数的话，批量一上来这个数字会凭空变大
+// 而看起来像变慢了。
+func recordApplyStore(d time.Duration, rows int) {
 	putStats.applyCalls.Add(1)
+	putStats.applyRows.Add(uint64(rows))
 	putStats.applyStoreNs.Add(uint64(d))
 }
 
@@ -124,6 +143,10 @@ func PutStatsLine() string {
 	raftStart := ms(putStats.raftStartNs.Load(), n)
 	commitWait := ms(putStats.commitWaitNs.Load(), n)
 	applyStore := ms(putStats.applyStoreNs.Load(), putStats.applyCalls.Load())
+	storeRows := 0.0
+	if c := putStats.applyCalls.Load(); c > 0 {
+		storeRows = float64(putStats.applyRows.Load()) / float64(c)
+	}
 	residual := handler - raftStart - commitWait
 
 	pct := func(v float64) float64 {
@@ -133,12 +156,12 @@ func PutStatsLine() string {
 		return v / handler * 100
 	}
 	return fmt.Sprintf(
-		"[PUT-BREAKDOWN] puts=%d handler=%.4fms | S1S2S3_raft_start=%.4fms(%.1f%%) S4_commit_wait=%.4fms(%.1f%%) residual=%.4fms(%.1f%%) | nested_apply_rocksdb=%.4fms",
+		"[PUT-BREAKDOWN] puts=%d handler=%.4fms | S1S2S3_raft_start=%.4fms(%.1f%%) S4_commit_wait=%.4fms(%.1f%%) residual=%.4fms(%.1f%%) | nested_store_write=%.4fms/次 rows_per_write=%.1f",
 		n, handler,
 		raftStart, pct(raftStart),
 		commitWait, pct(commitWait),
 		residual, pct(residual),
-		applyStore)
+		applyStore, storeRows)
 }
 
 // StartWriteStatsReporter 周期性把分解打进节点日志。
