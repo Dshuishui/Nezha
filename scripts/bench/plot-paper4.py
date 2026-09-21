@@ -242,10 +242,13 @@ def put_ceiling(ax):
         return False
     ax.axhline(NIC_CEILING_MBPS, color="#444444", linestyle=(0, (4, 3)),
                linewidth=0.8, zorder=5)
-    ax.annotate("1 GbE ceiling (2x replication)", (1.0, NIC_CEILING_MBPS),
+    # **标签靠左，不靠右。** 靠右在异步复制档那张图上正好压在 1KB/4KB 的高柱上
+    # ——那一档的柱子越过了这条线，右侧没有空位。左端是 64B，柱子最矮，
+    # 两种模式的图都有余量。
+    ax.annotate("1 GbE ceiling (2x replication)", (0.015, NIC_CEILING_MBPS),
                 xycoords=("axes fraction", "data"),
-                textcoords="offset points", xytext=(-2, 2.5),
-                ha="right", va="bottom", fontsize=6.2, color="#444444", zorder=5)
+                textcoords="offset points", xytext=(0, 2.5),
+                ha="left", va="bottom", fontsize=6.2, color="#444444", zorder=5)
     # axhline 会让自动缩放把纵轴再抬一截；显式钉回去，留一点点放标注的余量。
     ax.set_ylim(ax.get_ylim()[0], max(top, NIC_CEILING_MBPS * 1.12))
     return True
