@@ -303,6 +303,10 @@ func New(cfg Config) (*KVServer, error) {
 	// PASV switches off the storage engine's WAL. RocksDB reads that option once, when
 	// the store is opened, so it must be set before recoverOrInit.
 	raft.SetDisableWAL(disableWAL)
+	// 块缓存同理，RocksDB 也只在开库的那一刻读这个选项。
+	// **必须在 recoverOrInit 之前**，而且因为它是包级的，GC 每轮新建的 persister
+	// 与装快照新建的那个都会继承——见 raft.SetBlockCacheMB 的注释。
+	raft.SetBlockCacheMB(cfg.BlockCacheMB)
 	if lsmRaft {
 		kvs.lsm = newLSMRaft(cfg.DataDir, int64(cfg.SSTSpanMB)<<20, time.Duration(cfg.SSTIdleMs)*time.Millisecond, &kvs.mu)
 		if len(cfg.Peers) <= 1 {
@@ -334,9 +338,11 @@ func New(cfg Config) (*KVServer, error) {
 	if cq == "" {
 		cq = "majority"
 	}
-	fmt.Printf("[SYSTEM] %s | kvSeparation=%v gcEnabled=%v gcThresholdGB=%g extraPersistence=%v syncWAL=%v commitQuorum=%s | inlinePlacement=%v inlineThreshold=%dB inlineCacheMB=%d\n",
+	// blockCacheMB 必须印出来。它的默认值 0 意味着"每次点读都从文件里读索引块、
+	// 过滤块、数据块"，而那足以决定点读的结论——一个能翻转结论的配置不该只存在于源码里。
+	fmt.Printf("[SYSTEM] %s | kvSeparation=%v gcEnabled=%v gcThresholdGB=%g extraPersistence=%v syncWAL=%v commitQuorum=%s blockCacheMB=%d | inlinePlacement=%v inlineThreshold=%dB inlineCacheMB=%d\n",
 		cfg.systemName(), kvs.kvSeparation, kvs.gcEnabled, kvs.gcThresholdGB,
-		kvs.extraPersistence, cfg.SyncWAL, cq,
+		kvs.extraPersistence, cfg.SyncWAL, cq, cfg.BlockCacheMB,
 		kvs.inlinePlacement, kvs.inlineThreshold, cfg.InlineCacheMB)
 
 	// A fresh node opens the initial store; a restarted node restores GC state, the

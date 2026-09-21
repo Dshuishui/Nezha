@@ -366,3 +366,44 @@ func TestWriteRowsAppliedKeepsOrderAndOneMarker(t *testing.T) {
 		t.Fatalf("空行批把数据弄丢了：k = %q (err=%v)", v, err)
 	}
 }
+
+// SetBlockCacheMB 的值必须压过调用方写死的 disableCache=true——六个生产调用点
+// 全都传 true，这是唯一能从外面开缓存的路。
+//
+// 也钉住"设一次对后建的库都生效"：GC 每轮新建 persister、装快照也新建一个，
+// 而参数形式漏传一处的后果是一轮 GC 之后配置悄悄变回去且毫无迹象。
+// 这里连开两个库，第二个模仿 GC 的新库。
+func TestBlockCacheSettingOverridesTheHardcodedDisable(t *testing.T) {
+	t.Cleanup(func() { SetBlockCacheMB(0) })
+
+	SetBlockCacheMB(64)
+	if blockCacheBytes != 64<<20 {
+		t.Fatalf("SetBlockCacheMB(64) 之后 blockCacheBytes=%d，想要 %d", blockCacheBytes, 64<<20)
+	}
+	dir := t.TempDir()
+	for _, name := range []string{"first", "after-gc"} {
+		var p Persister
+		// 传的是 true，也就是每个生产调用点传的那个值；能开起来才说明设置压过了它。
+		if _, err := p.Init(filepath.Join(dir, name), true); err != nil {
+			t.Fatalf("%s 开库失败（块缓存 64MB，disableCache=true）: %v", name, err)
+		}
+		// 用内联记录，这样读回来的是 value 本身而不是一个偏移。
+		p.PutInline("k", "v")
+		kind, inline, _, err := p.GetRecord("k")
+		if err != nil || kind != RecordInline || inline != "v" {
+			t.Fatalf("%s 读回 kind=%v inline=%q err=%v，想要 RecordInline/\"v\"", name, kind, inline, err)
+		}
+		p.Close()
+	}
+
+	// 0 要真的回到"不开缓存"，否则一次测试会把设置漏给后面的用例。
+	SetBlockCacheMB(0)
+	if blockCacheBytes != 0 {
+		t.Fatalf("SetBlockCacheMB(0) 之后 blockCacheBytes=%d，想要 0", blockCacheBytes)
+	}
+	// 负数当 0，不要变成一个巨大的 uint64。
+	SetBlockCacheMB(-1)
+	if blockCacheBytes != 0 {
+		t.Fatalf("SetBlockCacheMB(-1) 之后 blockCacheBytes=%d，想要 0", blockCacheBytes)
+	}
+}

@@ -1113,6 +1113,42 @@ else
 fi
 
 echo
+info "=== 三十五、等 GC 稳定之前必须先过 has_gc ==="
+# **baseline 与 nezha-nogc 的 GC 完成轮数恒为 0，是设计不是失败。**
+# "轮数不变 且 ≥ 1"这个条件对它们永远不成立，于是等待循环空转到上限——
+# maintable3.sh 的默认是 120 次 × 10 秒 = **每格白等 20 分钟**，
+# 而且随后还会因为轮数 < 1 把这一格判作废。
+# 这一条与第三十一节是两件事：那一条查的是"关于 GC 的判据"，这一条查的是
+# **等待循环本身**——2026-09-21 新写 getonly.sh 时原封不动地漏了这个守卫。
+GCWAIT=0
+for f in $(cd "$PROJECT_DIR" && ls scripts/multinode/*.sh); do
+    p="$PROJECT_DIR/$f"
+    # 只审真的有"等 GC 稳定"这种循环的脚本
+    grep -qE '轮垃圾回收完成|gc_in_progress' "$p" || continue
+    # 剔掉注释再找调用点：注释里提到 has_gc 不算证据（第三十一节踩过这个坑）
+    body=$(grep -vE '^[[:space:]]*#' "$p")
+    # 等待函数/等待块的调用必须被 has_gc 包住，或者脚本本身只跑会 GC 的系统
+    # **模式必须只匹配调用点，不匹配定义、更不匹配名字带前缀的东西。**
+    # 第一版写的是裸 `has_gc`，于是把 has_gc() 的**定义**、以及
+    # `has_gc_DISABLED` 这种名字都算成证据——实测把守卫改名 + 调用点换成
+    # `if true` 之后它照样判绿。要求后面紧跟空格或分号，就只剩真正的调用。
+    if grep -qE '(^|[^A-Za-z0-9_])has_gc[ ;]' <<<"$body"; then
+        good "$(basename "$f") 等 GC 之前过了 has_gc"
+    elif ! grep -qE 'baseline|nezha-nogc|original' <<<"$body"; then
+        warn "$(basename "$f") 没有 has_gc，但它也不跑 baseline/nezha-nogc，跳过"
+    else
+        echo "       $f 会跑 baseline 或 nezha-nogc，却没有 has_gc 守卫"
+        echo "           那两个系统的完成轮数恒为 0，等待循环会空转到上限再把该格判作废"
+        GCWAIT=$((GCWAIT+1))
+    fi
+done
+if [ "$GCWAIT" -eq 0 ]; then
+    good "会等 GC 稳定的脚本都先过了 has_gc"
+else
+    bad "上列 $GCWAIT 个脚本会在 baseline/nezha-nogc 上空转满等待上限，然后把好格判死"
+fi
+
+echo
 if [ "$FAILED" -eq 0 ]; then
     good "自审通过：注入的每一种故障都被判出来了，良性行一条都没被误判"
 else

@@ -68,12 +68,43 @@ var disableWAL bool
 // SetDisableWAL 必须在任何 Init 之前调用。
 func SetDisableWAL(v bool) { disableWAL = v }
 
+// blockCacheBytes 是 RocksDB 块缓存的大小，0 表示不开。
+//
+// **为什么要做成包级变量而不是 Init 的参数**：GC 每一轮都新建 persister
+// （gc_first.go、gc_merge.go），装快照也新建一个（snapshot.go）。参数形式要求
+// 每一处都记得传同一个值，漏一处的后果是**一轮 GC 之后配置悄悄变回去**，
+// 而且没有任何迹象——disableWAL 上面那行注释记的就是这个坑。
+// 包级变量让"设一次、对所有 persister 生效"成为默认。
+var blockCacheBytes int
+
+// SetBlockCacheMB 必须在任何 Init 之前调用。0 表示不开块缓存（历史默认）。
+//
+// **这不是一个无关紧要的调参。** 六个生产调用点一直传 disableCache=true，于是
+// 走的是 SetNoBlockCache(true) + CacheIndexAndFilterBlocks(false)：四个系统的
+// 每一次点读都要从文件里读索引块、过滤块、数据块，一个都不缓存。
+// 那些读落在操作系统页缓存里，所以 10GB 规模下量不出代价——而它同时把
+// **KV 分离的结构优势一起抹掉了**：Nezha 的 LSM 只存 key→9 字节偏移
+// （10GB / 1KB 的数据约 300MB），Original 的要装完整 10GB。
+// 有块缓存时前者整个进得去、后者进不去，这正是"两跳打赢一跳"的机制；
+// 关掉之后两边都走文件读，Nezha 白多一跳。
+func SetBlockCacheMB(mb int) {
+	if mb < 0 {
+		mb = 0
+	}
+	blockCacheBytes = mb << 20
+}
+
 func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
 	var err error
 	bbto := grocksdb.NewDefaultBlockBasedTableOptions()
 	opts := grocksdb.NewDefaultOptions()
 
-	if disableCache {
+	// SetBlockCacheMB 给了大小就以它为准，压过调用方传的 disableCache——
+	// 六个调用点全都写死了 true，要开缓存只能从外面推翻它。
+	if blockCacheBytes > 0 {
+		bbto.SetBlockCache(grocksdb.NewLRUCache(uint64(blockCacheBytes)))
+		bbto.SetCacheIndexAndFilterBlocks(true)
+	} else if disableCache {
 		// 完全禁用所有缓存
 		bbto.SetNoBlockCache(true)               // 禁用块缓存
 		bbto.SetCacheIndexAndFilterBlocks(false) // 禁用索引和过滤器块的缓存

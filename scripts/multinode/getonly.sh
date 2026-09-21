@@ -43,6 +43,9 @@ REST_SEC=${REST_SEC:-0}
 GCGB=${GCGB:-0.3}
 PARTITION_MB=${PARTITION_MB:-128}
 SYNC_WAL=${SYNC_WAL:-0}
+# 0 = 不开块缓存，与主表那 72 格一致。给了非 0 就**所有系统一起给**——
+# 只给一边开缓存量出来的不是机制差异，是配置差异。
+BLOCK_CACHE_MB=${BLOCK_CACHE_MB:-0}
 GC_STABLE_CHECKS=${GC_STABLE_CHECKS:-3}
 # set -u 下漏了这个变量，脚本会在第一格的写入那一步直接死，而且因为那句话在
 # $( ) 里，set -u 只打死子 shell、父进程拿到空串继续跑——静默。实测踩过两次。
@@ -56,7 +59,7 @@ ALL=$(servers_str)
 say(){ echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 warn(){ echo "[$(date +%H:%M:%S)] ** $* **" | tee -a "$LOG"; }
 
-echo "commit,label,load,system,vsize,entries,total_mb,rep,get_clients,get_n,ops,elapsed_s,ops_per_s,mb_per_s,mean_ms,p50_ms,p90_ms,p95_ms,p99_ms,p999_ms,max_ms,hitrate,gc_rounds" > "$OUT"
+echo "commit,label,block_cache_mb,load,system,vsize,entries,total_mb,rep,get_clients,get_n,ops,elapsed_s,ops_per_s,mb_per_s,mean_ms,p50_ms,p90_ms,p95_ms,p99_ms,p999_ms,max_ms,hitrate,gc_rounds" > "$OUT"
 
 # **退出时一定停掉三个节点。** 上一版的 PUT-only 脚本没有这个：它死在第一格的写入上、
 # 节点留着不动，下一段起来时端口全被占（address already in use），四格连锁失败。
@@ -105,11 +108,17 @@ wait_gc_stable(){
     return 0
 }
 
+# has_gc —— 这个系统会不会跑 GC。**baseline 与 nezha-nogc 的完成轮数恒为 0，
+# 是设计不是失败。**不加这个守卫的后果实测过：wait_gc_stable 的条件是
+# "轮数不变 且 ≥ 1"，对它们永远不成立，于是空转满 120 次 × 10 秒 = **每格白等 20 分钟**，
+# 然后还会因为 GCMAX=0 把这一格判作废。CLAUDE.md 里记着这一条。
+has_gc() { case "$1" in nezha|nezha-avp) return 0 ;; *) return 1 ;; esac; }
+
 f(){ grep -o "$2=[0-9.]*" <<<"$1" | head -1 | cut -d= -f2; }
 
 say "提交=$COMMIT  拓扑=three  系统=[$SYSTEMS]  档位=[$VSIZES]"
 say "装载 ${LOADS} 轮 × 每轮 ${GET_REPEATS} 遍 GET（每遍 $((GET_OPS*GET_TESTS)) 次，并发 ${GET_CLIENTS}）"
-say "每档 ${TOTAL_MB}MB，写入并发 ${PUT_CLIENTS}，GCGB=${GCGB}，PARTITION_MB=${PARTITION_MB}"
+say "每档 ${TOTAL_MB}MB，写入并发 ${PUT_CLIENTS}，GCGB=${GCGB}，PARTITION_MB=${PARTITION_MB}，BLOCK_CACHE_MB=${BLOCK_CACHE_MB}"
 
 # 顺序：装载轮 → value 档 → 系统。
 # **nezha 与 nezha-avp 相邻**，同一档同一轮里两者只隔一次装载，机器状态漂移最小——
@@ -124,6 +133,7 @@ for SY in $SYSTEMS; do
         nezha-avp)  NS=nezha;      EX="-inlinePlacement -partitionTargetMB $PARTITION_MB" ;;
         *) warn "未知系统 ${SY}，跳过"; continue ;;
     esac
+    EX="$EX -blockCacheMB ${BLOCK_CACHE_MB}"
     REC=$(record_bytes "$VS")
     N=$(awk -v mb="$TOTAL_MB" -v r="$REC" 'BEGIN{printf "%d", mb*1048576/r}')
     CELL="L$LOAD-$SY-${VS}B"
@@ -151,7 +161,11 @@ for SY in $SYSTEMS; do
     say "  $PT"
 
     GCMAX=0
-    wait_gc_stable || { stop_all; continue; }
+    if has_gc "$SY"; then
+        wait_gc_stable || { stop_all; continue; }
+    else
+        say "  ${SY} 不跑 GC（完成轮数恒为 0，是设计），跳过等待稳定"
+    fi
 
     for REP in $(seq 1 "$GET_REPEATS"); do
         OUTF="$HOME/work/getonly-$LABEL-$CELL-get$REP.out"
@@ -166,13 +180,13 @@ for SY in $SYSTEMS; do
             # **NA 不是 0。**写 0 等于声称"测过了、就是零"，而实际是没拿到回执。
             warn "$CELL rep$REP 没有吞吐或分位数输出，这一遍记 NA"
             tail -12 "$OUTF" | tee -a "$LOG"
-            printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,%s,%s\n' \
-                "$COMMIT" "$LABEL" "$LOAD" "$SY" "$VS" "$N" "$TOTAL_MB" "$REP" \
+            printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,%s,%s\n' \
+                "$COMMIT" "$LABEL" "$BLOCK_CACHE_MB" "$LOAD" "$SY" "$VS" "$N" "$TOTAL_MB" "$REP" \
                 "$GET_CLIENTS" "$((GET_OPS*GET_TESTS))" "$HR" "$GCMAX" >> "$OUT"
             continue
         fi
-        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-            "$COMMIT" "$LABEL" "$LOAD" "$SY" "$VS" "$N" "$TOTAL_MB" "$REP" \
+        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+            "$COMMIT" "$LABEL" "$BLOCK_CACHE_MB" "$LOAD" "$SY" "$VS" "$N" "$TOTAL_MB" "$REP" \
             "$GET_CLIENTS" "$((GET_OPS*GET_TESTS))" \
             "$(f "$T" ops)" "$(f "$T" elapsed)" "$(f "$T" ops_per_s)" "$(f "$T" mb_per_s)" \
             "$(f "$L" mean)" "$(f "$L" p50)" "$(f "$L" p90)" "$(f "$L" p95)" \
