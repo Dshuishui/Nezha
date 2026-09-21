@@ -101,9 +101,20 @@ func (p *Persister) Init(path string, disableCache bool) (*Persister, error) {
 
 	// SetBlockCacheMB 给了大小就以它为准，压过调用方传的 disableCache——
 	// 六个调用点全都写死了 true，要开缓存只能从外面推翻它。
+	//
+	// **CacheIndexAndFilterBlocks 保持 false，这不是省事，是必须的。**
+	// 置 true 会把索引块与过滤块也放进这个 LRU，于是它们和数据块抢同一份预算并被
+	// 反复驱逐，每次点读要重读索引块、过滤块、数据块——**比不开缓存更差**。
+	// 2026-09-22 实测（400MB / 1KB，缓存 64MB）：baseline 的 p50 从 0.309ms 掉到
+	// 6.28ms（慢 21 倍、吞吐 −78%），而同一份配置对 nezha 毫无影响
+	// （0.717 → 0.662ms）——因为 nezha 的 LSM 只存 key→9 字节偏移、约 12MB，
+	// 整个装得进 64MB，根本不需要和数据块抢。
+	// 置 false 时索引/过滤块常驻在 table reader 里（RocksDB 的默认），
+	// 两个系统都受益，于是这个 flag 剩下的唯一变量就是**数据块装不装得进缓存**，
+	// 那才是要测的东西。
 	if blockCacheBytes > 0 {
 		bbto.SetBlockCache(grocksdb.NewLRUCache(uint64(blockCacheBytes)))
-		bbto.SetCacheIndexAndFilterBlocks(true)
+		bbto.SetCacheIndexAndFilterBlocks(false)
 	} else if disableCache {
 		// 完全禁用所有缓存
 		bbto.SetNoBlockCache(true)               // 禁用块缓存
