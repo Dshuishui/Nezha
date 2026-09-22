@@ -88,13 +88,35 @@ ALL=$(servers_str)
 say(){ echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 warn(){ echo "[$(date +%H:%M:%S)] ** $* **" | tee -a "$LOG"; }
 
-echo "commit,label,quorum,block_cache_mb,load,system,vsize,entries,total_mb,op,rep,clients,gapkey,ops,bytes,elapsed_s,ops_per_s,mb_per_s,mean_ms,p50_ms,p90_ms,p95_ms,p99_ms,p999_ms,max_ms,hitrate,gc_rounds,snapshots" > "$OUT"
+echo "commit,label,quorum,block_cache_mb,load,system,vsize,entries,total_mb,op,rep,clients,gapkey,ops,bytes,elapsed_s,ops_per_s,mb_per_s,mean_ms,p50_ms,p90_ms,p95_ms,p99_ms,p999_ms,max_ms,hitrate,gc_rounds,drain_rounds,snapshots" > "$OUT"
 
 # **退出时一定停掉三个节点。** 上一版的 PUT-only 脚本没有这个：它死在第一格的写入上、
 # 节点留着不动，下一段起来时端口全被占（address already in use），四格连锁失败。
 # 一个会在任何出口都收尾的 trap 比"记得在每条失败路径上停"可靠。
 stop_all(){ local i; for i in 0 1 2; do rq "$(host_of "$i")" "~/three-node.sh stop $i" >/dev/null 2>&1; done; }
 trap stop_all EXIT INT TERM
+
+# wait_gc_idle —— 等三个节点的 gc_in_progress 都落回 false。
+#
+# **轮数不变 ≠ 没有一轮在途中。** 计数数的是"轮垃圾回收完成"这行，而 numGC 在一轮
+# **开始**时就自增、产物文件随之改名。于是完成数可以连续 40 秒不变而下一轮正在写盘，
+# 紧接着的读就落在一个半成品布局上——2026-09-18 实测过一次。
+# gc_in_progress 是节点自己写的，口径不会错。
+wait_gc_idle(){
+    has_gc "$1" || return 0
+    local why=$2 i k inf=1
+    for k in $(seq 1 60); do
+        inf=0
+        for i in 0 1 2; do
+            rq "$(host_of "$i")" "grep -c '\"gc_in_progress\": true' ~/work/three-$i/data/kv_state.json 2>/dev/null" \
+                | grep -q '^1' && inf=1
+        done
+        [ "$inf" = 0 ] && return 0
+        sleep 10
+    done
+    warn "${why}：600s 内仍有节点 gc_in_progress=true，这一格的读可能落在半成品布局上"
+    return 0
+}
 
 # wait_gc_stable —— 等 GC 轮数连续不变，再等在途的那一轮落地。
 #
@@ -121,17 +143,7 @@ wait_gc_stable(){
     done
     GCMAX=$cur
     say "  GC 轮数=${GCMAX}（连续 ${stable} 次不变）"
-    local inflight=1
-    for k in $(seq 1 60); do
-        inflight=0
-        for i in 0 1 2; do
-            rq "$(host_of "$i")" "grep -c '\"gc_in_progress\": true' ~/work/three-$i/data/kv_state.json 2>/dev/null" \
-                | grep -q '^1' && inflight=1
-        done
-        [ "$inflight" = 0 ] && break
-        sleep 10
-    done
-    [ "$inflight" = 0 ] || warn "600s 内仍有节点 gc_in_progress=true，这一格的读可能落在半成品布局上"
+    wait_gc_idle "$SY" "等稳定之后"
     # GC 一轮都没跑，读路径就不走有序文件——测的不是要测的东西。
     [ "$GCMAX" -ge 1 ] || { warn "GC 一轮都没跑（阈值 ${GCGB}GB），本格作废"; return 1; }
     return 0
@@ -142,6 +154,60 @@ wait_gc_stable(){
 # "轮数不变 且 ≥ 1"，对它们永远不成立，于是空转满 120 次 × 10 秒 = **每格白等 20 分钟**，
 # 然后还会因为 GCMAX=0 把这一格判作废。CLAUDE.md 里记着这一条。
 has_gc() { case "$1" in nezha|nezha-avp) return 0 ;; *) return 1 ;; esac; }
+
+# drain_gc —— 读之前把 valuelog 尾部吸收干净。
+#
+# **为什么等"稳定"不够**：GC 的触发条件是「尾部有多长」而不是「还有没有活干」，
+# 写入一停尾部就不再增长，于是低于阈值的那一截永远留在 valuelog 里。
+# 读路径先查 valuelog 再查分区，两条路的长度差一个数量级，所以那一截残留
+# 直接决定读得多快——而它的大小**取决于写入有多快**：2026-09-22 实测，
+# 同样写 10GiB，多数派 230 秒写完 GC 跑 11 轮，异步档 52 秒写完只跑 4 轮，
+# 由 valuelog 答复的读在 1KB/4KB/16KB 分别是 5.7%/13.0%/0%。
+# 不排空就比读，比出来的是布局差异。
+#
+# 握手：驱动 touch `data/gc_drain`，节点吸收到见底后**自己删掉它**。
+# 删除是唯一的完成信号——不看"轮数不变"，那个判法已经错过一次
+# （轮数在一轮**开始**时就自增，完成数可以连续 40 秒不变而下一轮正在写盘）。
+drain_gc(){
+    # **自己也守一道。** 调用点已经在 has_gc 之下，但一个函数不该依赖调用点的守卫：
+    # 不跑 GC 的系统握手文件永远等不到删除（节点侧 gcDrainRequested 会早退），
+    # 于是这里会等满 30 分钟再把一个健康的格子判死。自审第三十一节也查这一条。
+    has_gc "$1" || { say "  ${1} 不跑 GC，没有尾部可排"; return 0; }
+    local i k left rounds
+    for i in 0 1 2; do
+        rq "$(host_of "$i")" "touch ~/work/three-$i/data/gc_drain" >/dev/null 2>&1
+    done
+    say "  已请求 GC 排空（三个节点），等尾部见底"
+    # 上限 180 次 × 10 秒 = 30 分钟。**超时必须判失败而不是继续**：
+    # 带着半成品布局去测读，正是这个函数要消灭的东西。
+    for k in $(seq 1 180); do
+        left=0
+        for i in 0 1 2; do
+            rq "$(host_of "$i")" "test -e ~/work/three-$i/data/gc_drain && echo 1" | grep -q '^1' && left=$((left+1))
+        done
+        [ "$left" = 0 ] && break
+        sleep 10
+    done
+    if [ "$left" != 0 ] && [ "${left:-1}" != 0 ]; then
+        warn "30 分钟内仍有 ${left} 个节点没排空完，本格作废（半成品布局测不出读的效果）"
+        for i in 0 1 2; do rq "$(host_of "$i")" "rm -f ~/work/three-$i/data/gc_drain" >/dev/null 2>&1; done
+        return 1
+    fi
+    # 排空也会开新的 GC 轮，所以轮数要重新读一次；顺带把节点报的排空轮数取回来。
+    local g cur=0
+    for i in 0 1 2; do
+        g=$(rq "$(host_of "$i")" "grep -c '轮垃圾回收完成' ~/work/three-$i/n.log 2>/dev/null" | head -1)
+        case "$g" in ''|*[!0-9]*) g=0;; esac
+        [ "$g" -gt "$cur" ] && cur=$g
+    done
+    GCMAX=$cur
+    rounds=$(rq "$(host_of 0)" "grep -oE '排空完成：[0-9]+ 轮' ~/work/three-0/n.log 2>/dev/null | tail -1 | grep -oE '[0-9]+'" | head -1)
+    case "$rounds" in ''|*[!0-9]*) DRAIN_ROUNDS=NA ;; *) DRAIN_ROUNDS=$rounds ;; esac
+    say "  GC 已排空（排空阶段又做了 ${DRAIN_ROUNDS} 轮），累计完成轮数=${GCMAX}"
+    # 再确认没有一轮在途：排空的最后一轮可能刚刚开始写盘。
+    wait_gc_idle "$1" "排空之后"
+    return 0
+}
 
 f(){ grep -o "$2=[0-9.]*" <<<"$1" | head -1 | cut -d= -f2; }
 
@@ -190,10 +256,12 @@ for SY in $SYSTEMS; do
     say "  $PT"
 
     GCMAX=0
+    DRAIN_ROUNDS=NA
     if has_gc "$SY"; then
         wait_gc_stable || { stop_all; continue; }
+        drain_gc "$SY" || { stop_all; continue; }
     else
-        say "  ${SY} 不跑 GC（完成轮数恒为 0，是设计），跳过等待稳定"
+        say "  ${SY} 不跑 GC（完成轮数恒为 0，是设计），跳过等待稳定与排空"
     fi
 
     GAP=$(( N / SCAN_FRAC ))
@@ -229,17 +297,17 @@ for SY in $SYSTEMS; do
             # **NA 不是 0。**写 0 等于声称"测过了、就是零"，而实际是没拿到回执。
             warn "$CELL $OP rep$REP 没有吞吐或分位数输出，这一遍记 NA"
             tail -12 "$OUTF" | tee -a "$LOG"
-            printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,%s,%s,%s\n' \
+            printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,%s,%s,%s,%s\n' \
                 "$COMMIT" "$LABEL" "$COMMIT_QUORUM" "$BLOCK_CACHE_MB" "$LOAD" "$SY" "$VS" "$N" "$TOTAL_MB" \
-                "$OP" "$REP" "$CL" "$GK" "$HR" "$GCMAX" "$SNAP" >> "$OUT"
+                "$OP" "$REP" "$CL" "$GK" "$HR" "$GCMAX" "$DRAIN_ROUNDS" "$SNAP" >> "$OUT"
             continue
         fi
-        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
             "$COMMIT" "$LABEL" "$COMMIT_QUORUM" "$BLOCK_CACHE_MB" "$LOAD" "$SY" "$VS" "$N" "$TOTAL_MB" \
             "$OP" "$REP" "$CL" "$GK" \
             "$(f "$T" ops)" "$(f "$T" bytes)" "$(f "$T" elapsed)" "$(f "$T" ops_per_s)" "$(f "$T" mb_per_s)" \
             "$(f "$L" mean)" "$(f "$L" p50)" "$(f "$L" p90)" "$(f "$L" p95)" \
-            "$(f "$L" p99)" "$(f "$L" p999)" "$(f "$L" max)" "$HR" "$GCMAX" "$SNAP" >> "$OUT"
+            "$(f "$L" p99)" "$(f "$L" p999)" "$(f "$L" max)" "$HR" "$GCMAX" "$DRAIN_ROUNDS" "$SNAP" >> "$OUT"
         say "  $OP rep$REP ops/s=$(f "$T" ops_per_s) mb/s=$(f "$T" mb_per_s) p50=$(f "$L" p50) p99=$(f "$L" p99) 命中=$HR 读期间快照=$SNAP"
         # 命中率不是 1.0000 说明有 key 读不到——GC 搬丢记录不报任何错，只在某次
         # GET 上变成一个 NOKEY，所以这是这一格唯一的正确性哨兵。SCAN 不出这一行。

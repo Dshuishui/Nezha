@@ -134,6 +134,7 @@ func (kvs *KVServer) finishFirstGC(startTime time.Time) {
 	// 先 Close 再删，理由同 finishAnotherGC。
 	kvs.removeSupersededStore()
 	fmt.Println("第 1 轮垃圾回收完成，等待下 1 轮垃圾回收，且已删除 oldLog 指向的文件")
+	kvs.noteGCDrainRound()
 }
 
 // finishAnotherGC completes the second (merging) round after a successful migration.
@@ -165,6 +166,7 @@ func (kvs *KVServer) finishAnotherGC(startTime time.Time) {
 	kvs.removeSupersededLog(kvs.oldLog)
 	kvs.removeSupersededStore()
 	fmt.Printf("第 %v 轮垃圾回收完成，等待下一轮垃圾回收，且已删除 oldLog 指向的文件\n", kvs.numGC)
+	kvs.noteGCDrainRound()
 }
 
 // removeSupersededStore 删掉本轮被取代的那个存储引擎。每轮 GC 切换都新建一个库，不删的话

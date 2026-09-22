@@ -77,7 +77,24 @@ func (kvs *KVServer) gcLoop(ctx context.Context) {
 				need = r
 			}
 		}
-		if tailBytes < need {
+		// **排空模式**：写入停了之后，尾部里低于阈值的那一截永远不会被搬进分区——
+		// 触发条件看的是"尾部有多长"，不是"还有没有活干"。于是读被打在一个
+		// 半成品布局上，而**残留尾部的大小取决于写入有多快**：
+		// 2026-09-22 实测，同样写 10GiB，多数派 230 秒写完、GC 跑了 11 轮，
+		// 异步档 52 秒写完、只跑了 4 轮。读路径先查 valuelog 再查分区，于是
+		// 那一截残留直接改变读走哪条路（实测由 valuelog 答复的读：1KB 5.7%、
+		// 4KB 13.0%、16KB 0%）。**比出来的是布局差异，不是被测变量的差异。**
+		//
+		// 所以给驱动一个收尾开关：`data/gc_drain` 这个文件存在时，忽略阈值继续
+		// 吸收，直到尾部见底，然后**由节点自己删掉它**——删除即"排空完成"的握手，
+		// 驱动不必猜。这与 LSM 测读之前先 compact 是同一件事。
+		draining := kvs.gcDrainRequested()
+		if draining && tailBytes <= gcDrainFloorBytes {
+			// 见底了：尾部已经小到没有吸收的意义，摘掉标志并告诉驱动。
+			kvs.finishGCDrain(tailBytes)
+			continue
+		}
+		if !draining && tailBytes < need {
 			continue
 		}
 		if inProgress {

@@ -174,7 +174,9 @@ type KVServer struct {
 	inlineThreshold  int     // values smaller than this (bytes) are eligible for the inline cache
 	inlineCacheBytes int64   // memory budget for one partition set's shared inline cache
 	gcThresholdGB    float64 // value log size in GB that triggers GC
-	indexBlockBytes  int64   // sparse index granularity: one index entry per this many bytes
+	// gcDrain 是"测读之前把尾部吸收干净"的收尾开关，理由见 gcdrain.go。
+	gcDrain         gcDrainState
+	indexBlockBytes int64 // sparse index granularity: one index entry per this many bytes
 	// partitionTargetBytes 是 GC 产物中单个分区的目标大小，见 partition.go 的取舍说明。
 	partitionTargetBytes int64
 	// absorbRatio 决定何时吸收：尾部日志达到分区总量的这个比例就开一轮。
