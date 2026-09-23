@@ -56,8 +56,32 @@ def fmt(v):
 
 
 def rows_of(path):
+    """读 CSV，并**检查每行的字段数**。
+
+    字段数不对一律当错误退出，不要跳过那一行。起因实测过一次：
+    `putonly-aq-leader.csv` 末尾**没有换行符**，于是 `tail -n +2 a.csv >> b.csv`
+    把两行粘成了一行——合并出来 27 行而不是 28 行，而**唯一的迹象就是那个计数**。
+    我当时是因为记得应该有 28 才发现的；不记得就会带着一格被吃掉的表往下走。
+    （拼接一律用 `awk 'FNR==1 && NR>1 {next}'`，它按行处理、天然补换行。）
+    """
     with open(path, newline="") as f:
-        return list(csv.DictReader(f))
+        rdr = csv.DictReader(f)
+        want = len(rdr.fieldnames or [])
+        out = []
+        for i, row in enumerate(rdr, start=2):
+            # 少字段 → 某个键的值是 None；多字段 → 多出来的进 restkey
+            missing = [k for k, v in row.items() if v is None]
+            extra = row.get(None)
+            if missing or extra:
+                sys.exit(
+                    f"{path} 第 {i} 行字段数不对（表头 {want} 列）："
+                    f"{'缺 ' + ','.join(missing) if missing else ''}"
+                    f"{' 多出 ' + repr(extra) if extra else ''}\n"
+                    f"  最常见的原因是拼接时上一个文件末尾没有换行符，两行被粘在了一起。\n"
+                    f"  拼接请用: awk 'FNR==1 && NR>1 {{next}}' a.csv b.csv > out.csv"
+                )
+            out.append(row)
+        return out
 
 
 def merge(put_path, read_path, label_prefix):
