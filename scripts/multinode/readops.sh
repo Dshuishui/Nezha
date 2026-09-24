@@ -83,6 +83,7 @@ CLIENT_HOST=${CLIENT_HOST:-tikv240}
 OUT=$HOME/work/readops-$LABEL.csv
 LOG=$HOME/work/readops-$LABEL.log
 : > "$LOG"
+mkdir -p "$HOME/work/tmp"   # 每格的临时结果文件放这里，不依赖节点脚本先建好它
 COMMIT=$(git rev-parse --short HEAD)
 ALL=$(servers_str)
 say(){ echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
@@ -95,6 +96,30 @@ echo "commit,label,quorum,block_cache_mb,load,system,vsize,entries,total_mb,op,r
 # 一个会在任何出口都收尾的 trap 比"记得在每条失败路径上停"可靠。
 stop_all(){ local i; for i in 0 1 2; do rq "$(host_of "$i")" "~/three-node.sh stop $i" >/dev/null 2>&1; done; }
 trap stop_all EXIT INT TERM
+
+# nodes_alive —— 三个节点的进程都还在吗。在就返回 0，否则打出谁不在、返回 1。
+#
+# **异步档下少一个节点是静默的**，所以这道检查不能省。2026-09-23 实测：node55 在
+# 13:42:13 被关（三台机器当天下午被重启），驱动一路照跑——写入不等 follower，
+# 租约只要心跳多数派而 2/3 仍是多数派，于是灌数据和三遍 GET 全都"成功"，
+# 数字却是两节点跑出来的。多数派档位下少一个节点会明显变慢或阻塞，这个档位下
+# 什么迹象都没有。
+#
+# 用 pid 文件 + /proc/<pid>/cmdline 核对，**不用 pgrep -f**：远端那个 bash -c 的
+# 命令行里就含着要找的串，pgrep 排除得了自己排除不了父 shell，会自匹配成"活着"
+# ——这个坑前后踩过三次。cmdline 里还要认得 three-N，防止 pid 被别的进程复用。
+# cmdline 以 NUL 分隔，用 grep -a 直接查，不要 tr '\\0'：那个反斜杠要穿过本地双引号、
+# ssh、远端 shell 三层，少一层就变成 tr ' ' ' '，于是每一格都被判成"节点死了"。
+nodes_alive(){
+    local i dead=""
+    for i in 0 1 2; do
+        rq "$(host_of "$i")" "p=\$(cat ~/work/three-$i/pid 2>/dev/null) && kill -0 \$p 2>/dev/null && grep -qa 'work/three-$i' /proc/\$p/cmdline && echo ALIVE" \
+            | grep -q '^ALIVE' || dead="$dead node$i"
+    done
+    [ -z "$dead" ] && return 0
+    warn "$1：节点不在了 ——${dead}"
+    return 1
+}
 
 # wait_gc_idle —— 等三个节点的 gc_in_progress 都落回 false。
 #
@@ -255,6 +280,8 @@ for SY in $SYSTEMS; do
     fi
     say "  $PT"
 
+    nodes_alive "$CELL 灌完数据" || { warn "$CELL 作废（数字会是少节点跑出来的）"; stop_all; continue; }
+
     GCMAX=0
     DRAIN_ROUNDS=NA
     if has_gc "$SY"; then
@@ -263,6 +290,11 @@ for SY in $SYSTEMS; do
     else
         say "  ${SY} 不跑 GC（完成轮数恒为 0，是设计），跳过等待稳定与排空"
     fi
+
+    nodes_alive "$CELL 读之前" || { warn "$CELL 作废（数字会是少节点跑出来的）"; stop_all; continue; }
+    # 本格的行先写临时文件，读完再确认一次节点都在才并进总表：
+    # 读的过程中掉了节点，这一格整格作废，不留半格在 CSV 里。
+    CELLOUT=$(mktemp "$HOME/work/tmp/readops-cell.XXXXXX") || { warn "建不了临时文件"; stop_all; continue; }
 
     GAP=$(( N / SCAN_FRAC ))
     # 快照数只对 leader 有意义，而且要在读之前记一次基线：异步档在读的过程中
@@ -299,7 +331,7 @@ for SY in $SYSTEMS; do
             tail -12 "$OUTF" | tee -a "$LOG"
             printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,%s,%s,%s,%s\n' \
                 "$COMMIT" "$LABEL" "$COMMIT_QUORUM" "$BLOCK_CACHE_MB" "$LOAD" "$SY" "$VS" "$N" "$TOTAL_MB" \
-                "$OP" "$REP" "$CL" "$GK" "$HR" "$GCMAX" "$DRAIN_ROUNDS" "$SNAP" >> "$OUT"
+                "$OP" "$REP" "$CL" "$GK" "$HR" "$GCMAX" "$DRAIN_ROUNDS" "$SNAP" >> "$CELLOUT"
             continue
         fi
         printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
@@ -307,13 +339,20 @@ for SY in $SYSTEMS; do
             "$OP" "$REP" "$CL" "$GK" \
             "$(f "$T" ops)" "$(f "$T" bytes)" "$(f "$T" elapsed)" "$(f "$T" ops_per_s)" "$(f "$T" mb_per_s)" \
             "$(f "$L" mean)" "$(f "$L" p50)" "$(f "$L" p90)" "$(f "$L" p95)" \
-            "$(f "$L" p99)" "$(f "$L" p999)" "$(f "$L" max)" "$HR" "$GCMAX" "$DRAIN_ROUNDS" "$SNAP" >> "$OUT"
+            "$(f "$L" p99)" "$(f "$L" p999)" "$(f "$L" max)" "$HR" "$GCMAX" "$DRAIN_ROUNDS" "$SNAP" >> "$CELLOUT"
         say "  $OP rep$REP ops/s=$(f "$T" ops_per_s) mb/s=$(f "$T" mb_per_s) p50=$(f "$L" p50) p99=$(f "$L" p99) 命中=$HR 读期间快照=$SNAP"
         # 命中率不是 1.0000 说明有 key 读不到——GC 搬丢记录不报任何错，只在某次
         # GET 上变成一个 NOKEY，所以这是这一格唯一的正确性哨兵。SCAN 不出这一行。
         case "$OP:$HR" in GET:1.0000|GET:1) ;; GET:*) warn "$CELL GET rep$REP 命中率 $HR ≠ 1.0000，这一格的数字不可用" ;; esac
     done
     done
+
+    if nodes_alive "$CELL 读完之后"; then
+        cat "$CELLOUT" >> "$OUT"
+    else
+        warn "$CELL 读的过程中掉了节点，本格 $(wc -l < "$CELLOUT") 行不并进总表"
+    fi
+    rm -f "$CELLOUT"
 
     for i in 0 1 2; do
         r "$(host_of "$i")" "cat ~/work/three-$i/n.log" > "$HOME/work/readops-$LABEL-$CELL-node$i.log" 2>/dev/null
