@@ -384,6 +384,12 @@ for SY in $SYSTEMS; do
     fi
     rm -f "$CELLOUT"
 
+    # leader 当前那个库（valuelog 一侧，key→偏移或内联值）的形状：SST 文件数与大小。
+    # 读老 key 时先在这个库里查一次（未命中）再等分区结果，所以它的大小可能影响读老数据。
+    # 路径从 kv_state.json 的 current_db 读，不猜目录名。
+    STORE=$(rq "$(host_of 0)" "d=\$(grep -o '\"current_db\": *\"[^\"]*\"' ~/work/three-0/data/kv_state.json 2>/dev/null | sed 's/.*: *\"//; s/\"\$//'); [ -d \"\$d\" ] || d=~/work/three-0/data/dbfile/\$d; [ -d \"\$d\" ] && echo \"sst=\$(ls \"\$d\"/*.sst 2>/dev/null | wc -l) 大小=\$(du -sm \"\$d\" | cut -f1)MB\" || echo 找不到库目录" | head -1)
+    say "  leader 当前库：${STORE:-取不到}"
+
     for i in 0 1 2; do
         r "$(host_of "$i")" "cat ~/work/three-$i/n.log" > "$HOME/work/readops-$LABEL-$CELL-node$i.log" 2>/dev/null
     done
