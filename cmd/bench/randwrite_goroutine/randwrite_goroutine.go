@@ -33,6 +33,11 @@ var (
 	// 实测每一轮都是"复用分区=0"（results/amplification/2026-09-09-writeamp）。
 	// 窗口外的分区一个 key 都不会被碰到，预期复用比例约 1-rangeFrac，可直接证伪。
 	rangeFrac = flag.Float64("rangeFrac", 0.25, "dist=range: 覆盖写集中在键空间中一段连续窗口，窗口占这个比例")
+	// keystart 让装载模式写 [keystart, keystart+dnums) 而不是 [0, dnums)。
+	// 用途：在一份已经被 GC 整理过的数据之上，再写一段**全新的** key——这些 key
+	// 只存在于 valuelog 尾部，还没被 GC 搬进分区。AVP（小值内联）与 nezha 唯一不同
+	// 的地方就在这一段：读已整理的数据两者走同一条路，读新写入的数据才分得开。
+	keystart = flag.Int("keystart", 0, "unique load: write keys [keystart, keystart+dnums) instead of [0, dnums)")
 )
 
 type KVClient struct {
@@ -112,7 +117,7 @@ func (kvc *KVClient) batchRawPut(value string) (float64, time.Duration) {
 	// goroutine 自己按分布抽键，见下方 keysFor。
 	var allKeys []int
 	if *keyspace <= 0 {
-		allKeys = generateUniqueRandomInts(0, *dnums-1)
+		allKeys = generateUniqueRandomInts(*keystart, *keystart+*dnums-1)
 	}
 	results := make(chan putResult, *cnums)
 

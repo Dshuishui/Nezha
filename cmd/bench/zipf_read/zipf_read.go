@@ -74,6 +74,11 @@ const (
 // 100 万条与写 500 万条的命中率没有可比性，每次实验的口径都在漂。
 var keyspace = flag.Int("keyspace", DEFAULT_KEY_SPACE, "读取采样的键空间；应设为实际写入的记录数")
 
+// keystart 把采样窗口平移到 [keystart+1, keystart+keyspace]。配合 randwrite 的
+// -keystart 使用：只读一段刚写进去、还留在 valuelog 尾部的 key。
+// 默认 0，已有实验的口径不变。
+var keystart = flag.Int("keystart", 0, "读取采样窗口的起点：key 取自 keystart + [1, keyspace]")
+
 // 测试轮数与轮间静置时长。原先轮数写死 100、轮间固定 sleep 5 秒，于是一次
 // GET 测量至少要 500 秒纯等待——而每轮实际只跑 100 毫秒左右。批量扫参数时
 // 这项开销会主导整个实验的耗时。
@@ -116,7 +121,7 @@ func (kvc *KVClient) randRead() (float64, time.Duration) {
 			startTime := time.Now()
 			for j := 0; j < base; j++ {
 				// 使用 Zipf 分布生成键
-				keyNum := zipf.Uint64()%uint64(ks) + 1 // 确保键在有效范围内
+				keyNum := uint64(*keystart) + zipf.Uint64()%uint64(ks) + 1 // 确保键在有效范围内
 				targetKey := strconv.FormatUint(keyNum, 10)
 
 				reqStart := time.Now()

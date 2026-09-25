@@ -69,6 +69,14 @@ SCAN_FRAC=${SCAN_FRAC:-10}
 # 的写，故障切换丢已确认数据（实测 72.60%，多数派对照 0.0000%）——一个会丢数据的
 # 档位不该靠默认值生效，必须在调用处写出来。
 COMMIT_QUORUM=${COMMIT_QUORUM:-majority}
+# FRESH_MB>0：排空之后再写一段**全新的** key（[条数, 条数+新写条数)），让它们停在
+# valuelog 尾部、不被 GC 搬走，然后用 GETFRESH 只读这一段。
+# 为什么：AVP（小值内联）与 nezha 只在写入时不同，GC 之后的分区读路径两者共用，
+# 所以「读已整理的数据」按构造测不出 AVP（results/avp-point-read-rep/）。
+# 读新写入的数据才分得开：nezha 查库拿偏移再 pread 一次 valuelog，AVP 查库直接拿到值。
+# 大小要低于 GC 阈值（GCGB），否则新写的这段会被 GC 吸收走，测的又变回分区路径——
+# 所以写完之后会核对尾部大小，并在日志里打出来。
+FRESH_MB=${FRESH_MB:-0}
 GCGB=${GCGB:-0.3}
 PARTITION_MB=${PARTITION_MB:-128}
 SYNC_WAL=${SYNC_WAL:-0}
@@ -89,7 +97,7 @@ ALL=$(servers_str)
 say(){ echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 warn(){ echo "[$(date +%H:%M:%S)] ** $* **" | tee -a "$LOG"; }
 
-echo "commit,label,quorum,block_cache_mb,load,system,vsize,entries,total_mb,op,rep,clients,gapkey,ops,bytes,elapsed_s,ops_per_s,mb_per_s,mean_ms,p50_ms,p90_ms,p95_ms,p99_ms,p999_ms,max_ms,hitrate,gc_rounds,drain_rounds,snapshots" > "$OUT"
+echo "commit,label,quorum,block_cache_mb,load,system,vsize,entries,total_mb,op,rep,clients,gapkey,ops,bytes,elapsed_s,ops_per_s,mb_per_s,mean_ms,p50_ms,p90_ms,p95_ms,p99_ms,p999_ms,max_ms,hitrate,gc_rounds,drain_rounds,snapshots,fresh_n,tail_mb" > "$OUT"
 
 # **退出时一定停掉三个节点。** 上一版的 PUT-only 脚本没有这个：它死在第一格的写入上、
 # 节点留着不动，下一段起来时端口全被占（address already in use），四格连锁失败。
@@ -291,6 +299,24 @@ for SY in $SYSTEMS; do
         say "  ${SY} 不跑 GC（完成轮数恒为 0，是设计），跳过等待稳定与排空"
     fi
 
+    FRESH_N=0; TAIL_MB=NA
+    if [ "$FRESH_MB" -gt 0 ] 2>/dev/null; then
+        FRESH_N=$(awk -v mb="$FRESH_MB" -v r="$REC" 'BEGIN{printf "%d", mb*1048576/r}')
+        say "  再写 ${FRESH_N} 条全新的 key（[${N}, $((N+FRESH_N)))，约 ${FRESH_MB}MB），让它们停在 valuelog 尾部"
+        SSH_TIMEOUT=86400 r "$CLIENT_HOST" \
+            "source ~/env.sh; /tmp/mt3-randwrite_goroutine -cnums $PUT_CLIENTS -dnums $FRESH_N -keystart $N -vsize $VS -servers $ALL" \
+            > "$HOME/work/readops-$LABEL-$CELL-fresh.out" 2>&1
+        FT=$(grep '^\[THROUGHPUT\]' "$HOME/work/readops-$LABEL-$CELL-fresh.out" | tail -1)
+        [ -n "$FT" ] || { warn "$CELL 新写那一段没有吞吐输出，本格作废"; stop_all; continue; }
+        say "  $FT"
+        sleep 10
+        wait_gc_idle "$SY" "新写之后"
+        # 尾部有多大：路径从 kv_state.json 的 current_log 读，不猜文件名。
+        TAIL_B=$(rq "$(host_of 0)" "c=\$(grep -o '\"current_log\": *\"[^\"]*\"' ~/work/three-0/data/kv_state.json 2>/dev/null | sed 's/.*: *\"//; s/\"\$//'); [ -f \"\$c\" ] || c=~/work/three-0/data/valuelog/\$c; stat -c %s \"\$c\" 2>/dev/null" | head -1)
+        case "$TAIL_B" in ''|*[!0-9]*) TAIL_MB=NA ;; *) TAIL_MB=$((TAIL_B/1048576)) ;; esac
+        say "  valuelog 尾部 ${TAIL_MB}MB（新写约 $((FRESH_N*REC/1048576))MB；远小于它说明被 GC 吸收走了）"
+    fi
+
     nodes_alive "$CELL 读之前" || { warn "$CELL 作废（数字会是少节点跑出来的）"; stop_all; continue; }
     # 本格的行先写临时文件，读完再确认一次节点都在才并进总表：
     # 读的过程中掉了节点，这一格整格作废，不留半格在 CSV 里。
@@ -305,6 +331,9 @@ for SY in $SYSTEMS; do
     for OP in $OPS; do
     case $OP in
       GET) REPS=$GET_REPEATS; CL=$GET_CLIENTS; GK=0 ;;
+      GETFRESH)
+        [ "$FRESH_N" -gt 0 ] || { warn "GETFRESH 需要 FRESH_MB>0，跳过"; continue; }
+        REPS=$GET_REPEATS; CL=$GET_CLIENTS; GK=0 ;;
       # SCAN 的并发恒为 1：一次范围查询本身读取量就大，再叠并发只会让各 goroutine
       # 的随机起点互相冲刷缓存，结果不稳定且难以归因（maintable3.sh 里同一条理由）。
       # 也只跑一遍——B3 是一遍，而且一遍已经 40 次扫描。
@@ -315,6 +344,7 @@ for SY in $SYSTEMS; do
         OUTF="$HOME/work/readops-$LABEL-$CELL-$OP$REP.out"
         case $OP in
           GET)  CMD="/tmp/mt3-zipf_read -cnums $GET_CLIENTS -dnums $GET_OPS -tests $GET_TESTS -rest $REST_SEC -keyspace $N -servers $ALL" ;;
+          GETFRESH) CMD="/tmp/mt3-zipf_read -cnums $GET_CLIENTS -dnums $GET_OPS -tests $GET_TESTS -rest $REST_SEC -keyspace $FRESH_N -keystart $N -servers $ALL" ;;
           SCAN) CMD="/tmp/mt3-scan_pro -cnums 1 -dnums $SCAN_DNUMS -tests $SCAN_TESTS -rest $REST_SEC -gapkey $GAP -keyspace $N -servers $ALL" ;;
         esac
         [ "$OP" = SCAN ] && say "  SCAN $((SCAN_DNUMS*SCAN_TESTS)) 次 × gapkey=${GAP}，并发 1"
@@ -329,21 +359,21 @@ for SY in $SYSTEMS; do
             # **NA 不是 0。**写 0 等于声称"测过了、就是零"，而实际是没拿到回执。
             warn "$CELL $OP rep$REP 没有吞吐或分位数输出，这一遍记 NA"
             tail -12 "$OUTF" | tee -a "$LOG"
-            printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,%s,%s,%s,%s\n' \
+            printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,%s,%s,%s,%s,%s,%s\n' \
                 "$COMMIT" "$LABEL" "$COMMIT_QUORUM" "$BLOCK_CACHE_MB" "$LOAD" "$SY" "$VS" "$N" "$TOTAL_MB" \
-                "$OP" "$REP" "$CL" "$GK" "$HR" "$GCMAX" "$DRAIN_ROUNDS" "$SNAP" >> "$CELLOUT"
+                "$OP" "$REP" "$CL" "$GK" "$HR" "$GCMAX" "$DRAIN_ROUNDS" "$SNAP" "$FRESH_N" "$TAIL_MB" >> "$CELLOUT"
             continue
         fi
-        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
             "$COMMIT" "$LABEL" "$COMMIT_QUORUM" "$BLOCK_CACHE_MB" "$LOAD" "$SY" "$VS" "$N" "$TOTAL_MB" \
             "$OP" "$REP" "$CL" "$GK" \
             "$(f "$T" ops)" "$(f "$T" bytes)" "$(f "$T" elapsed)" "$(f "$T" ops_per_s)" "$(f "$T" mb_per_s)" \
             "$(f "$L" mean)" "$(f "$L" p50)" "$(f "$L" p90)" "$(f "$L" p95)" \
-            "$(f "$L" p99)" "$(f "$L" p999)" "$(f "$L" max)" "$HR" "$GCMAX" "$DRAIN_ROUNDS" "$SNAP" >> "$CELLOUT"
+            "$(f "$L" p99)" "$(f "$L" p999)" "$(f "$L" max)" "$HR" "$GCMAX" "$DRAIN_ROUNDS" "$SNAP" "$FRESH_N" "$TAIL_MB" >> "$CELLOUT"
         say "  $OP rep$REP ops/s=$(f "$T" ops_per_s) mb/s=$(f "$T" mb_per_s) p50=$(f "$L" p50) p99=$(f "$L" p99) 命中=$HR 读期间快照=$SNAP"
         # 命中率不是 1.0000 说明有 key 读不到——GC 搬丢记录不报任何错，只在某次
         # GET 上变成一个 NOKEY，所以这是这一格唯一的正确性哨兵。SCAN 不出这一行。
-        case "$OP:$HR" in GET:1.0000|GET:1) ;; GET:*) warn "$CELL GET rep$REP 命中率 $HR ≠ 1.0000，这一格的数字不可用" ;; esac
+        case "$OP:$HR" in GET*:1.0000|GET*:1) ;; GET*:*) warn "$CELL GET rep$REP 命中率 $HR ≠ 1.0000，这一格的数字不可用" ;; esac
     done
     done
 
