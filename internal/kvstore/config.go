@@ -71,7 +71,21 @@ type Config struct {
 	InlinePlacement bool // values below InlineThreshold are stored inline in the store
 	InlineThreshold int  // bytes
 	InlineCacheMB   int  // memory budget of the inline cache per sorted-file index
-	IndexBlockKB    int  // sparse index granularity over sorted files
+	// InlineBudgetMB 是每一代库（每轮 GC 换一个新库）最多内联多少字节，0 表示不限（历史行为）。
+	//
+	// 为什么要有上限：内联把小值整段写进 valuelog 一侧的库。库的内存表默认 64MB，
+	// 内联量一过它就溢出成 L0 SST，此后这个库上的每次查找都变贵——读老 key 时先在它
+	// 里面未命中一次，读新 key 要去 L0 文件里找。2026-09-25 的剂量测试（256B）：
+	// 新写 20MB 时库全在内存表里，读新数据 AVP 的 p50 −8.1%、读老数据没差；
+	// 新写 200MB 时库溢出成 3 个 SST，读老数据 AVP 反而慢 13.0%、读新数据慢 4.6%。
+	//
+	// 额度用完之后新来的小值改存偏移（与 nezha 相同），GC 换新库时额度清零。
+	// 于是库永远留在内存表里，而**最近写入**的那一段小值——最可能马上被读的——
+	// 仍然享受内联。不改 GC 的触发条件：那会让 GC 次数多几十倍，随机写下每轮都要
+	// 重写几乎全部分区，正是按比例触发要避免的 O(n²)。
+	// 默认 48：给 64MB 的内存表留出偏移行与元数据的余量。
+	InlineBudgetMB int
+	IndexBlockKB   int // sparse index granularity over sorted files
 
 	GCThresholdGB  float64
 	CommitTimeoutS int // how long a Put waits for its apply before giving up

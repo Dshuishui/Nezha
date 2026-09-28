@@ -167,13 +167,20 @@ type KVServer struct {
 	// extraPersistence：每条写入在 Raft 日志之外再落一次盘，用于 dwisckey。
 	// 只写不读，读路径仍与 nezha-nogc 相同——两者的差别因此只剩那一次持久化。
 	extraPersistence bool
-	inlinePlacement  bool    // 写入时按大小分流放置，而非仅做读缓存
-	leaderCheck      bool    // 非 leader 上的读直接让客户端改投 leader，见 requireLeader
-	leaseRead        bool    // 读前要求持有 leader 租约，否则退回 ReadIndex，见 requireLeader
-	verifyPartitions bool    // 装载分区时强制扫描重建索引并与旁挂索引比对，见 loadOrRebuildSparseIndex
-	inlineThreshold  int     // values smaller than this (bytes) are eligible for the inline cache
-	inlineCacheBytes int64   // memory budget for one partition set's shared inline cache
-	gcThresholdGB    float64 // value log size in GB that triggers GC
+	inlinePlacement  bool  // 写入时按大小分流放置，而非仅做读缓存
+	leaderCheck      bool  // 非 leader 上的读直接让客户端改投 leader，见 requireLeader
+	leaseRead        bool  // 读前要求持有 leader 租约，否则退回 ReadIndex，见 requireLeader
+	verifyPartitions bool  // 装载分区时强制扫描重建索引并与旁挂索引比对，见 loadOrRebuildSparseIndex
+	inlineThreshold  int   // values smaller than this (bytes) are eligible for the inline cache
+	inlineCacheBytes int64 // memory budget for one partition set's shared inline cache
+	// 内联额度：每一代库最多内联这么多字节（key+value），0 表示不限。
+	// inlineBudgetStore 记着额度属于哪一代库——apply 发现 kvs.persister 换了（GC 切换、
+	// 装快照、重启恢复，哪条路都一样）就清零重算，不必在每个切换点各记一次。
+	// 三个字段都只在 apply 路径上、kvs.mu 之下读写。理由与取值见 Config.InlineBudgetMB。
+	inlineBudgetBytes int64
+	inlineBudgetUsed  int64
+	inlineBudgetStore *raft.Persister
+	gcThresholdGB     float64 // value log size in GB that triggers GC
 	// gcDrain 是"测读之前把尾部吸收干净"的收尾开关，理由见 gcdrain.go。
 	gcDrain         gcDrainState
 	indexBlockBytes int64 // sparse index granularity: one index entry per this many bytes
@@ -294,10 +301,12 @@ func New(cfg Config) (*KVServer, error) {
 		verifyPartitions: cfg.VerifyPartitions,
 		inlineThreshold:  cfg.InlineThreshold,
 		inlineCacheBytes: int64(cfg.InlineCacheMB) << 20,
-		indexBlockBytes:  int64(cfg.IndexBlockKB) << 10,
-		gcThresholdGB:    cfg.GCThresholdGB,
-		FirstGC:          true,
-		dataDir:          cfg.DataDir,
+		// 负数当 0（不限），不要变成一个负的额度把所有内联都拒掉。
+		inlineBudgetBytes: max(int64(cfg.InlineBudgetMB), 0) << 20,
+		indexBlockBytes:   int64(cfg.IndexBlockKB) << 10,
+		gcThresholdGB:     cfg.GCThresholdGB,
+		FirstGC:           true,
+		dataDir:           cfg.DataDir,
 
 		partitionTargetBytes: int64(cfg.PartitionTargetMB) << 20,
 		absorbRatio:          cfg.AbsorbRatio,
@@ -342,10 +351,10 @@ func New(cfg Config) (*KVServer, error) {
 	}
 	// blockCacheMB 必须印出来。它的默认值 0 意味着"每次点读都从文件里读索引块、
 	// 过滤块、数据块"，而那足以决定点读的结论——一个能翻转结论的配置不该只存在于源码里。
-	fmt.Printf("[SYSTEM] %s | kvSeparation=%v gcEnabled=%v gcThresholdGB=%g extraPersistence=%v syncWAL=%v commitQuorum=%s blockCacheMB=%d | inlinePlacement=%v inlineThreshold=%dB inlineCacheMB=%d\n",
+	fmt.Printf("[SYSTEM] %s | kvSeparation=%v gcEnabled=%v gcThresholdGB=%g extraPersistence=%v syncWAL=%v commitQuorum=%s blockCacheMB=%d | inlinePlacement=%v inlineThreshold=%dB inlineCacheMB=%d inlineBudgetMB=%d\n",
 		cfg.systemName(), kvs.kvSeparation, kvs.gcEnabled, kvs.gcThresholdGB,
 		kvs.extraPersistence, cfg.SyncWAL, cq, cfg.BlockCacheMB,
-		kvs.inlinePlacement, kvs.inlineThreshold, cfg.InlineCacheMB)
+		kvs.inlinePlacement, kvs.inlineThreshold, cfg.InlineCacheMB, kvs.inlineBudgetBytes>>20)
 
 	// A fresh node opens the initial store; a restarted node restores GC state, the
 	// sorted-file index and the applied index, and returns the log files Raft must replay.

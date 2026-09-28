@@ -136,6 +136,40 @@ func (kvs *KVServer) applyUnderLock(idle time.Duration, batch []raft.ApplyMsg) {
 	recordApplyLoop(idle, lockWait, time.Since(tLock), len(batch))
 }
 
+// takeInlineBudget 从当前这一代库的内联额度里扣 n 字节，扣得下就返回 true。
+//
+// 为什么要有额度：内联把小值整段写进 valuelog 一侧的库，库的内存表默认 64MB，
+// 内联量一过它就溢出成 L0 SST，此后这个库上的每次查找都变贵——读老 key 先在它里面
+// 未命中一次，读新 key 要去 L0 文件里找，AVP 省下的那次 pread 被抵消还倒贴。
+// 2026-09-25 的剂量测试（256B）：新写 20MB 时库全在内存表里，读新数据 AVP 的 p50 −8.1%、
+// 读老数据没差；新写 200MB 时库溢出成 3 个 SST，读老数据慢 13.0%、读新数据慢 4.6%。
+//
+// 额度用完之后的小值改存偏移，于是库始终留在内存表里，而最近写入的那一段小值——
+// 最可能马上被读的——仍然享受内联。
+//
+// **额度按"库的代"算，换库就清零。**GC 每一轮换一个空的新库，老库里的内联值由
+// absorbTail 搬进分区；装快照、重启恢复也会换 kvs.persister。与其在每个切换点各记一次
+// （漏一处就是额度永不恢复，而且是静默的），不如在这里比对库的指针。
+// 重启恢复时这一代库里已有的内联量不可知，计数从 0 开始——最多超额一个额度，
+// 下一轮 GC 换库后恢复正常。
+//
+// 调用方持有 kvs.mu（apply 路径），切换 kvs.persister 的各处也都在 kvs.mu 之下。
+func (kvs *KVServer) takeInlineBudget(n int) bool {
+	if kvs.inlineBudgetBytes <= 0 {
+		return true // 不限，历史行为
+	}
+	if kvs.persister != kvs.inlineBudgetStore {
+		kvs.inlineBudgetStore = kvs.persister
+		kvs.inlineBudgetUsed = 0
+	}
+	if kvs.inlineBudgetUsed+int64(n) > kvs.inlineBudgetBytes {
+		avpRecordBudgetSpill()
+		return false
+	}
+	kvs.inlineBudgetUsed += int64(n)
+	return true
+}
+
 // applyCommand applies one committed entry to the store and wakes the client waiting on
 // it. Caller holds kvs.mu.
 //
@@ -214,9 +248,9 @@ func (kvs *KVServer) applyBatch(msgs []raft.ApplyMsg) {
 			}
 			kvs.lastPutTime = time.Now() // 更新put操作时间
 			switch {
-			case kvs.inlinePlacement && kvs.shouldInline(len(op.Value)):
-				// 小值直接落在存储引擎里，不进 valuelog：读路径因此缩短为一次点查，
-				// 且 GC 无需再为它们做一次搬运。
+			case kvs.inlinePlacement && kvs.shouldInline(len(op.Value)) && kvs.takeInlineBudget(len(op.Key)+len(op.Value)):
+				// 小值直接落在存储引擎里：读路径因此缩短为一次点查，不必再按偏移读 valuelog。
+				// 额度用完就落到下面的偏移分支，与 nezha 相同——理由见 takeInlineBudget。
 				recordPlacement(len(op.Value), true)
 				rows = append(rows, raft.EncodeInlineRow(op.Key, op.Value))
 			case !kvs.kvSeparation:

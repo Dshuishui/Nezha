@@ -23,7 +23,12 @@ var avpStats struct {
 	blockScans     atomic.Uint64 // 块扫描次数（每次未命中一次）
 	entriesScanned atomic.Uint64 // 块内顺序解析的 entry 总条数
 	bytesRead      atomic.Uint64 // 从 sortedFile 实际读取的字节数
+	budgetSpills   atomic.Uint64 // 够内联的小值因为额度用完而改存偏移的条数，见 takeInlineBudget
 }
+
+// avpRecordBudgetSpill 记一条因内联额度用完而改存偏移的小值。
+// 它是额度是否在起作用的直接证据：恒为 0 说明这一代库从没碰到上限，额度没改变任何行为。
+func avpRecordBudgetSpill() { avpStats.budgetSpills.Add(1) }
 
 // avpRecordPartitionRead 记一次**由分区文件答复**的读：内联缓存有机会服务它。
 // hit 表示这一次是缓存接住的（省掉一次文件 seek）。
@@ -100,8 +105,8 @@ func AVPStatsLine() string {
 	return fmt.Sprintf(
 		"[AVP-STATS] partition_reads=%d hits=%d misses=%d hit_rate=%.2f%% "+
 			"served_by_log=%d not_found=%d block_scans=%d entries_scanned=%d "+
-			"entries_per_scan=%.1f bytes_read=%d",
-		served, h, m, hitRate, sbl, nf, scans, ents, entsPerScan, bytes)
+			"entries_per_scan=%.1f bytes_read=%d inline_budget_spills=%d",
+		served, h, m, hitRate, sbl, nf, scans, ents, entsPerScan, bytes, avpStats.budgetSpills.Load())
 }
 
 // StartAVPStatsReporter 周期性把指标打进节点日志。
