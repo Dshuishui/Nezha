@@ -186,7 +186,7 @@ wait_gc_stable(){
 # 是设计不是失败。**不加这个守卫的后果实测过：wait_gc_stable 的条件是
 # "轮数不变 且 ≥ 1"，对它们永远不成立，于是空转满 120 次 × 10 秒 = **每格白等 20 分钟**，
 # 然后还会因为 GCMAX=0 把这一格判作废。CLAUDE.md 里记着这一条。
-has_gc() { case "$1" in nezha|nezha-avp) return 0 ;; *) return 1 ;; esac; }
+has_gc() { case "$1" in nezha|nezha-avp|nezha-avp-unl) return 0 ;; *) return 1 ;; esac; }
 
 # drain_gc —— 读之前把 valuelog 尾部吸收干净。
 #
@@ -259,6 +259,8 @@ for SY in $SYSTEMS; do
         nezha-nogc) NS=nezha-nogc; EX="" ;;
         nezha)      NS=nezha;      EX="-partitionTargetMB $PARTITION_MB" ;;
         nezha-avp)  NS=nezha;      EX="-inlinePlacement -partitionTargetMB $PARTITION_MB" ;;
+        # 不设内联额度的 AVP（-inlineBudgetMB 0），即 9a25970 之前的行为，作对照用。
+        nezha-avp-unl) NS=nezha;   EX="-inlinePlacement -inlineBudgetMB 0 -partitionTargetMB $PARTITION_MB" ;;
         *) warn "未知系统 ${SY}，跳过"; continue ;;
     esac
     EX="$EX -blockCacheMB ${BLOCK_CACHE_MB} -commitQuorum ${COMMIT_QUORUM}"
