@@ -64,7 +64,7 @@ func main() {
 	flag.BoolVar(&cfg.InlinePlacement, "inlinePlacement", false, "store values smaller than inlineThreshold directly in the store (true AVP)")
 	flag.IntVar(&cfg.InlineThreshold, "inlineThreshold", 512, "value size threshold in bytes for inline placement and the inline cache")
 	flag.IntVar(&cfg.InlineCacheMB, "inlineCacheMB", 256, "memory budget in MB for the inline small-value cache (0 disables it)")
-	flag.IntVar(&cfg.InlineBudgetMB, "inlineBudgetMB", 48, "with -inlinePlacement: at most this many MB (key+value) are inlined per store generation, the rest stored as offsets, so the store stays within RocksDB's 64MB memtable (0 = unlimited, the old behaviour)")
+	flag.IntVar(&cfg.InlineBudgetMB, "inlineBudgetMB", 0, "with -inlinePlacement: at most this many MB (key+value) are inlined per store generation, the rest stored as offsets (0 = unlimited, the default; a budget measured net negative, see results/avp-inline-budget/)")
 	flag.IntVar(&cfg.IndexBlockKB, "indexBlockKB", 4, "sparse index block size in KB: one in-memory index entry per block")
 	flag.Float64Var(&cfg.GCThresholdGB, "gcThresholdGB", 4000, "value log size in GB that triggers garbage collection; lower it to exercise GC in tests")
 	flag.IntVar(&cfg.PartitionTargetMB, "partitionTargetMB", 128, "target size in MB of one GC output partition; lower it to exercise multi-partition reads in tests")

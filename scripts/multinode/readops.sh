@@ -259,7 +259,8 @@ for SY in $SYSTEMS; do
         nezha-nogc) NS=nezha-nogc; EX="" ;;
         nezha)      NS=nezha;      EX="-partitionTargetMB $PARTITION_MB" ;;
         nezha-avp)  NS=nezha;      EX="-inlinePlacement -partitionTargetMB $PARTITION_MB" ;;
-        # 不设内联额度的 AVP（-inlineBudgetMB 0），即 9a25970 之前的行为，作对照用。
+        # 显式不设内联额度的 AVP。节点默认已改回 0，现在它与 nezha-avp 相同；留着是为了
+        # 复现 results/avp-inline-budget/ 那次对照（那时 nezha-avp 带 48MB 额度）。
         nezha-avp-unl) NS=nezha;   EX="-inlinePlacement -inlineBudgetMB 0 -partitionTargetMB $PARTITION_MB" ;;
         *) warn "未知系统 ${SY}，跳过"; continue ;;
     esac
