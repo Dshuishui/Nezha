@@ -23,6 +23,13 @@
 #   GCGB=0.3          gcThresholdGB。**必须显式给。** three-node.sh 的派生式是"总量的
 #                     1/3"，只保证至少触发一轮；4GB 要跑十几轮 GC 就得给一个小值。
 #   SYNC_WAL=0        出性能数字必须 0（每条 fsync 慢约 50 倍，4GB 是几十小时）。
+#   COMMIT_QUORUM=majority  日志提交条件，majority | leader，传给节点的 -commitQuorum。
+#                     leader = 只等 leader 自己落盘就回 OK（异步复制档），只影响写；
+#                     读走租约，本来就不经过日志。**默认 majority，异步档必须在调用处写明**：
+#                     leader 档故障切换会丢已确认的写（实测 72.60%，多数派 0.0000%），
+#                     一个会丢数据的档位不该靠默认值生效。
+#                     leader 档不允许带 C 阶段：kill -9 之后逐条校验，在这个档位下
+#                     会**合理地**失败，而放宽判据会让它再也抓不到真 bug。
 #   PARTITION_MB=     GC 产物中单个分区的目标大小。留空用节点默认（128MB）。
 #   PUT_CLIENTS=100 GET_CLIENTS=100        并发度（SCAN 恒为 1，理由见下）
 #   PUT_KEYSPACE=     B 阶段 PUT 的键空间。留空/0 = 唯一 key（盘上无垃圾，GC 的
@@ -81,6 +88,11 @@ SYSTEMS="${SYSTEMS:-${SYSTEM:-nezha}}"
 SYSTEM=""   # 每一格开始时由 run_cell 设成当前那个，别处一律读它
 GCGB="${GCGB:-0.3}"
 SYNC_WAL="${SYNC_WAL:-0}"
+COMMIT_QUORUM="${COMMIT_QUORUM:-majority}"
+case "$COMMIT_QUORUM" in
+    majority|leader) ;;
+    *) echo "COMMIT_QUORUM 只认 majority | leader，收到 '$COMMIT_QUORUM'"; exit 1 ;;
+esac
 PARTITION_MB="${PARTITION_MB:-}"
 PUT_CLIENTS="${PUT_CLIENTS:-100}"
 GET_CLIENTS="${GET_CLIENTS:-100}"
@@ -127,6 +139,12 @@ LAG_LIMIT="${LAG_ENTRIES:-$LAG_FLOOR}"
 LOST_KEYS="${LOST_KEYS:-fail}"
 GC_STABLE_CHECKS="${GC_STABLE_CHECKS:-4}"
 PHASES="${PHASES:-A B C}"
+# C 阶段是正确性闸门（kill -9 后逐条校验），必须跑在多数派上——见文件头 COMMIT_QUORUM。
+if [ "$COMMIT_QUORUM" = leader ] && [[ " $PHASES " == *" C "* ]]; then
+    echo "COMMIT_QUORUM=leader 不能带 C 阶段：异步档故障后丢已确认的写是设计，C 会合理地失败。"
+    echo "要么 PHASES=\"A B\"，要么 C 阶段另用多数派单独跑。"
+    exit 1
+fi
 SMOKE_MB="${SMOKE_MB:-400}"
 # 阶段 C 默认在**正式规模**上做崩溃恢复：恢复时间随 key 数量走（要重放 valuelog 并重建
 # RocksDB），400MB 上通过说明不了 4GB 上通过。代价是要先把数据重写一遍，所以默认只做
@@ -310,6 +328,10 @@ node_extra() {
     # 而且"改进前"的基线二进制根本不认识这个 flag，传了会直接退出
     # （maintable.sh 的 PARTITION_MB 注释里记着这一条）。
     if [ -n "$PARTITION_MB" ] && has_gc; then e="$e -partitionTargetMB $PARTITION_MB"; fi
+    # **多数派时不传这个 flag**，只在 leader 档才传：对照实验用 REPO_DIR 指向的旧代码
+    # 二进制不认识 -commitQuorum，传了直接退出（与上面 -partitionTargetMB 同一个坑）。
+    # 不传就是节点默认的 majority，行为完全一样。
+    [ "$COMMIT_QUORUM" = leader ] && e="$e -commitQuorum leader"
     printf '%s' "$e"
 }
 
@@ -366,7 +388,11 @@ collect_cell() { # $1=本格的归档目录名
 # ---------------------------------------------------------------------------
 
 if [ ! -f "$OUT" ]; then
-  echo "commit,label,phase,topo,system,syncwal,gcgb,vsize,entries,total_mb,op,n,mean_ms,p50_ms,p90_ms,p95_ms,p99_ms,p999_ms,min_ms,max_ms,ops,bytes,elapsed_s,ops_per_s,mb_per_s,extra,gc_max,lost_keys,rss_peak_mb,fd_peak,lag_spread" > "$OUT"
+  echo "commit,label,phase,topo,system,syncwal,gcgb,vsize,entries,total_mb,op,n,mean_ms,p50_ms,p90_ms,p95_ms,p99_ms,p999_ms,min_ms,max_ms,ops,bytes,elapsed_s,ops_per_s,mb_per_s,extra,gc_max,lost_keys,rss_peak_mb,fd_peak,lag_spread,quorum" > "$OUT"
+elif ! head -1 "$OUT" | grep -q ',quorum$'; then
+  # 往一个旧表头的 CSV 里追加会让每一行多出一列，而读的人只看表头——静默错位。
+  echo "$OUT 是旧表头（没有 quorum 列），不能往里追加。换个 OUT 或 LABEL。"
+  exit 1
 fi
 # field <文本> <键>：取不到给 NA。空字段在汇总表里看起来只是"这列没测"，很容易被读过去。
 field(){ local v; v=$(grep -o "$2=[0-9.]*" <<<"$1" | head -1 | cut -d= -f2); echo "${v:-NA}"; }
@@ -680,12 +706,12 @@ run_cell() { # $1=phase $2=total_mb $3=vsize $4=system
     fdpk=$(awk -F, 'NR>1{if($3>m)m=$3} END{print m+0}' "$HOME/work/mt3-$LABEL/$cell/sample-node0.csv" 2>/dev/null)
 
     emit() { # emit <op> <latency 行> <throughput 行> <extra>
-        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
             "$COMMIT" "$LABEL" "$phase" "$TOPO" "$SYSTEM" "$SYNC_WAL" "$GCGB" "$vs" "$n" "$mb" "$1" \
             "$(field "$2" n)" "$(field "$2" mean)" "$(field "$2" p50)" "$(field "$2" p90)" \
             "$(field "$2" p95)" "$(field "$2" p99)" "$(field "$2" p999)" "$(field "$2" min)" "$(field "$2" max)" \
             "$(field "$3" ops)" "$(field "$3" bytes)" "$(field "$3" elapsed)" "$(field "$3" ops_per_s)" "$(field "$3" mb_per_s)" \
-            "$4" "$gcmax" "$lost" "${rsspk:-NA}" "${fdpk:-NA}" "$lagsp" >> "$OUT"
+            "$4" "$gcmax" "$lost" "${rsspk:-NA}" "${fdpk:-NA}" "$lagsp" "$COMMIT_QUORUM" >> "$OUT"
     }
     emit PUT  "$PUTL"  "$PUTT"  "NA"
     emit GET  "$GETL"  "$GETT"  "$(field "$HIT" ratio)"
@@ -814,7 +840,7 @@ phase_c() { # $1=vsize
 
 say "拓扑 TOPO=${TOPO}：node0=$(host_of 0) node1=$(host_of 1) node2=$(host_of 2)"
 say "驱动跑在 $(hostname 2>/dev/null)（ON_SERVER=${ON_SERVER}）；客户端在 $CLIENT_HOST"
-say "commit=$COMMIT systems=[$SYSTEMS] syncWAL=$SYNC_WAL gcThresholdGB=$GCGB 阶段=[$PHASES]"
+say "commit=$COMMIT systems=[$SYSTEMS] syncWAL=$SYNC_WAL commitQuorum=$COMMIT_QUORUM gcThresholdGB=$GCGB 阶段=[$PHASES]"
 say "输出 $OUT / 日志 $LOG / 归档 $HOME/work/mt3-$LABEL/"
 
 # 开跑前先确认三台机器上没有别人的进程。这三台是共用的，撞端口会同时毁掉两边的实验，
